@@ -14,10 +14,11 @@ This directory keeps the Xcode project and fastlane settings.
 4. Configure signing:
    - Select your Team
    - Set Bundle Identifier
-5. Enable capabilities:
-   - Camera usage description in `Info.plist`
-   - Location usage description in `Info.plist`
-   - Local network usage description in `Info.plist` (for connecting to Mac LAN backend)
+5. Privacy usage descriptions are localized via `VQASee/InfoPlist.xcstrings`
+   (camera / microphone / local network / location / speech recognition), in
+   both `zh-Hans` and `en`. Do NOT re-add `INFOPLIST_KEY_NS*UsageDescription`
+   build settings — those hardcoded values override the catalog and would break
+   localization of the permission prompts.
 6. Install iOS runtime component if prompted:
    - Xcode `Settings > Components`
    - or `xcodebuild -downloadPlatform iOS`
@@ -75,27 +76,112 @@ Current traffic limits in the app:
 - Minimum continuous-frame interval: `2s`
 - Maximum in-flight frame requests: `1`
 
-## Visual-assistance UI and speech
+## Visual-assistance UI (immersive, single screen)
 
-The main screen is designed for visual assistance rather than debugging:
+The main screen is an immersive, full-screen camera experience designed for
+blind / low-vision users — no vertical scrolling of the page itself:
 
-- Large natural-language summary
-- Risk message and suggested action
-- Mode buttons: `周围`, `行走`, `读文字`, `详细`
-- Voice toggle using the built-in iOS `AVSpeechSynthesizer`
-- `测试语音` button for checking iPhone audio output
-- Model selector:
-  - `快速 3B` sends `qwen2.5vl:3b`
-  - `更准 7B` sends `qwen2.5vl:7b`
-- Debug fields remain under `高级设置`
+- The camera preview is the full-screen hero (`.ignoresSafeArea()`).
+- A floating status pill (connection state) and a settings gear sit at the top
+  as translucent glass overlays.
+- A bottom control cluster floats over the camera via `safeAreaInset(.bottom)`:
+  the answer panel (summary / spatial direction / risk / suggested action +
+  latency), the mode bar, the press-to-talk button, and a single start/stop
+  control.
+- The **only** thing that ever scrolls is the answer text inside the answer
+  panel, capped at ~35% of screen height so the fixed controls are always
+  reachable at any Dynamic Type size.
+- Modes: `周围` / `行走` / `读文字` / `详细`.
+- Press-and-hold "按住说话" for a voice question (answered first, then cleared).
+- Everything else — voice-broadcast toggle, model selector, multi-backend
+  picker, advanced server fields, debug text, hotspot help — lives in the
+  **Settings** sheet (the gear), the only surface with text input / keyboard.
 
-No extra voice library is needed.
+Model selector (in Settings):
+
+- `快速 3B` sends `qwen2.5vl:3b`
+- `更准 7B` sends `qwen2.5vl:7b`
+
+Speech uses the built-in iOS `AVSpeechSynthesizer` (TTS) and `SFSpeechRecognizer`
+(voice questions). No extra voice library is needed.
 
 Before using `更准 7B`, pull the model on the Mac:
 
 ```bash
 MODEL=qwen2.5vl:7b bash ../start_qwen_local.sh
 ```
+
+## Source layout (view layer split)
+
+`ContentView.swift` used to be a single ~2100-line file. It is now split by
+concern; all files live under `VQASee/VQASee/` and are auto-included via the
+project's `PBXFileSystemSynchronizedRootGroup` (no `project.pbxproj` edits
+needed to add a Swift file).
+
+Logic (behavior unchanged — pure relocation):
+
+- `Models.swift` — value types & UI-facing enums (`StreamStatus`,
+  `AssistanceMode`, `VqaModelOption`, `VqaDisplayResult`, …)
+- `PureHelpers.swift` — pure, unit-tested helpers (Foundation-only)
+- `Networking.swift` — signaling / transport + JPEG encoder
+- `BonjourDiscovery.swift` — `NearbyServerBrowser`
+- `CameraCapture.swift` — frame proxy + camera preview
+- `StreamingViewModel.swift` — the core `ObservableObject`
+- `SpeechRecognitionController.swift` — press-to-talk speech input
+
+View:
+
+- `ContentView.swift` — thin root (owns the view model, presents the screen +
+  settings sheet)
+- `AssistanceScreen.swift` — the immersive single-screen layout
+- `SettingsView.swift` — the settings sheet
+- Components: `GlassPanel`, `StatusPill`, `AnswerPanel`, `ModeBar`,
+  `PressToTalkButton`, `ServerPickerView`
+- `Theme.swift` — the design system
+
+The pure-logic types (`StreamingConfigValidator`, `AutoConnectPolicy`,
+`SockaddrParser`, `SignalingResponseParser`, `FrameMessageBuilder`,
+`LatencyBreakdown`, `SpeechGate`, `FrameContext`, …) keep their names,
+signatures and visibility so `VQASeeTests` compiles and passes unchanged.
+
+## Design system (`Theme.swift`)
+
+A single `enum Theme` namespace keeps the UI coherent:
+
+- `Spacing` (4 / 8 / 12 / 16 / 24) and `Radius` (panel 20, pill 999).
+- `Typography` built on Dynamic Type text styles (never fixed point sizes), so
+  everything scales with the user's preferred content size.
+- Semantic colors read from the asset catalog (`AccentColor`, `RiskWarning`,
+  `RiskDanger`), so they adapt to dark mode and Increase Contrast automatically;
+  `Theme.riskColor(for:)` maps a backend risk level to its color.
+- `GlassPanel` is the single Liquid-Glass-vs-solid-surface decision point: it
+  uses the translucent material normally and falls back to an opaque surface
+  when Reduce Transparency is on.
+
+## Localization (中文 + English)
+
+The UI follows the system language (Simplified Chinese or English):
+
+- Strings live in `VQASee/Localizable.xcstrings` (source language `zh-Hans`,
+  English column filled). `Text("中文")` literals auto-extract on build; enum
+  titles/hints route through `String(localized:)`.
+- Privacy prompts live in `VQASee/InfoPlist.xcstrings`.
+- Not localized by design: `AssistanceMode.prompt` (model-steering instructions
+  — must stay Chinese or model quality degrades) and `VqaModelOption` raw values
+  (model IDs).
+- **Adding a language** = add it to `knownRegions` in `project.pbxproj` and fill
+  its column in both `.xcstrings` catalogs. No code change.
+
+## Accessibility
+
+- Dynamic Type throughout (relative fonts, no fixed heights on text).
+- VoiceOver: the answer panel is one combined element read risk-first (safety
+  before summary / direction / advice); the status pill is one
+  `.updatesFrequently` element; the raw camera preview is hidden from VoiceOver.
+- Large tap targets (`.controlSize(.large)`) for start/stop and press-to-talk.
+- High contrast via the `RiskWarning` / `RiskDanger` colorsets rather than raw
+  `.orange` / `.red`.
+- Reduce Transparency falls back to opaque surfaces (see `GlassPanel`).
 
 ## fastlane setup
 
