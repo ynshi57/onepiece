@@ -117,17 +117,34 @@ store the runtime reads).
 
 For the simplest local setup:
 
-1. Turn on iPhone Personal Hotspot.
-2. Connect the Mac to that hotspot Wi-Fi.
-3. Start backend on the Mac:
-   - `bash ./start_backend.sh`
-4. Open VQASee on iPhone and tap:
-   - `开始视觉辅助`
+1. Start backend on the Mac: `bash ./start_backend.sh`.
+2. Put the iPhone and Mac on the same network — **either** works:
+   - iPhone Personal Hotspot with the Mac joined to it, **or**
+   - both on the same Wi-Fi LAN.
+3. Open VQASee on iPhone. It auto-discovers the backend and shows
+   `已发现 Mac 后端…`.
+4. Tap `开始视觉辅助` to connect (discovery only fills the address; you still tap
+   start — the camera never auto-streams).
 
-The backend advertises `_vqasee._tcp` via Bonjour, and the iOS app discovers it
-automatically. No server URL, relay URL, or token needs to be entered for this
-nearby/hotspot mode. If Bonjour discovery fails, the app also probes common
-iPhone hotspot addresses such as `172.20.10.x`.
+How discovery behaves:
+
+- The backend advertises `_vqasee._tcp` via Bonjour; the app browses continuously
+  (not just on first launch). Resolution **prefers the numeric IPv4 address** over
+  the `.local` hostname, which is more reliable across routers where mDNS name
+  resolution is flaky.
+- **One backend found** → its address is auto-filled.
+- **Two or more found** → the app shows a selection list so you can pick which Mac
+  to use; your pick is remembered and no longer overridden by discovery.
+- **Connection drops / you switch networks** (hotspot ↔ Wi-Fi) → the app clears the
+  stale address, re-runs discovery, and reconnects to whatever it finds, instead of
+  pinning the old IP.
+- If Bonjour finds nothing, the app also probes common iPhone-hotspot addresses
+  such as `172.20.10.x`.
+- Manual entry still exists under **高级设置** as a fallback; typing an address
+  there pins it (discovery won't overwrite it).
+
+No server URL, relay URL, or token needs to be entered for this nearby/hotspot
+mode.
 
 ## Visual-assistance UI
 
@@ -146,8 +163,9 @@ The iOS app is now voice-first:
   (`request_timeout`) instead of dropping it silently.
 - If the backend goes away mid-session (server stopped, network lost), the socket
   drop is surfaced as `连接已断开`, the status/connection text updates immediately,
-  and the app auto-retries the connection every ~2s until it comes back — it no
-  longer sits silently on "连接中".
+  and after ~2s the app re-runs Bonjour discovery and reconnects to whatever it
+  finds (so a hotspot ↔ Wi-Fi switch recovers instead of pinning the dead IP) — it
+  no longer sits silently on "连接中".
 - `scene / objects / latency` are kept in Advanced Settings as debug details.
 - Voice output uses iOS `AVSpeechSynthesizer`; no third-party speech library is
   required.

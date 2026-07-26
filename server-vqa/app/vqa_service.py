@@ -33,17 +33,22 @@ def _heuristic_vqa(prompt: str) -> dict:
             "spoken_text": "前方可能是道路场景，附近可能有车辆，请注意交通风险。",
         }
 
+    # Generic fallback: we have no usable model output. Do NOT fabricate a
+    # person (or any object) — telling a low-vision user "画面中可能有人" when
+    # nothing was actually detected is a false positive that erodes trust and is
+    # unsafe. Say plainly that the content could not be identified.
+    # (CLAUDE.md: No Silent Failures.)
     return {
-        "objects": ["person"],
+        "objects": [],
         "scene": "unknown",
         "vision_location": "unknown",
-        "description": "画面中可能有人，但当前模型无法可靠判断更多细节。",
-        "summary": "画面中可能有人。",
-        "spatial_description": "无法可靠判断人在左侧、正前方还是右侧。",
-        "risk_level": "medium",
-        "risk_message": "附近可能有人，请注意保持距离。",
-        "suggested_action": "请缓慢移动手机，扫视左侧、正前方和右侧。",
-        "spoken_text": "画面中可能有人，请注意保持距离。",
+        "description": "暂时无法识别画面内容（本地模型未返回可用结果）。",
+        "summary": "暂时无法识别画面内容。",
+        "spatial_description": "无法判断空间方位，请稍后重试。",
+        "risk_level": "low",
+        "risk_message": "无法判断是否存在风险，请谨慎移动。",
+        "suggested_action": "请缓慢移动手机重试；若持续无结果，请检查 Mac 后端模型是否正常。",
+        "spoken_text": "暂时无法识别画面内容，请谨慎移动。",
     }
 
 
@@ -120,9 +125,24 @@ def _parse_qwen_content(content: object, fallback_prompt: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    fallback = _heuristic_vqa(fallback_prompt)
-    fallback["description"] = stripped
-    return fallback
+    # The model returned text but not the required JSON (common with a direct
+    # llama-server, which does not enforce response_format). Do NOT fall back to
+    # the fabricated heuristic ("画面中可能有人") — that invents objects the model
+    # never reported. Instead surface the model's ACTUAL text as the description
+    # and let fusion derive summary/risk from it, so the user sees the real
+    # reason/content rather than a fake person. (CLAUDE.md: No Silent Failures.)
+    logger.warning(
+        "Qwen returned non-JSON content; surfacing raw text instead of heuristic person. len=%d",
+        len(stripped),
+    )
+    return {
+        "objects": [],
+        "scene": "unknown",
+        "vision_location": "unknown",
+        # Prefix the diagnostic reason so debug views make the failure explicit,
+        # while the readable model text still drives the spoken summary.
+        "description": f"（模型未按要求输出结构化结果，以下为原始描述）{stripped}",
+    }
 
 
 def run_vqa(prompt: str) -> dict:
@@ -143,11 +163,50 @@ def _resolve_qwen_model(qwen_api_base_url: str, model_override: str = "") -> str
     return "Qwen/Qwen2.5-VL-3B-Instruct"
 
 
-# Continuous surroundings/walking frames only need a short delta; single-shot
-# modes (read-text, detailed) still want room for a fuller answer. Kept modest
-# either way to cut decode time on the local 3B model.
-_MAX_TOKENS_INCREMENTAL = _env_int("QWEN_MAX_TOKENS_INCREMENTAL", 96)
-_MAX_TOKENS_FULL = _env_int("QWEN_MAX_TOKENS_FULL", 160)
+# These are output CEILINGS, not fixed costs: with the slim JSON schema below the
+# model emits `finish_reason: stop` at ~70-130 tokens, so a higher ceiling adds
+# no latency but prevents mid-JSON truncation (finish_reason: length -> invalid
+# JSON -> "模型未按要求输出" on every frame). The old 96/160 values were BELOW the
+# minimum size of a valid Chinese JSON object, so every response was truncated.
+_MAX_TOKENS_INCREMENTAL = _env_int("QWEN_MAX_TOKENS_INCREMENTAL", 220)
+_MAX_TOKENS_FULL = _env_int("QWEN_MAX_TOKENS_FULL", 360)
+
+
+# Slim output schema. The mode prompts in prompts.py are prose instructions
+# ("先说场景类型，再说最重要的物体和位置") that fight a plain "output JSON" system
+# message — the model follows the more specific prose and emits Markdown, so
+# parsing fails on every frame. Enforcing this JSON Schema at the decode layer
+# (llama-server grammar) makes valid JSON structurally guaranteed regardless of
+# how the prompt is worded, and locks change_significance to the enum. Only the
+# fields fusion.py cannot derive are required.
+_VQA_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "objects": {"type": "array", "items": {"type": "string"}},
+        "scene": {"type": "string"},
+        "description": {"type": "string"},
+        "change_significance": {"type": "string", "enum": ["none", "minor", "major"]},
+        "changes": {"type": "string"},
+    },
+    "required": ["objects", "scene", "description", "change_significance", "changes"],
+    "additionalProperties": False,
+}
+
+
+def _build_response_format(qwen_api_base_url: str) -> dict:
+    """Choose the strongest output constraint the runtime supports.
+
+    Direct llama-server (:11435) supports `json_schema` with `strict`, which
+    enforces the structure via a decode-time grammar — the reliable fix. Ollama
+    (:11434, USE_OLLAMA=1) only understands `json_object`, so fall back to that
+    there rather than sending a payload it would reject.
+    """
+    if "11434" in qwen_api_base_url:
+        return {"type": "json_object"}
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": "vqa_result", "strict": True, "schema": _VQA_JSON_SCHEMA},
+    }
 
 
 def run_vqa_from_frame(
@@ -177,22 +236,27 @@ def run_vqa_from_frame(
         "model": qwen_model,
         "temperature": 0,
         "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
+        "response_format": _build_response_format(qwen_api_base_url),
         "messages": [
             {
                 "role": "system",
                 "content": (
+                    # Slim schema: only fields the backend cannot derive. fusion.py
+                    # produces summary/spatial_description/risk_*/suggested_action/
+                    # spoken_text from `description` + `objects`, so requiring the
+                    # model to also emit them just inflated output length and caused
+                    # mid-JSON truncation. Objects MUST be short strings (never bbox
+                    # dicts) or _normalize_qwen_payload drops them.
                     "You are a visual-assistance VQA parser for blind or low-vision users. "
-                    "Output strict JSON only. Required keys: "
-                    "objects(list[str]), scene(str), vision_location(str), description(str), "
-                    "summary(str), spatial_description(str), risk_level(str: low|medium|high), "
-                    "risk_message(str), suggested_action(str), spoken_text(str), ocr_text(str), "
+                    "Output strict JSON only, no Markdown fences. Required keys: "
+                    "objects(list of short Chinese strings, e.g. [\"行人\",\"台阶\"] — NEVER bounding boxes or dicts), "
+                    "scene(str), "
+                    "description(one concise Chinese sentence describing what is ahead, using directions 左侧/正前方/右侧/近处/远处 when visible), "
                     "change_significance(str: none|minor|major), changes(str). "
-                    "Write Chinese. Use image-coordinate directions when visible: 左侧、正前方、右侧、近处、远处. "
                     "Do not invent certainty: use 可能/疑似 when unsure. "
-                    "For walking safety, prioritize obstacles, people, vehicles, stairs, doors, edges, and clear next action. "
+                    "For walking safety, prioritize obstacles, people, vehicles, stairs, doors, edges. "
                     "When a 【连续观察上下文】 block is present, report only important changes: set "
-                    "change_significance to none when nothing important changed (and keep spoken_text very short), "
+                    "change_significance to none when nothing important changed (keep description short), "
                     "minor for small changes, major when the user must pay attention; put the delta in changes. "
                     "Without that block, set change_significance to major and leave changes empty."
                 ),
