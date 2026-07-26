@@ -17,7 +17,7 @@ app:
 3. Start backend service:
    - `bash ./start_backend.sh`
    - Optional: `HOST=127.0.0.1 PORT=9000 bash ./start_backend.sh`
-   - Optional local Qwen config (16GB friendly): `QWEN_API_BASE_URL=http://127.0.0.1:11434 QWEN_MODEL=qwen2.5vl:3b bash ./start_backend.sh`
+   - Optional local Qwen config (16GB friendly): `QWEN_API_BASE_URL=http://127.0.0.1:11435 QWEN_MODEL=qwen2.5vl:3b bash ./start_backend.sh` (the local runtime listens on `:11435`; see "Local Qwen Setup" below)
    - WebSocket signaling endpoint: `ws://localhost:9000/ws/signaling`
 
 ## Cross-network Relay MVP
@@ -51,36 +51,58 @@ MVP relay limits:
 
 ## Local Qwen Setup (free/local)
 
-1. One-step prepare local Qwen model (will auto-try install/start Ollama):
-   - `bash ./start_qwen_local.sh`
+1. One-step prepare local Qwen model + runtime:
+   - `bash ./start_qwen_local.sh` (starts on `http://127.0.0.1:11435`)
+   - Sub-commands: `start` (default) · `stop` · `status` · `supervise`
+     (foreground, restart-on-crash).
 2. Start backend with Qwen enabled:
-   - `QWEN_API_BASE_URL=http://127.0.0.1:11434 QWEN_MODEL=qwen2.5vl:3b bash ./start_backend.sh`
+   - `QWEN_API_BASE_URL=http://127.0.0.1:11435 QWEN_MODEL=qwen2.5vl:3b bash ./start_backend.sh`
 3. Or run full stack in one command:
    - `bash ./start_local_vqa.sh`
 
-### Latency: model residency & warmup
+### Runtime: direct `llama-server` (not Ollama)
 
-Cold-loading the Qwen weights into memory can add several seconds to the first
-inference. Two mechanisms keep the model hot:
+By default `start_qwen_local.sh` launches **`llama-server` directly** (the binary
+bundled inside `Ollama.app`) instead of letting Ollama manage it. The reason is
+latency: Ollama derives `--image-min-tokens` from the model's baked vision config
+(**1024** for `qwen2.5vl`) and exposes no env var or Modelfile `PARAMETER` to
+lower it. That visual-token floor is the dominant prefill cost. Running
+`llama-server` ourselves lets us pass `--image-min-tokens 256 --image-max-tokens
+512`.
 
-- **Residency**: `start_qwen_local.sh` exports `OLLAMA_KEEP_ALIVE=-1` (override
-  by exporting your own value first, e.g. `OLLAMA_KEEP_ALIVE=24h`) so Ollama
-  keeps the model resident instead of unloading it between requests. Note: `-1`
-  pins weights in memory — on a 16GB Mac, running `3B` resident alongside `7B`
-  will contend for RAM; pick one resident model at a time.
-- **Warmup**: `start_qwen_local.sh` fires one tiny 1×1-pixel inference after the
-  model is pulled, and the backend also warms the model on startup
-  (`QWEN_WARMUP_ON_STARTUP=1` by default; set `0` to disable). Warmup is
-  best-effort — failures are logged, not fatal.
+Measured on the same 448px frame (M4 Air, 16GB):
+
+| `image-min-tokens` | prompt tokens | **prefill** | decode |
+|---|---|---|---|
+| 1024 (Ollama default) | 1048 | **~5.0 s** | ~1.4 s |
+| 256 (this runtime) | 280 | **~1.3 s** | ~1.2 s |
+
+Prefill drops ~4× with no measurable quality loss for scene description. Ollama
+is still used purely as the **model downloader** (`ollama pull` writes the blob
+store the runtime reads).
+
+- **Config** (env overrides): `LLAMA_PORT` (11435), `IMAGE_MIN_TOKENS` (256),
+  `IMAGE_MAX_TOKENS` (512), `LLAMA_SERVER_BIN`, `OLLAMA_MODELS_DIR`,
+  `MODEL` (`qwen2.5vl:3b`).
+- **Fallback to Ollama**: set `USE_OLLAMA=1` to use the old Ollama-managed
+  runtime (image-min-tokens locked at 1024, API on `:11434`). Everything
+  downstream is unchanged; only the API base differs.
+- **Crash recovery**: `bash ./start_qwen_local.sh supervise` runs a foreground
+  supervisor that restarts `llama-server` if it exits, logging each restart
+  (No Silent Failures). Logs at `/tmp/qwen-llama-server.log`, pid at
+  `/tmp/qwen-llama-server.pid`.
+- **Warmup**: after the server is healthy, `start_qwen_local.sh` fires one tiny
+  32×32 JPEG inference so the vision path is hot before the first camera frame.
+  Best-effort and bounded by `--max-time` — failures are logged, not fatal.
 - **Decode length**: `max_tokens` is smaller for incremental continuous frames
   (`QWEN_MAX_TOKENS_INCREMENTAL`, default 96) than for full descriptions
   (`QWEN_MAX_TOKENS_FULL`, default 160), since "only report the change" answers
   are naturally short.
 
-> Honest expectation: these bring a single 3B frame from ~10s down to ~3–5s on a
-> 16GB Mac — they do **not** reach 1s. The sub-second *feel* comes from the
-> scene-memory gating below: most stationary frames are never sent or spoken at
-> all.
+> Honest expectation: the direct runtime brings a single 3B frame to ~2.5 s on a
+> 16GB Mac (prefill ~1.3 s + decode ~1.2 s) — it does **not** reach 1s for a
+> full-frame inference. The sub-second *feel* comes from the scene-memory gating
+> below: most stationary frames are never re-inferred or re-spoken.
 
 ## Real Device Networking Notes
 

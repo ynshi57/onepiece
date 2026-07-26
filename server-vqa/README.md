@@ -49,24 +49,36 @@ export QWEN_TIMEOUT_SECONDS="45"
 
 Without these vars, backend uses the local heuristic fallback path.
 
-### Local free setup via Ollama (recommended for <=16GB)
+### Local free setup (recommended for <=16GB)
+
+Runs `llama-server` directly (via the binary bundled in `Ollama.app`) with a
+lowered `--image-min-tokens` for ~4× faster prefill; Ollama is used only to
+download the model. See the root README "Local Qwen Setup" for the why and the
+before/after latency numbers.
 
 ```bash
-# auto-install (if possible), auto-start service, then pull model
-bash ../start_qwen_local.sh
+# pull model via Ollama if needed, then launch llama-server on :11435
+bash ../start_qwen_local.sh          # start | stop | status | supervise
 
-export QWEN_API_BASE_URL="http://127.0.0.1:11434"
+export QWEN_API_BASE_URL="http://127.0.0.1:11435"
 export QWEN_MODEL="qwen2.5vl:3b"
 
 # one command for Qwen + backend
 bash ../start_local_vqa.sh
 ```
 
+To fall back to the old Ollama-managed runtime (image-min-tokens locked at 1024,
+API on `:11434`):
+
+```bash
+USE_OLLAMA=1 bash ../start_local_vqa.sh
+```
+
 To try the more accurate but slower 7B model:
 
 ```bash
 MODEL=qwen2.5vl:7b bash ../start_qwen_local.sh
-QWEN_API_BASE_URL="http://127.0.0.1:11434" QWEN_MODEL="qwen2.5vl:7b" bash ../start_backend.sh
+QWEN_API_BASE_URL="http://127.0.0.1:11435" QWEN_MODEL="qwen2.5vl:7b" bash ../start_backend.sh
 ```
 
 The iOS app can also send a per-frame `model` override (`qwen2.5vl:3b` or
