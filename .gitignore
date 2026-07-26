@@ -1,0 +1,10 @@
+.venv/
+.pytest_cache/
+__pycache__/
+build/
+deploy/logs/
+ios-vqa-app/vendor/
+ios-vqa-app/.bundle/
+ios-vqa-app/.bundle-home/
+ios-vqa-app/fastlane/.env
+deploy/ios/ExportOptions.plist

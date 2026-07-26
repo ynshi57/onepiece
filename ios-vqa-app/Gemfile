@@ -1,0 +1,4 @@
+source "https://rubygems.org"
+
+gem "fastlane", "~> 2.228"
+gem "public_suffix", "< 6.0"

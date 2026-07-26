@@ -1,0 +1,30 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Build app for CI checks"
+  lane :ci_build do
+    build_app(
+      scheme: ENV.fetch("SCHEME", "VQASee"),
+      export_method: "development"
+    )
+  end
+
+  desc "Run unit and UI tests"
+  lane :ci_test do
+    run_tests(
+      scheme: ENV.fetch("SCHEME", "VQASee"),
+      devices: [ENV.fetch("TEST_DEVICE", "iPhone 17")]
+    )
+  end
+
+  desc "Build and upload to TestFlight"
+  lane :beta do
+    build_app(
+      scheme: ENV.fetch("SCHEME", "VQASee"),
+      export_method: "app-store"
+    )
+    upload_to_testflight(
+      skip_waiting_for_build_processing: true
+    )
+  end
+end

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild -version)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(swiftc -parse VQASee/ContentView.swift)"
+    ]
+  }
+}

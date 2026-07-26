@@ -1,0 +1,3 @@
+app_identifier(ENV.fetch("APP_IDENTIFIER", "com.example.vqasee"))
+apple_id(ENV.fetch("APPLE_ID", "your-apple-id@example.com"))
+team_id(ENV.fetch("APPLE_TEAM_ID", "REPLACE_WITH_TEAM_ID"))
