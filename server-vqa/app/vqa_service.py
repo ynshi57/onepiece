@@ -149,19 +149,94 @@ def run_vqa(prompt: str) -> dict:
     return _heuristic_vqa(prompt=prompt)
 
 
-def _resolve_qwen_model(qwen_api_base_url: str, model_override: str = "") -> str:
-    requested_model = model_override.strip()
-    if requested_model in ALLOWED_MODEL_OVERRIDES:
-        return requested_model
-
+def _default_qwen_model(qwen_api_base_url: str) -> str:
     qwen_model = os.getenv("QWEN_MODEL", "").strip()
     if qwen_model:
         return qwen_model
 
     if "127.0.0.1:11434" in qwen_api_base_url or "localhost:11434" in qwen_api_base_url:
         return "qwen2.5vl:3b"
+    if "127.0.0.1:11435" in qwen_api_base_url or "localhost:11435" in qwen_api_base_url:
+        return "qwen2.5vl:3b"
     return "Qwen/Qwen2.5-VL-3B-Instruct"
 
+
+def _supports_dynamic_model_selection(qwen_api_base_url: str) -> bool:
+    """Whether one API endpoint can honestly switch models per request.
+
+    Our direct llama-server runtime (:11435 by default) loads exactly one model
+    process. Sending a different `model` field to that endpoint does NOT switch
+    weights, so honoring iOS' per-frame override there is misleading. Ollama
+    (:11434) and cloud/OpenAI-compatible endpoints can route dynamically.
+    """
+    local_direct = (
+        "127.0.0.1:11435" in qwen_api_base_url
+        or "localhost:11435" in qwen_api_base_url
+    )
+    return not local_direct
+
+
+def _resolve_qwen_model_info(qwen_api_base_url: str, model_override: str = "") -> dict:
+    configured_model = _default_qwen_model(qwen_api_base_url)
+    requested_model = model_override.strip()
+    dynamic = _supports_dynamic_model_selection(qwen_api_base_url)
+
+    if dynamic and requested_model in ALLOWED_MODEL_OVERRIDES:
+        resolved_model = requested_model
+        routing_reason = "override"
+    else:
+        resolved_model = configured_model
+        if requested_model and requested_model != configured_model:
+            routing_reason = "single_runtime_ignored_override" if not dynamic else "unsupported_override"
+        else:
+            routing_reason = "configured"
+
+    return {
+        "api_base_url": qwen_api_base_url,
+        "configured_model": configured_model,
+        "requested_model": requested_model,
+        "resolved_model": resolved_model,
+        "dynamic_model_selection": dynamic,
+        "routing_reason": routing_reason,
+        "allowed_overrides": sorted(ALLOWED_MODEL_OVERRIDES),
+    }
+
+
+def _resolve_qwen_model(qwen_api_base_url: str, model_override: str = "") -> str:
+    return _resolve_qwen_model_info(
+        qwen_api_base_url=qwen_api_base_url,
+        model_override=model_override,
+    )["resolved_model"]
+
+
+def runtime_status() -> dict:
+    qwen_api_base_url = os.getenv("QWEN_API_BASE_URL", "").rstrip("/")
+    if not qwen_api_base_url:
+        return {
+            "status": "heuristic",
+            "api_base_url": "",
+            "configured_model": "",
+            "resolved_model": "",
+            "dynamic_model_selection": False,
+            "available_models": [],
+            "message": "QWEN_API_BASE_URL not set; backend uses heuristic fallback.",
+        }
+
+    info = _resolve_qwen_model_info(qwen_api_base_url=qwen_api_base_url)
+    available_models = info["allowed_overrides"] if info["dynamic_model_selection"] else [info["resolved_model"]]
+    return {
+        "status": "qwen",
+        "api_base_url": qwen_api_base_url,
+        "configured_model": info["configured_model"],
+        "resolved_model": info["resolved_model"],
+        "dynamic_model_selection": info["dynamic_model_selection"],
+        "available_models": available_models,
+        "routing_reason": info["routing_reason"],
+        "image_min_tokens": os.getenv("IMAGE_MIN_TOKENS", "256"),
+        "image_max_tokens": os.getenv("IMAGE_MAX_TOKENS", "512"),
+        "max_tokens_incremental": _MAX_TOKENS_INCREMENTAL,
+        "max_tokens_full": _MAX_TOKENS_FULL,
+    }
 
 # These are output CEILINGS, not fixed costs: with the slim JSON schema below the
 # model emits `finish_reason: stop` at ~70-130 tokens, so a higher ceiling adds
@@ -243,10 +318,11 @@ def run_vqa_from_frame(
     qwen_api_base_url = os.getenv("QWEN_API_BASE_URL", "").rstrip("/")
     if not qwen_api_base_url:
         return _heuristic_vqa(prompt=prompt)
-    qwen_model = _resolve_qwen_model(
+    model_info = _resolve_qwen_model_info(
         qwen_api_base_url=qwen_api_base_url,
         model_override=model_override,
     )
+    qwen_model = model_info["resolved_model"]
 
     try:
         timeout_seconds = float(os.getenv("QWEN_TIMEOUT_SECONDS", "45"))
@@ -320,11 +396,18 @@ def run_vqa_from_frame(
         response.raise_for_status()
         response_data = response.json()
         content = response_data["choices"][0]["message"]["content"]
-        return _parse_qwen_content(content=content, fallback_prompt=prompt)
+        parsed = _parse_qwen_content(content=content, fallback_prompt=prompt)
+        parsed["requested_model"] = model_info["requested_model"]
+        parsed["resolved_model"] = model_info["resolved_model"]
+        parsed["model_routing_reason"] = model_info["routing_reason"]
+        return parsed
     except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
         logger.exception("Qwen inference failed; fallback to heuristic path: %s", exc)
         fallback = _heuristic_vqa(prompt=prompt)
         fallback["description"] = f"{fallback['description']} (fallback due to inference error)"
+        fallback["requested_model"] = model_info["requested_model"]
+        fallback["resolved_model"] = model_info["resolved_model"]
+        fallback["model_routing_reason"] = model_info["routing_reason"]
         return fallback
 
 

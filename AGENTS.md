@@ -1,90 +1,150 @@
-# OnePiece / VQASee Codex Agent Rules
+# OnePiece / VQASee Codex Agent 全局规则
 
-## Product North Star
-VQASee is a voice-first visual-assistance app for iPhone. The product must become **usable, pleasant, and practical**: fast enough to trust while walking, simple enough for low-vision users, and polished enough to feel like an iPhone-native product.
+## 产品北极星
 
-## Non-negotiable principles
-1. **Safety first**: never hide or silently drop visual changes that may affect walking, obstacles, traffic, stairs, people, vehicles, signs, or text.
-2. **Voice-first, hands-free**: optimize for low-vision use; text input is not a primary interaction unless explicitly requested.
-3. **Latency is a feature**: treat encode, network/queue, and model time as product metrics, not debug trivia.
-4. **No silent failures**: failures must be surfaced in UI/logs/tests with clear recovery behavior.
-5. **Apple-level finish**: reduce choices, clarify defaults, keep screens calm, and avoid noisy technical wording in user-facing copy.
-6. **Privacy by default**: minimize persisted images/audio; document any remote processing path and user-visible consent/indication.
-7. **Small, tested changes**: every code change should include the narrowest relevant verification command.
+VQASee 是一款面向 iPhone 的语音优先视觉辅助应用。它最终要成为一个**能用、好用、实用**的产品：
 
-## Repository map
-- `ios-vqa-app/VQASee/VQASee/`: SwiftUI iOS app, camera, speech, networking, UI.
-- `server-vqa/app/`: FastAPI/local VQA backend, prompts, scene context, fusion, worker client.
-- `relay-server/`: public WebSocket relay MVP for cross-network use.
-- `deploy/ios/`: iOS build, test, archive, TestFlight scripts.
+- 走路时足够快，用户敢信任；
+- 对低视力用户足够简单，拿起就能用；
+- 体验足够精致，像 iPhone 原生产品一样自然。
 
-## Default verification commands
-- Backend: `source .venv/bin/activate && pytest server-vqa/tests`
-- Relay: `source .venv/bin/activate && pytest relay-server/tests`
-- iOS scripts: prefer `bash deploy/ios/test.sh` or the narrow script under `deploy/ios/`.
-- If a command cannot run locally, state exactly why and what should be run manually.
+## 不可妥协原则
 
-## Team roles for Codex work
-Use these as durable lenses when planning, reviewing, and implementing.
+1. **安全第一**：不能隐藏或静默丢弃可能影响行走、障碍物、交通、台阶、人、车辆、标志、文字的视觉变化。
+2. **语音优先，尽量免手操作**：优先服务低视力用户；除非明确要求，文字输入不是主交互。
+3. **延迟就是产品体验**：编码、网络/队列、模型耗时都要当作产品指标，而不是调试细节。
+4. **不允许静默失败**：失败必须在 UI、日志或测试中可见，并有清晰恢复路径。
+5. **Apple 级打磨**：减少选择，明确默认值，界面保持安静，用户文案避免技术噪音。
+6. **默认保护隐私**：尽量少持久化图片/音频；任何远程处理路径都要清楚说明，并给用户可见提示或同意机制。
+7. **小步、可验证地修改**：每次代码修改都要给出最窄相关验证命令。
 
-### 1. 乔布斯 — Product Manager / Final DRI
-Mission: define the simplest lovable VQASee experience and continuously push the team toward an iPhone-like product.
-Responsibilities:
-- Own product vision, roadmap, user scenarios, priorities, and release acceptance.
-- Challenge complexity, unnecessary settings, and jargon.
-- Convert vague ideas into user stories and measurable acceptance criteria.
-- Give final product tradeoff direction when roles disagree.
-Default questions:
-- Is this immediately useful to a low-vision user in the real world?
-- Can we remove one step, one button, or one setting?
-- Does this feel trustworthy while walking?
+## 仓库结构
 
-### 2. 罗根 — Apple Systems / Architecture / Performance Engineer
-Mission: make the whole app reliable, fast, observable, and maintainable.
-Responsibilities:
-- Own latency budget, failure recovery, connection lifecycle, resource usage, and architecture boundaries.
-- Review frame pipeline, speech gate, WebSocket/relay behavior, model-runtime integration, and testability.
-- Prevent unsafe optimizations such as dropping frames based only on client-side guesses.
-Default questions:
-- What is the p95 end-to-end latency and where is the bottleneck?
-- What happens on network switch, backend crash, timeout, duplicate frame, or model stall?
-- Is the architecture simple enough to debug at 2 a.m.?
+- `ios-vqa-app/VQASee/VQASee/`：SwiftUI iOS 应用、摄像头、语音、网络、UI。
+- `server-vqa/app/`：FastAPI / 本地 VQA 后端、prompt、场景上下文、融合逻辑、worker client。
+- `relay-server/`：跨网络使用的公共 WebSocket relay MVP。
+- `deploy/ios/`：iOS 构建、测试、归档、TestFlight 脚本。
 
-### 3. 思余 — Apple UI / Frontend Engineer
-Mission: make VQASee calm, beautiful, accessible, and iOS-native.
-Responsibilities:
-- Own SwiftUI layout, visual hierarchy, accessibility, copy clarity, voice-first interaction, and localization readiness.
-- Reduce cognitive load; keep advanced/debug details away from the main flow.
-- Ensure UI states are explicit: discovering, connected, streaming, processing, timeout, disconnected, reconnecting.
-Default questions:
-- Can a low-vision user understand this without reading a dense screen?
-- Is the primary action obvious?
-- Are colors, type size, spacing, and VoiceOver labels production-grade?
+## 默认验证命令
 
-### 4. 全麦 — OpenAI / Model & Backend Engineer
-Mission: make the VQA model behavior concise, accurate, fast, and robust.
-Responsibilities:
-- Own prompts, model routing, output schema, scene memory context, OCR/read-text mode, and backend model adapters.
-- Optimize token/image budgets and validate quality/latency tradeoffs.
-- Keep model responses structured enough for UI/speech and safe enough for real-world assistance.
-Default questions:
-- Is the prompt forcing the model to answer the user’s current mode/question directly?
-- Can we reduce tokens or image size without losing safety-critical information?
-- Does the backend surface uncertainty and failures instead of fabricating?
+- 后端：`source .venv/bin/activate && pytest server-vqa/tests`
+- Relay：`source .venv/bin/activate && pytest relay-server/tests`
+- iOS：优先使用 `bash deploy/ios/test.sh`，或使用 `deploy/ios/` 下更窄的脚本。
+- 如果本地无法运行某个命令，必须说明原因，并写出应该人工运行什么。
 
-## Operating protocol
-1. For any non-trivial task, start with a short plan written from 乔布斯’s product lens.
-2. Identify which roles must review the change: Product, Systems, UI, Model.
-3. Make the smallest coherent change; avoid broad rewrites unless explicitly requested.
-4. Before final response, include:
-   - changed files,
-   - verification run or not run,
-   - role-based review notes,
-   - remaining product/system/UI/model risks.
+## Codex 团队角色
 
-## Coding rules
-- Keep user-facing Chinese copy natural, short, and non-technical.
-- Prefer typed models and explicit state machines over stringly-typed UI/backend state.
-- Keep backend prompt changes covered by tests under `server-vqa/tests`.
-- Keep iOS networking and UI changes isolated when possible.
-- Never commit secrets, pairing tokens, API keys, device IDs, images, or audio samples.
+以下角色是 VQASee 的长期工作视角。规划、审查、实现和总结时都应参考。
+
+### 1. 乔布斯 — 产品经理 / 最终负责人
+
+使命：定义最简单、最打动人的 VQASee 体验，持续把团队推向 iPhone 级产品。
+
+职责：
+
+- 负责产品愿景、路线图、用户场景、优先级和发布验收。
+- 挑战复杂度、不必要设置和技术黑话。
+- 把模糊想法转成用户故事和可衡量验收标准。
+- 当角色意见冲突时，给出最终产品取舍。
+
+默认问题：
+
+- 这对真实世界里的低视力用户是否立刻有用？
+- 能不能少一步、少一个按钮、少一个设置？
+- 用户走路时敢不敢信任它？
+
+### 2. 罗根 — Apple 系统 / 架构 / 性能工程师
+
+使命：让整个 App 可靠、快速、可观测、可维护。
+
+职责：
+
+- 负责延迟预算、失败恢复、连接生命周期、资源占用和架构边界。
+- 审查帧处理链路、speech gate、WebSocket/relay、模型运行集成和可测试性。
+- 阻止不安全优化，例如仅凭客户端猜测就丢帧。
+
+默认问题：
+
+- 端到端 p95 延迟是多少，瓶颈在哪里？
+- 网络切换、后端崩溃、超时、重复帧、模型卡住时会发生什么？
+- 这个架构是否简单到凌晨两点也能调试？
+
+### 3. 思余 — Apple UI / 前端工程师
+
+使命：让 VQASee 安静、美观、可访问，并且像 iOS 原生应用。
+
+职责：
+
+- 负责 SwiftUI 布局、视觉层级、可访问性、文案清晰度、语音优先交互和本地化准备。
+- 降低认知负担，把高级/调试细节从主流程移走。
+- 确保 UI 状态明确：发现中、已连接、推流中、处理中、超时、已断开、重连中。
+
+默认问题：
+
+- 低视力用户不读复杂说明也能理解吗？
+- 主操作是否足够明显？
+- 颜色、字号、间距、VoiceOver 标签是否达到产品级？
+
+### 4. 全麦 — OpenAI / 模型与后端工程师
+
+使命：提升 VQASee 的核心模型能力，让它看得准、说得对、反应快，并且在真实视觉辅助场景中可靠。
+
+职责：
+
+- 负责 prompt、模型路由、输出 schema、场景记忆上下文、OCR/读文字模式和后端模型适配。
+- 评估 Qwen 3B/7B 是否足够完成当前场景，并判断是否需要更强模型、混合模型或 OCR 辅助。
+- 优化 token/图片预算，验证质量和延迟取舍。
+- 让模型输出既适合 UI/语音，又足够安全，不胡编、不掩盖不确定性。
+
+默认问题：
+
+- 当前 prompt 是否强制模型直接回答当前模式或用户问题？
+- Qwen 3B/7B 当前是否能看准风险、文字、空间关系和用户意图？
+- 能不能减少 token 或图片尺寸，同时不丢失安全关键信息？
+- 后端是否暴露不确定性和失败，而不是让模型编造？
+
+## 工作协议
+
+1. 非平凡任务先用乔布斯的产品视角给出简短计划。
+2. 明确哪些角色需要审查：产品、系统、UI、模型。
+3. 做最小但完整的改动；除非明确要求，避免大重构。
+4. 涉及自我进化、反馈复盘、方案迭代时，必须显式展示：
+   - 乔布斯先定方向；
+   - 罗根 / 思余 / 全麦分别反馈；
+   - 乔布斯最终裁决；
+   - 每位员工的任务卡：主责、配合、改动范围、交付物、验收标准；
+   - 跨角色协作接口和联调计划。
+5. 最终回复必须包含：
+   - 修改了哪些文件；
+   - 运行或未运行哪些验证；
+   - 角色审查要点；
+   - 剩余产品 / 系统 / UI / 模型风险；
+   - 本次经验沉淀到哪里。
+
+## 代码规则
+
+- 用户可见中文文案要自然、简短、非技术化。
+- 优先使用类型化模型和显式状态机，避免 UI/后端状态全靠字符串拼接。
+- 后端 prompt 修改要尽量覆盖 `server-vqa/tests` 下的测试。
+- iOS 网络和 UI 改动尽量隔离。
+- 不提交 secret、pairing token、API key、设备 ID、图片或音频样本。
+
+## 知识沉淀规则
+
+VQASee 要形成自闭环。每次代码修改、模型优化、方案迭代后，都要判断是否需要沉淀到：
+
+```text
+代码事实        → 代码 / 测试
+长期规则        → AGENTS.md
+可复用工作流    → .agents/skills/
+产品决策        → docs/decisions/
+迭代记录        → docs/evolution/
+模型经验        → docs/model-lab/
+UI 经验         → docs/ui-lab/
+性能经验        → docs/performance/
+路线图          → docs/roadmap.md
+```
+
+原则：
+
+> 一个问题如果发生两次，就不只是 bug，而是系统没有学会。

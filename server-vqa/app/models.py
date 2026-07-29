@@ -28,6 +28,9 @@ class VqaResponse(BaseModel):
     ocr_text: str
     change_significance: str = "major"
     changes: str = ""
+    requested_model: str = ""
+    resolved_model: str = ""
+    model_routing_reason: str = ""
     gps_location: Optional[Dict]
     latency_ms: Optional[float]
     timestamp: str

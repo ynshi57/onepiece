@@ -117,6 +117,42 @@ def test_response_format_falls_back_to_json_object_for_ollama():
     assert rf == {"type": "json_object"}
 
 
+def test_direct_llama_runtime_ignores_model_override(monkeypatch):
+    monkeypatch.setenv("QWEN_MODEL", "qwen2.5vl:3b")
+    info = vqa_service._resolve_qwen_model_info(
+        "http://127.0.0.1:11435",
+        model_override="qwen2.5vl:7b",
+    )
+
+    assert info["dynamic_model_selection"] is False
+    assert info["requested_model"] == "qwen2.5vl:7b"
+    assert info["resolved_model"] == "qwen2.5vl:3b"
+    assert info["routing_reason"] == "single_runtime_ignored_override"
+
+
+def test_ollama_runtime_allows_model_override(monkeypatch):
+    monkeypatch.setenv("QWEN_MODEL", "qwen2.5vl:3b")
+    info = vqa_service._resolve_qwen_model_info(
+        "http://127.0.0.1:11434",
+        model_override="qwen2.5vl:7b",
+    )
+
+    assert info["dynamic_model_selection"] is True
+    assert info["resolved_model"] == "qwen2.5vl:7b"
+    assert info["routing_reason"] == "override"
+
+
+def test_runtime_status_for_direct_llama_runtime(monkeypatch):
+    monkeypatch.setenv("QWEN_API_BASE_URL", "http://127.0.0.1:11435")
+    monkeypatch.setenv("QWEN_MODEL", "qwen2.5vl:3b")
+    status = vqa_service.runtime_status()
+
+    assert status["status"] == "qwen"
+    assert status["dynamic_model_selection"] is False
+    assert status["available_models"] == ["qwen2.5vl:3b"]
+    assert status["resolved_model"] == "qwen2.5vl:3b"
+
+
 def test_truncated_json_surfaces_reason_not_person():
     # Simulate what the model emits when cut off mid-object (the real bug):
     # invalid JSON. It must NOT become a fabricated person.

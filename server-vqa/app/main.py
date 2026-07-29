@@ -10,7 +10,7 @@ from app.discovery import BonjourAdvertiser
 from app.fusion import fuse_vqa_result
 from app.models import VqaRequest, VqaResponse
 from app.signaling import handle_signaling_websocket
-from app.vqa_service import run_vqa, warmup_model
+from app.vqa_service import run_vqa, runtime_status, warmup_model
 
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,11 @@ app = FastAPI(title="Local VQA Server", version="0.1.0", lifespan=lifespan)
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/runtime/status")
+def runtime_status_endpoint() -> dict:
+    return runtime_status()
 
 
 @app.post("/v1/vqa", response_model=VqaResponse)

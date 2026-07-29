@@ -13,6 +13,16 @@ def test_health_endpoint():
     assert response.json() == {"status": "ok"}
 
 
+def test_runtime_status_endpoint_returns_truth_source():
+    response = client.get("/runtime/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "status" in payload
+    assert "dynamic_model_selection" in payload
+    assert "available_models" in payload
+
+
 def test_vqa_endpoint_returns_fused_response():
     response = client.post(
         "/v1/vqa",
