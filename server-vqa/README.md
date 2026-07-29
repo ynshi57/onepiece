@@ -105,7 +105,7 @@ bash ../start_worker.sh
 The worker receives `inference_request` messages from the relay, runs local VQA,
 and sends `inference_result` back through the relay. It enforces:
 
-- `MAX_FRAME_BASE64_BYTES` default `300000`
+- `MAX_FRAME_BASE64_BYTES` default `900000`
 - `WORKER_INFERENCE_TIMEOUT_SECONDS` default `20`
 - `WORKER_DROP_IF_BUSY` default `1`
 

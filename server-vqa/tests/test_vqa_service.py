@@ -99,6 +99,13 @@ def test_response_format_uses_json_schema_for_llama_server():
         "objects",
         "scene",
         "description",
+        "summary",
+        "spatial_description",
+        "risk_level",
+        "risk_message",
+        "suggested_action",
+        "spoken_text",
+        "ocr_text",
         "change_significance",
         "changes",
     }

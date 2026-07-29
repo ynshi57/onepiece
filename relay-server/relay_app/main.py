@@ -16,7 +16,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 PAIRING_TOKEN = os.getenv("RELAY_PAIRING_TOKEN", "dev-pairing-token")
-MAX_FRAME_BASE64_BYTES = _env_int("MAX_FRAME_BASE64_BYTES", 300_000)
+MAX_FRAME_BASE64_BYTES = _env_int("MAX_FRAME_BASE64_BYTES", 900_000)
 MAX_FRAMES_PER_MINUTE = _env_int("MAX_FRAMES_PER_MINUTE", 30)
 MAX_INFLIGHT_PER_CLIENT = _env_int("MAX_INFLIGHT_PER_CLIENT", 1)
 REQUEST_TIMEOUT_SECONDS = _env_int("RELAY_REQUEST_TIMEOUT_SECONDS", 30)
@@ -354,6 +354,16 @@ async def client_websocket(websocket: WebSocket) -> None:
                     }
                 )
                 continue
+            previous_image_base64 = message.get("previous_image_base64", "")
+            if isinstance(previous_image_base64, str) and len(previous_image_base64.encode("utf-8")) > MAX_FRAME_BASE64_BYTES:
+                await connection.send_json(
+                    {
+                        "type": "error",
+                        "request_id": request_id,
+                        "reason": "previous_frame_too_large",
+                    }
+                )
+                continue
 
             ok, reason, worker, expired = await state.enqueue_frame(
                 client_id=client_id,
@@ -384,6 +394,8 @@ async def client_websocket(websocket: WebSocket) -> None:
                     "question": str(message.get("question", "")),
                     "model": str(message.get("model", "")),
                     "image_base64": image_base64,
+                    "previous_image_base64": str(message.get("previous_image_base64", "")),
+                    "client_ocr_text": str(message.get("client_ocr_text", "")),
                     "gps": message.get("gps"),
                     "context": message.get("context"),
                 }

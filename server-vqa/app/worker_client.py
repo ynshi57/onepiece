@@ -23,7 +23,7 @@ def _env_int(name: str, default: int) -> int:
 RELAY_WORKER_URL = os.getenv("RELAY_WORKER_URL", "ws://127.0.0.1:9100/ws/worker")
 PAIRING_TOKEN = os.getenv("RELAY_PAIRING_TOKEN", "dev-pairing-token")
 WORKER_ID = os.getenv("WORKER_ID", "local-mac-worker")
-MAX_FRAME_BASE64_BYTES = _env_int("MAX_FRAME_BASE64_BYTES", 300_000)
+MAX_FRAME_BASE64_BYTES = _env_int("MAX_FRAME_BASE64_BYTES", 900_000)
 INFERENCE_TIMEOUT_SECONDS = _env_int("WORKER_INFERENCE_TIMEOUT_SECONDS", 20)
 DROP_IF_BUSY = os.getenv("WORKER_DROP_IF_BUSY", "1") != "0"
 RECONNECT_DELAY_SECONDS = _env_int("WORKER_RECONNECT_DELAY_SECONDS", 3)
@@ -45,10 +45,17 @@ def build_inference_result(message: dict) -> dict:
         question=question,
         legacy_prompt=str(message.get("prompt", "")),
     )
+    client_ocr_text = str(message.get("client_ocr_text", "")).strip()
+    if client_ocr_text:
+        prompt = (
+            f"{prompt}\n\n【客户端 OCR 文本】\n{client_ocr_text[:800]}\n"
+            "如果用户在读文字，请优先利用这段 OCR 文本，并结合图像确认。"
+        )
     prompt = build_contextual_prompt(prompt, mode=mode, context=context)
     incremental = context is not None and not question.strip()
     model = str(message.get("model", ""))
     image_base64 = message.get("image_base64")
+    previous_image_base64 = message.get("previous_image_base64", "")
     if not request_id:
         return {"type": "inference_error", "reason": "missing_request_id"}
     if not isinstance(image_base64, str) or not image_base64:
@@ -63,6 +70,12 @@ def build_inference_result(message: dict) -> dict:
             "request_id": request_id,
             "reason": "frame_too_large",
         }
+    if isinstance(previous_image_base64, str) and len(previous_image_base64.encode("utf-8")) > MAX_FRAME_BASE64_BYTES:
+        return {
+            "type": "inference_error",
+            "request_id": request_id,
+            "reason": "previous_frame_too_large",
+        }
 
     started_at = perf_counter()
     gps_payload = normalize_gps(message.get("gps"))
@@ -71,6 +84,7 @@ def build_inference_result(message: dict) -> dict:
         image_base64=image_base64,
         model_override=model,
         incremental=incremental,
+        previous_image_base64=previous_image_base64 if isinstance(previous_image_base64, str) else "",
     )
     latency_ms = (perf_counter() - started_at) * 1000.0
     fused_result = fuse_vqa_result(

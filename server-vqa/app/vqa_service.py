@@ -168,8 +168,8 @@ def _resolve_qwen_model(qwen_api_base_url: str, model_override: str = "") -> str
 # no latency but prevents mid-JSON truncation (finish_reason: length -> invalid
 # JSON -> "模型未按要求输出" on every frame). The old 96/160 values were BELOW the
 # minimum size of a valid Chinese JSON object, so every response was truncated.
-_MAX_TOKENS_INCREMENTAL = _env_int("QWEN_MAX_TOKENS_INCREMENTAL", 220)
-_MAX_TOKENS_FULL = _env_int("QWEN_MAX_TOKENS_FULL", 360)
+_MAX_TOKENS_INCREMENTAL = _env_int("QWEN_MAX_TOKENS_INCREMENTAL", 420)
+_MAX_TOKENS_FULL = _env_int("QWEN_MAX_TOKENS_FULL", 640)
 
 
 # Slim output schema. The mode prompts in prompts.py are prose instructions
@@ -185,10 +185,30 @@ _VQA_JSON_SCHEMA = {
         "objects": {"type": "array", "items": {"type": "string"}},
         "scene": {"type": "string"},
         "description": {"type": "string"},
+        "summary": {"type": "string"},
+        "spatial_description": {"type": "string"},
+        "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
+        "risk_message": {"type": "string"},
+        "suggested_action": {"type": "string"},
+        "spoken_text": {"type": "string"},
+        "ocr_text": {"type": "string"},
         "change_significance": {"type": "string", "enum": ["none", "minor", "major"]},
         "changes": {"type": "string"},
     },
-    "required": ["objects", "scene", "description", "change_significance", "changes"],
+    "required": [
+        "objects",
+        "scene",
+        "description",
+        "summary",
+        "spatial_description",
+        "risk_level",
+        "risk_message",
+        "suggested_action",
+        "spoken_text",
+        "ocr_text",
+        "change_significance",
+        "changes",
+    ],
     "additionalProperties": False,
 }
 
@@ -214,8 +234,11 @@ def run_vqa_from_frame(
     image_base64: str,
     model_override: str = "",
     incremental: bool = False,
+    previous_image_base64: str = "",
 ) -> dict:
     base64.b64decode(image_base64, validate=True)
+    if previous_image_base64:
+        base64.b64decode(previous_image_base64, validate=True)
 
     qwen_api_base_url = os.getenv("QWEN_API_BASE_URL", "").rstrip("/")
     if not qwen_api_base_url:
@@ -232,6 +255,28 @@ def run_vqa_from_frame(
 
     max_tokens = _MAX_TOKENS_INCREMENTAL if incremental else _MAX_TOKENS_FULL
 
+    user_content = [{"type": "text", "text": prompt or "Describe the scene in the image."}]
+    if previous_image_base64:
+        user_content.append(
+            {
+                "type": "text",
+                "text": "上一帧图像如下，仅用于比较变化，不要把上一帧当作当前事实：",
+            }
+        )
+        user_content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{previous_image_base64}"},
+            }
+        )
+        user_content.append({"type": "text", "text": "当前帧图像如下，请以当前帧为准："})
+    user_content.append(
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+        }
+    )
+
     request_payload = {
         "model": qwen_model,
         "temperature": 0,
@@ -241,35 +286,27 @@ def run_vqa_from_frame(
             {
                 "role": "system",
                 "content": (
-                    # Slim schema: only fields the backend cannot derive. fusion.py
-                    # produces summary/spatial_description/risk_*/suggested_action/
-                    # spoken_text from `description` + `objects`, so requiring the
-                    # model to also emit them just inflated output length and caused
-                    # mid-JSON truncation. Objects MUST be short strings (never bbox
-                    # dicts) or _normalize_qwen_payload drops them.
                     "You are a visual-assistance VQA parser for blind or low-vision users. "
                     "Output strict JSON only, no Markdown fences. Required keys: "
                     "objects(list of short Chinese strings, e.g. [\"行人\",\"台阶\"] — NEVER bounding boxes or dicts), "
-                    "scene(str), "
-                    "description(one concise Chinese sentence describing what is ahead, using directions 左侧/正前方/右侧/近处/远处 when visible), "
-                    "change_significance(str: none|minor|major), changes(str). "
+                    "scene(str), description(str), summary(str), spatial_description(str), "
+                    "risk_level(low|medium|high), risk_message(str), suggested_action(str), "
+                    "spoken_text(str), ocr_text(str), change_significance(str: none|minor|major), changes(str). "
                     "Do not invent certainty: use 可能/疑似 when unsure. "
+                    "spatial_description MUST mention 左侧、正前方、右侧 when visible; say 信息不足 when not visible. "
+                    "suggested_action must be a direct action for the user, not a generic description. "
+                    "If client OCR text is provided, use it for ocr_text and text-reading answers, but correct obvious OCR noise. "
                     "For walking safety, prioritize obstacles, people, vehicles, stairs, doors, edges. "
                     "When a 【连续观察上下文】 block is present, report only important changes: set "
                     "change_significance to none when nothing important changed (keep description short), "
                     "minor for small changes, major when the user must pay attention; put the delta in changes. "
-                    "Without that block, set change_significance to major and leave changes empty."
+                    "If previous and current images are both provided, compare them but answer using the current image. "
+                    "Without context, set change_significance to major and leave changes empty."
                 ),
             },
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt or "Describe the scene in the image."},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
-                    },
-                ],
+                "content": user_content,
             },
         ],
     }

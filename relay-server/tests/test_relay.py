@@ -57,6 +57,8 @@ def test_relay_routes_frame_request_to_worker_and_result_to_client():
                     "mode": "walking",
                     "question": "前面是红灯还是绿灯？",
                     "model": "qwen2.5vl:7b",
+                    "client_ocr_text": "出口 EXIT",
+                    "previous_image_base64": SAMPLE_JPEG_BASE64,
                     "image_base64": SAMPLE_JPEG_BASE64,
                     "gps": {"lat": 37.123, "lon": -122.456},
                     "context": {
@@ -72,6 +74,8 @@ def test_relay_routes_frame_request_to_worker_and_result_to_client():
             assert routed_message["client_id"] == client_id
             assert routed_message["image_base64"] == SAMPLE_JPEG_BASE64
             assert routed_message["model"] == "qwen2.5vl:7b"
+            assert routed_message["client_ocr_text"] == "出口 EXIT"
+            assert routed_message["previous_image_base64"] == SAMPLE_JPEG_BASE64
             # mode/question must survive the relay hop (previously dropped)
             assert routed_message["mode"] == "walking"
             assert routed_message["question"] == "前面是红灯还是绿灯？"
@@ -129,7 +133,7 @@ def test_relay_rejects_frame_that_is_too_large():
                 {
                     "type": "frame_request",
                     "request_id": "req-large-001",
-                    "image_base64": "x" * 300_001,
+                    "image_base64": "x" * 900_001,
                 }
             )
 

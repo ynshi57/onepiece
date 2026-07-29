@@ -70,9 +70,11 @@ sends `client_register` first, then sends camera frames as `frame_request`.
 
 Current traffic limits in the app:
 
-- Maximum JPEG dimension: `448px`
-- JPEG quality target: `0.45`
-- Maximum JPEG bytes before Base64: `120KB`
+- Mode-aware JPEG limits:
+  - `行走`: `448px`, quality `0.45`, max `120KB`
+  - `周围`: `640px`, quality `0.55`, max `220KB`
+  - `详细`: `768px`, quality `0.62`, max `320KB`
+  - `读文字`: `1024px`, quality `0.72`, max `520KB`
 - Minimum continuous-frame interval: `2s`
 - Maximum in-flight frame requests: `1`
 
@@ -99,11 +101,16 @@ blind / low-vision users — no vertical scrolling of the page itself:
 
 Model selector (in Settings):
 
+- `自动` chooses model by mode (`行走` → 3B, other high-detail modes → 7B)
 - `快速 3B` sends `qwen2.5vl:3b`
 - `更准 7B` sends `qwen2.5vl:7b`
 
 Speech uses the built-in iOS `AVSpeechSynthesizer` (TTS) and `SFSpeechRecognizer`
 (voice questions). No extra voice library is needed.
+
+`读文字` and detail/question flows also run Apple Vision OCR on-device and send
+that text to the backend as a hint, so text reading does not rely solely on the
+VLM seeing small characters in the compressed frame.
 
 Before using `更准 7B`, pull the model on the Mac:
 

@@ -19,7 +19,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-MAX_FRAME_BASE64_BYTES = _env_int("MAX_FRAME_BASE64_BYTES", 300_000)
+MAX_FRAME_BASE64_BYTES = _env_int("MAX_FRAME_BASE64_BYTES", 900_000)
 
 
 def normalize_gps(raw_gps: object) -> Optional[Dict[str, float]]:
@@ -79,6 +79,12 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                     question=question,
                     legacy_prompt=str(message.get("prompt", "")),
                 )
+                client_ocr_text = str(message.get("client_ocr_text", "")).strip()
+                if client_ocr_text:
+                    prompt = (
+                        f"{prompt}\n\n【客户端 OCR 文本】\n{client_ocr_text[:800]}\n"
+                        "如果用户在读文字，请优先利用这段 OCR 文本，并结合图像确认。"
+                    )
                 prompt = build_contextual_prompt(prompt, mode=mode, context=context)
                 # A follow-up frame with prior context and no explicit question is an
                 # incremental "what changed" frame -> allow a shorter, faster answer.
@@ -86,12 +92,16 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                 model = str(message.get("model", ""))
                 gps_payload = normalize_gps(message.get("gps"))
                 image_base64 = message.get("image_base64")
+                previous_image_base64 = message.get("previous_image_base64", "")
                 started_at = perf_counter()
                 if not isinstance(image_base64, str) or not image_base64:
                     await websocket.send_json({"type": "error", "reason": "invalid_frame_payload"})
                     continue
                 if len(image_base64.encode("utf-8")) > MAX_FRAME_BASE64_BYTES:
                     await websocket.send_json({"type": "error", "reason": "frame_too_large"})
+                    continue
+                if isinstance(previous_image_base64, str) and len(previous_image_base64.encode("utf-8")) > MAX_FRAME_BASE64_BYTES:
+                    await websocket.send_json({"type": "error", "reason": "previous_frame_too_large"})
                     continue
 
                 try:
@@ -100,6 +110,7 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                         image_base64=image_base64,
                         model_override=model,
                         incremental=incremental,
+                        previous_image_base64=previous_image_base64 if isinstance(previous_image_base64, str) else "",
                     )
                 except (ValueError, binascii.Error):
                     await websocket.send_json({"type": "error", "reason": "invalid_frame_payload"})

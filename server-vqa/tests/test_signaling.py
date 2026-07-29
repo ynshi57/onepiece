@@ -67,7 +67,7 @@ def test_signaling_websocket_frame_message_returns_frame_level_vqa_result():
 def test_signaling_frame_with_context_assembles_continuity_prompt(monkeypatch):
     captured = {}
 
-    def fake_run_vqa_from_frame(prompt, image_base64, model_override="", incremental=False):
+    def fake_run_vqa_from_frame(prompt, image_base64, model_override="", incremental=False, previous_image_base64=""):
         captured["prompt"] = prompt
         captured["incremental"] = incremental
         return {
@@ -123,7 +123,7 @@ def test_signaling_websocket_rejects_oversized_frame():
                 "type": "frame",
                 "frame_id": "frame-too-large",
                 "prompt": "road scene",
-                "image_base64": "x" * 300_001,
+                "image_base64": "x" * 900_001,
             }
         )
         error_message = websocket.receive_json()

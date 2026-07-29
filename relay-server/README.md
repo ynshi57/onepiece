@@ -27,7 +27,7 @@ This relay intentionally avoids full login for now, but it still requires a shar
 
 Default limits:
 
-- `MAX_FRAME_BASE64_BYTES=300000`
+- `MAX_FRAME_BASE64_BYTES=900000`
 - `MAX_FRAMES_PER_MINUTE=30`
 - `MAX_INFLIGHT_PER_CLIENT=1`
 - `RELAY_REQUEST_TIMEOUT_SECONDS=30`

@@ -42,12 +42,11 @@ port forwarding or shared LAN is required.
 
 MVP relay limits:
 
-- Max frame Base64 bytes: `300000`
+- Max frame Base64 bytes: `900000`
 - Max frames per minute per client: `30`
 - Max in-flight requests per client: `1`
 - iOS default frame interval: `2s`
-- iOS default JPEG max dimension: `640px`
-- iOS default JPEG max bytes: `220KB`
+- iOS frame quality is mode-aware: 行走 448px/120KB, 周围 640px/220KB, 详细 768px/320KB, 读文字 1024px/520KB
 
 ## Local Qwen Setup (free/local)
 
@@ -169,9 +168,9 @@ The iOS app is now voice-first:
 - `scene / objects / latency` are kept in Advanced Settings as debug details.
 - Voice output uses iOS `AVSpeechSynthesizer`; no third-party speech library is
   required.
-- Continuous-mode frames are compressed to `448px`, JPEG quality `0.45`, and
-  at most `120KB` before Base64 to reduce local Qwen latency.
-- The app can switch between `qwen2.5vl:3b` and `qwen2.5vl:7b`.
+- Frame encoding is mode-aware: `行走` uses 448px/120KB for latency, `周围` uses 640px/220KB, `详细` uses 768px/320KB, and `读文字` uses 1024px/520KB for OCR/detail.
+- The app can switch between `自动`, `qwen2.5vl:3b` and `qwen2.5vl:7b`.
+  - `自动`: 行走 uses 3B; 周围/详细/读文字 use 7B.
   - `3B`: faster, good for continuous walking mode.
   - `7B`: usually better scene/spatial understanding, but slower and needs more RAM.
   - Before selecting `7B`, pull it once on the Mac:
@@ -219,6 +218,16 @@ The iOS app is now voice-first:
     audio session to record; it is restored to playback afterwards.
   - Requires the microphone and speech-recognition permissions (prompted on first
     use / on `开始视觉辅助`).
+- Model output is now visual-assistance structured, not a thin scene label: the
+  backend requests `summary`, `spatial_description`, `risk_level`,
+  `risk_message`, `suggested_action`, `spoken_text`, OCR text, and continuity
+  fields directly from the VLM via JSON Schema. `fusion.py` remains the safety
+  fallback, not the primary source of direction/risk intelligence.
+- When a previous frame exists, the client sends it along with the current frame
+  so the model can compare visual changes directly, not only through text
+  context. The prompt explicitly says the current frame is the source of truth.
+- `读文字`/detail/question flows run Apple Vision OCR on-device and attach the
+  OCR text to the frame request as a model hint.
 
 ## iOS Workflow
 
