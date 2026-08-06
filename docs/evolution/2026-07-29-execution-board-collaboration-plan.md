@@ -81,7 +81,7 @@ VQASee 下一轮不是继续堆功能，而是把“可信赖视觉辅助”拆�
 
 | ID | 优先级 | 状态 | 主责 | 配合 | 任务 | 交付物 | 验收标准 | 验证 |
 |---|---|---|---|---|---|---|---|---|
-| OP-001 | P0 | Ready | 罗根 | 全麦/思余 | iOS 读取 `/runtime/status`，显示真实可用模型 | `RuntimeStatus` client + Settings UI | direct runtime 只显示当前模型；dynamic endpoint 才显示 3B/7B | iOS 真机 + backend endpoint mock |
+| OP-001 | P0 | Done | 罗根 | 全麦/思余 | iOS 读取 `/runtime/status`，显示真实可用模型 | `RuntimeStatus` client + Settings UI | direct runtime 只显示当前模型；dynamic endpoint 才显示 3B/7B | 后端测试通过；iOS 需真机确认 |
 | OP-002 | P0 | Ready | 思余 | 罗根 | push-to-talk 真机电平验证与阈值调参 | 电平条、触觉反馈、失败原因文案 | 按住 200ms 内状态变化；无声音提示“没有检测到声音” | iPhone 真机录屏 |
 | OP-003 | P1 | Ready | 全麦 | 乔布斯 | 建立 30 个视觉辅助评估样例结构 | `docs/model-lab/eval-set-v1/` 或 JSONL | 每个样例有 mode、期望 risk/action/must-mention | pytest 校验样例格式 |
 | OP-004 | P1 | Ready | 全麦 | 罗根 | 3B/7B 输出与延迟对比 runner | eval runner 脚本/文档 | 同样例记录 resolved_model、latency、输出 | 手动模型跑批 |
@@ -261,8 +261,70 @@ iOS 手动：
 ## 本轮验收清单
 
 - [ ] `/runtime/status` 在 Mac 本地可访问。
-- [ ] iOS 设置页消费 `/runtime/status`（下一轮代码任务）。
+- [x] iOS 设置页消费 `/runtime/status`（已实现，待真机确认）。
 - [ ] Push-to-talk 真机有电平条。
 - [ ] 无声音与听不清提示分开。
 - [ ] 30 样例评估集结构建立。
 - [ ] walking 主卡片第一行是安全状态。
+
+
+## 2026-07-29 执行追加：OP-001 完成
+
+已实现 iOS 端 runtime status 消费：
+
+- `RuntimeStatus` Codable 模型。
+- `RuntimeModelPolicy` 纯逻辑：
+  - 无 status 时保留原有选项；
+  - `dynamic_model_selection=false` 时只返回当前 `resolved_model`；
+  - `dynamic_model_selection=true` 时返回 `自动 + available_models`。
+- `StreamingViewModel.refreshRuntimeStatus()` 从当前 direct backend URL 推导 `/runtime/status`。
+- `SettingsView` 显示“本地模型”状态和刷新按钮；单模型 runtime 下不显示会误导用户的分段模型选择器。
+- 发送帧时使用 `RuntimeModelPolicy.modelID(...)`，单模型 runtime 直接发送实际模型 ID。
+
+仍需真机确认：设置页打开时是否能正确刷新，网络切换后是否更新，文案是否足够自然。
+
+## 2026-07-29 现场截图复盘追加
+
+### 用户现场反馈
+
+- 主结果卡展示原始 JSON/调试内容：`(模型未按要求输出结构化结果，以下为原始描述) { "objects": ... }`。
+- `Surroundings` 模式端到端延迟约 11.5s，模型耗时约 12.3s。
+- `Hold to talk` 可以按住，但反馈不明显；只看到低对比度 `Recognized: ...`。
+- 用户质疑：这不符合乔布斯预期；任务看板在哪里；如果需要真机验证，需要清晰测试方法和反馈格式。
+
+### 乔布斯裁决
+
+这不符合 VQASee 预期。用户主界面不能显示 JSON、不能把高延迟当正常体验、不能让语音输入反馈像调试文本。
+
+### 新增/更新任务
+
+| ID | 优先级 | 状态 | 主责 | 配合 | 任务 | 交付物 | 验收标准 | 验证 |
+|---|---|---|---|---|---|---|---|---|
+| OP-010 | P0 | Done | 全麦 | 思余 | 破损 JSON 不进入主卡片 | 后端 parser/fusion fallback | 主卡片显示自然失败文案，不显示 `{ "objects"... }` | `test_broken_json_does_not_surface_raw_json_as_user_summary` |
+| OP-011 | P0 | Done | 罗根/全麦 | 思余 | Surroundings 降低默认延迟 | 自动模型策略 + 禁用连续双帧 | 自动模式下 Surroundings 使用 3B；连续模式不发送 previous image | iOS 逻辑测试 + 真机延迟复测 |
+| OP-012 | P0 | In Progress | 思余 | 罗根 | Hold to talk 反馈更明显 | 录音状态胶囊 + 电平条 | 按住时 200ms 内出现明显“正在听”反馈 | iPhone 真机录屏 |
+
+### 用户真机反馈格式
+
+请每次真机验证按下面格式反馈：
+
+```text
+测试时间：
+App commit/安装时间：
+Mac 后端启动命令：bash ./start_local_vqa.sh / 其他
+网络：iPhone 热点 / 同 Wi-Fi / Relay
+模式：Surroundings / Walking / Read Text / Details
+模型设置页显示：当前实际模型 = ?
+画面场景：例如卧室/走廊/文字/台阶
+端到端延迟：截图里的 Latency 行
+模型耗时：截图里的 模型xxx ms
+是否出现 JSON/英文调试内容：是/否
+Hold to talk：
+  - 按住时按钮是否变色/有电平条：是/否
+  - 是否出现“正在聆听”：是/否
+  - 说了什么：
+  - 识别成什么：
+  - 是否回答了问题：
+截图/录屏路径：
+备注：
+```

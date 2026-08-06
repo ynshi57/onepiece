@@ -71,3 +71,18 @@ iPhone camera → mode-aware JPEG encode → optional Apple Vision OCR → WebSo
 - Ollama (`:11434`) 或其它动态 endpoint 仍可按每帧 model override 路由。
 
 下一步：iOS 设置页应消费 `/runtime/status`，只把真实可用模型展示给用户。
+
+
+## 2026-07-29 执行追加：iOS 消费 Runtime Status
+
+已实现：
+
+- iOS 从 direct `/ws/signaling` URL 推导 `http(s)://host:port/runtime/status`。
+- direct runtime 单模型时，设置页只显示当前实际模型，不显示“自动/3B/7B”误导选项。
+- 动态 runtime 时，设置页显示 `自动` 与后端 `available_models` 中真实可用模型。
+
+未实现：
+
+- relay 模式下的 runtime status 代理。
+- 双 runtime 3B/7B 同时在线。
+- 本地持久化 p50/p95 latency。
