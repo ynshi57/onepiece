@@ -341,6 +341,16 @@ final class VQASeeTests: XCTestCase {
 
     // MARK: - Scene continuity / speak-gating
 
+    func testSpeechGateSpeaksFirstVisualResultEvenWhenNoChange() {
+        XCTAssertTrue(SpeechGate.shouldSpeak(
+            changeSignificance: "none",
+            previousRiskLevel: nil,
+            newRiskLevel: "low",
+            millisecondsSinceLastSpoken: nil,
+            maxSilenceMs: 25_000
+        ))
+    }
+
     func testSpeechGateAlwaysSpeaksOnMajorChange() {
         XCTAssertTrue(SpeechGate.shouldSpeak(
             changeSignificance: "major",
@@ -389,6 +399,75 @@ final class VQASeeTests: XCTestCase {
             millisecondsSinceLastSpoken: 30_000,
             maxSilenceMs: 25_000
         ))
+    }
+
+
+
+    private func sampleVqaResult(
+        riskLevel: String = "low",
+        changeSignificance: String = "none",
+        changes: String = ""
+    ) -> VqaDisplayResult {
+        VqaDisplayResult(
+            scene: "hallway",
+            objects: [],
+            description: "正前方可通行。",
+            summary: "正前方可通行。",
+            spatialDescription: "左侧信息不足，正前方可通行，右侧信息不足。",
+            riskLevel: riskLevel,
+            riskMessage: "暂未发现明显危险。",
+            suggestedAction: "保持手机朝向前方。",
+            spokenText: "正前方可通行。",
+            ocrText: "",
+            latencyMs: 1_000,
+            changeSignificance: changeSignificance,
+            changes: changes
+        )
+    }
+
+    func testVoiceFeedbackPolicySpeaksFirstVisualResult() {
+        XCTAssertEqual(
+            VoiceFeedbackPolicy.decideForModelResult(
+                answeringVoiceQuestion: false,
+                hasOCROverride: false,
+                ocrText: "",
+                result: sampleVqaResult(changeSignificance: "none"),
+                previousRiskLevel: nil,
+                millisecondsSinceLastSpoken: nil,
+                maxSilenceMs: 25_000
+            ),
+            .speak(text: "正前方可通行。", force: false, reason: "首次视觉反馈")
+        )
+    }
+
+    func testVoiceFeedbackPolicyStaysSilentForRecentNoChange() {
+        XCTAssertEqual(
+            VoiceFeedbackPolicy.decideForModelResult(
+                answeringVoiceQuestion: false,
+                hasOCROverride: false,
+                ocrText: "",
+                result: sampleVqaResult(changeSignificance: "none"),
+                previousRiskLevel: "low",
+                millisecondsSinceLastSpoken: 1_000,
+                maxSilenceMs: 25_000
+            ),
+            .silent(reason: "无重要变化")
+        )
+    }
+
+    func testVoiceFeedbackPolicyForcesVoiceQuestionAnswer() {
+        XCTAssertEqual(
+            VoiceFeedbackPolicy.decideForModelResult(
+                answeringVoiceQuestion: true,
+                hasOCROverride: false,
+                ocrText: "",
+                result: sampleVqaResult(changeSignificance: "none"),
+                previousRiskLevel: "low",
+                millisecondsSinceLastSpoken: 1_000,
+                maxSilenceMs: 25_000
+            ),
+            .speak(text: "正前方可通行。", force: true, reason: "回答用户提问")
+        )
     }
 
     // MARK: - PressGestureInterpreter (push-to-talk)
@@ -535,6 +614,139 @@ final class VQASeeTests: XCTestCase {
         XCTAssertTrue(signal.backendContext.contains("正前方"))
     }
 
+
+
+
+
+    func testLocalPerceptionSignalReportsRiskObjectInBackendContext() {
+        let perception = LocalPerceptionSignal(
+            objects: [
+                LocalPerceptionObject(kind: .car, direction: .center, confidence: 0.82)
+            ],
+            modelStatus: .loaded
+        )
+
+        XCTAssertTrue(perception.hasPriorityRiskObject)
+        XCTAssertEqual(perception.primaryRiskObject?.kind, .car)
+        XCTAssertTrue(perception.backendContext.contains("正前方疑似车辆"), perception.backendContext)
+    }
+
+    func testLocalVisionSignalIncludesPerceptionContext() {
+        let signal = LocalVisionSignal(
+            hasHuman: false,
+            humanDirection: .unknown,
+            brightness: 0.5,
+            sceneChangeScore: 0.01,
+            isTooDark: false,
+            isLikelyCovered: false,
+            analyzerFailed: false,
+            perception: LocalPerceptionSignal(
+                objects: [LocalPerceptionObject(kind: .bicycle, direction: .right, confidence: 0.77)],
+                modelStatus: .loaded
+            )
+        )
+
+        XCTAssertTrue(signal.backendContext.contains("右侧疑似自行车"), signal.backendContext)
+    }
+
+
+    func testLocalPerceptionMapsRoadAndDropLabels() {
+        XCTAssertEqual(LocalPerceptionObjectKind.from(label: "crosswalk"), .crosswalk)
+        XCTAssertEqual(LocalPerceptionObjectKind.from(label: "lane_marking"), .laneMarking)
+        XCTAssertEqual(LocalPerceptionObjectKind.from(label: "curb"), .curb)
+        XCTAssertEqual(LocalPerceptionObjectKind.from(label: "stairs"), .stairs)
+        XCTAssertEqual(LocalPerceptionObjectKind.from(label: "pothole"), .pothole)
+    }
+
+    func testWalkingImmediateFeedbackSpeaksRoadCue() {
+        let signal = LocalVisionSignal(
+            hasHuman: false, humanDirection: .unknown, brightness: 0.5,
+            sceneChangeScore: 0.01, isTooDark: false, isLikelyCovered: false, analyzerFailed: false,
+            perception: LocalPerceptionSignal(roadCues: LocalRoadCueSignal(crosswalk: .possible))
+        )
+
+        XCTAssertEqual(
+            WalkingImmediateFeedbackPolicy.decide(
+                mode: .walking,
+                signal: signal,
+                hasQuestion: false,
+                millisecondsSinceLastImmediateSpeech: nil
+            ),
+            .speak(text: "前方有疑似边界或道路标线，请放慢并自行确认。", force: false, reason: "本地感知道路线索")
+        )
+    }
+
+    func testWalkingImmediateFeedbackSpeaksHumanWhenNotCoolingDown() {
+        let signal = LocalVisionSignal(
+            hasHuman: true, humanDirection: .center, brightness: 0.5,
+            sceneChangeScore: 0.01, isTooDark: false, isLikelyCovered: false, analyzerFailed: false
+        )
+
+        XCTAssertEqual(
+            WalkingImmediateFeedbackPolicy.decide(
+                mode: .walking,
+                signal: signal,
+                hasQuestion: false,
+                millisecondsSinceLastImmediateSpeech: nil
+            ),
+            .speak(text: "正前方可能有人，我正在确认。", force: false, reason: "本地检测疑似人形")
+        )
+    }
+
+    func testWalkingImmediateFeedbackRespectsCooldownAndQuestions() {
+        let signal = LocalVisionSignal(
+            hasHuman: true, humanDirection: .center, brightness: 0.5,
+            sceneChangeScore: 0.01, isTooDark: false, isLikelyCovered: false, analyzerFailed: false
+        )
+
+        XCTAssertEqual(
+            WalkingImmediateFeedbackPolicy.decide(
+                mode: .walking,
+                signal: signal,
+                hasQuestion: false,
+                millisecondsSinceLastImmediateSpeech: 1_000
+            ),
+            .silent(reason: "本地即时播报冷却中")
+        )
+        XCTAssertEqual(
+            WalkingImmediateFeedbackPolicy.decide(
+                mode: .walking,
+                signal: signal,
+                hasQuestion: true,
+                millisecondsSinceLastImmediateSpeech: nil
+            ),
+            .silent(reason: "用户提问中，等待回答")
+        )
+    }
+
+
+
+    func testWalkingImmediateFeedbackSpeaksPriorityObject() {
+        let signal = LocalVisionSignal(
+            hasHuman: false,
+            humanDirection: .unknown,
+            brightness: 0.5,
+            sceneChangeScore: 0.01,
+            isTooDark: false,
+            isLikelyCovered: false,
+            analyzerFailed: false,
+            perception: LocalPerceptionSignal(
+                objects: [LocalPerceptionObject(kind: .car, direction: .center, confidence: 0.82)],
+                modelStatus: .loaded
+            )
+        )
+
+        XCTAssertEqual(
+            WalkingImmediateFeedbackPolicy.decide(
+                mode: .walking,
+                signal: signal,
+                hasQuestion: false,
+                millisecondsSinceLastImmediateSpeech: nil
+            ),
+            .speak(text: "正前方可能有车辆，请放慢，我正在确认。", force: false, reason: "本地感知检测到车辆")
+        )
+    }
+
     func testWalkingPolicySendsFirstFrame() {
         let signal = LocalVisionSignal(
             hasHuman: false, humanDirection: .unknown, brightness: 0.5,
@@ -547,6 +759,35 @@ final class VQASeeTests: XCTestCase {
                 millisecondsSinceLastBackendFrame: nil
             ),
             .send("行走模式首帧")
+        )
+    }
+
+
+
+    func testWalkingPolicySendsPriorityPerceptionObject() {
+        let signal = LocalVisionSignal(
+            hasHuman: false,
+            humanDirection: .unknown,
+            brightness: 0.5,
+            sceneChangeScore: 0.01,
+            isTooDark: false,
+            isLikelyCovered: false,
+            analyzerFailed: false,
+            perception: LocalPerceptionSignal(
+                objects: [LocalPerceptionObject(kind: .truck, direction: .left, confidence: 0.75)],
+                modelStatus: .loaded
+            )
+        )
+
+        XCTAssertEqual(
+            WalkingFrameSendPolicy.decide(
+                mode: .walking,
+                signal: signal,
+                hasQuestion: false,
+                pendingSingleShot: false,
+                millisecondsSinceLastBackendFrame: 1_000
+            ),
+            .send("本地感知检测到风险物体")
         )
     }
 

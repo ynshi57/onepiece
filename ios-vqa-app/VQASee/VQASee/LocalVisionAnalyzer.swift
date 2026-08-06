@@ -36,6 +36,27 @@ struct LocalVisionSignal: Sendable, Equatable {
     let isTooDark: Bool
     let isLikelyCovered: Bool
     let analyzerFailed: Bool
+    let perception: LocalPerceptionSignal
+
+    init(
+        hasHuman: Bool,
+        humanDirection: LocalVisionDirection,
+        brightness: Double,
+        sceneChangeScore: Double,
+        isTooDark: Bool,
+        isLikelyCovered: Bool,
+        analyzerFailed: Bool,
+        perception: LocalPerceptionSignal = .empty
+    ) {
+        self.hasHuman = hasHuman
+        self.humanDirection = humanDirection
+        self.brightness = brightness
+        self.sceneChangeScore = sceneChangeScore
+        self.isTooDark = isTooDark
+        self.isLikelyCovered = isLikelyCovered
+        self.analyzerFailed = analyzerFailed
+        self.perception = perception
+    }
 
     var backendContext: String {
         var parts: [String] = []
@@ -52,6 +73,10 @@ struct LocalVisionSignal: Sendable, Equatable {
         }
         if sceneChangeScore >= WalkingFrameSendPolicy.sceneChangeThreshold {
             parts.append("画面变化明显")
+        }
+        let perceptionText = perception.backendContext
+        if !perceptionText.isEmpty {
+            parts.append(perceptionText)
         }
         if parts.isEmpty {
             parts.append("画面稳定，未发现本地快速风险信号")
@@ -93,6 +118,9 @@ enum WalkingFrameSendPolicy {
         if signal.analyzerFailed {
             return .send("本地快速感知失败，安全起见发送")
         }
+        if signal.perception.hasPriorityRiskObject {
+            return .send("本地感知检测到风险物体")
+        }
         if signal.hasHuman {
             return .send("本地检测到疑似人形")
         }
@@ -117,6 +145,7 @@ enum WalkingFrameSendPolicy {
 /// bundled yet.
 final class LocalVisionAnalyzer {
     private var previousFingerprint: [Double]?
+    private let perceptionRunner = LocalPerceptionCoreMLRunner()
 
     func reset() {
         previousFingerprint = nil
@@ -141,6 +170,9 @@ final class LocalVisionAnalyzer {
         previousFingerprint = luminance.fingerprint
         let sceneChangeScore = Self.changeScore(current: luminance.fingerprint, previous: previous)
         let human = Self.detectHuman(pixelBuffer: pixelBuffer)
+        let perception = perceptionRunner
+            .analyze(pixelBuffer: pixelBuffer)
+            .merging(visionHuman: human)
         let isLikelyCovered = brightness < 0.035 || brightness > 0.97
         let isTooDark = brightness < 0.12
 
@@ -151,22 +183,23 @@ final class LocalVisionAnalyzer {
             sceneChangeScore: sceneChangeScore,
             isTooDark: isTooDark,
             isLikelyCovered: isLikelyCovered,
-            analyzerFailed: false
+            analyzerFailed: false,
+            perception: perception
         )
     }
 
-    private static func detectHuman(pixelBuffer: CVPixelBuffer) -> (hasHuman: Bool, direction: LocalVisionDirection) {
+    private static func detectHuman(pixelBuffer: CVPixelBuffer) -> (hasHuman: Bool, direction: LocalVisionDirection, boundingBox: CGRect?, confidence: Double) {
         let request = VNDetectHumanRectanglesRequest()
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .right, options: [:])
         do {
             try handler.perform([request])
         } catch {
-            return (false, .unknown)
+            return (false, .unknown, nil, 0)
         }
 
         let observations = request.results ?? []
         guard let strongest = observations.max(by: { $0.confidence < $1.confidence }) else {
-            return (false, .unknown)
+            return (false, .unknown, nil, 0)
         }
         let centerX = strongest.boundingBox.midX
         let direction: LocalVisionDirection
@@ -177,7 +210,7 @@ final class LocalVisionAnalyzer {
         } else {
             direction = .center
         }
-        return (true, direction)
+        return (true, direction, strongest.boundingBox, Double(strongest.confidence))
     }
 
     private static func changeScore(current: [Double], previous: [Double]?) -> Double {

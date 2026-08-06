@@ -30,6 +30,10 @@ struct SettingsView: View {
                 Section("语音与模型") {
                     Toggle("语音播报", isOn: $viewModel.isVoiceEnabled)
 
+                    Text("播报状态：\(viewModel.voiceStatusText)")
+                        .font(Theme.Typography.caption)
+                        .foregroundStyle(.secondary)
+
                     HStack {
                         Text("本地模型")
                         Spacer()

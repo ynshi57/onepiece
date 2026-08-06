@@ -11,7 +11,7 @@ description: VQASee 系统架构和性能审查工作流，由罗根负责。用
 
 ## 优先级
 
-1. 不隐藏安全相关变化。
+1. 不隐藏行走、骑行、驾驶风险相关变化。
 2. 不让用户卡在“处理中”。
 3. 不让系统静默失败。
 4. 不为了平均延迟牺牲最坏情况安全。
@@ -22,7 +22,7 @@ description: VQASee 系统架构和性能审查工作流，由罗根负责。用
 按链路拆：
 
 ```text
-iPhone camera → image encode → WebSocket/direct or relay → backend queue → model inference → schema parse → iOS state → speech gate → voice output
+iPhone camera → local perception → image encode → WebSocket/direct or relay → backend queue/ring buffer → model inference → schema parse → iOS state → speech/haptic gate → voice output
 ```
 
 每次性能问题都定位到具体环节，不要只说“模型慢”。
@@ -31,9 +31,9 @@ iPhone camera → image encode → WebSocket/direct or relay → backend queue �
 
 ### iOS 端
 
-- 帧率/间隔是否符合当前模式？
+- 帧率/间隔是否符合当前模式？walking/riding/driving-risk 是否 latest-frame-wins？
 - 图片尺寸和 JPEG quality 是否符合模式预算？
-- 是否有 in-flight 锁？是否会死锁？
+- 是否有 in-flight 锁、ring buffer 或 latest-frame-wins？是否会死锁或积压旧帧？
 - timeout 后是否释放状态？
 - UI 是否显示旧结果还是清空？
 - 语音播报是否阻塞下一帧？

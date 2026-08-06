@@ -33,6 +33,13 @@ struct AssistanceScreen: View {
                     // user — the AnswerPanel conveys the scene — so skip it in the
                     // rotor instead of surfacing an unlabeled element.
                     .accessibilityHidden(true)
+
+                CameraRiskOverlay(
+                    signal: viewModel.localPerceptionSignal,
+                    mode: viewModel.selectedMode,
+                    isActive: isActive
+                )
+                .ignoresSafeArea()
             }
             .overlay(alignment: .top) {
                 topBar
@@ -40,7 +47,7 @@ struct AssistanceScreen: View {
                     .padding(.top, Theme.Spacing.sm)
             }
             .safeAreaInset(edge: .bottom) {
-                bottomStack(maxAnswerHeight: proxy.size.height * 0.35)
+                bottomStack(maxAnswerHeight: proxy.size.height * 0.18)
                     .padding(.horizontal, Theme.Spacing.lg)
                     .padding(.bottom, Theme.Spacing.sm)
             }

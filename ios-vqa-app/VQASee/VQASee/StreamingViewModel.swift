@@ -14,7 +14,7 @@ import UIKit
 // String Catalog; model-steering prompts (AssistanceMode.prompt) stay literal.
 
 @MainActor
-final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDelegate {
+final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDelegate, AVSpeechSynthesizerDelegate {
     private static let serverURLDefaultsKey = "vqasee.server.url.input"
     private static let pairingTokenDefaultsKey = "vqasee.relay.pairing_token"
     private static let workerIDDefaultsKey = "vqasee.relay.worker_id"
@@ -91,7 +91,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     @Published var isVoiceEnabled = true
     @Published var isRecording = false
     @Published var speechStatusText = ""
+    @Published var voiceStatusText = String(localized: "语音待命")
     @Published var speechInputLevel: Double = 0
+    @Published var localPerceptionSignal: LocalPerceptionSignal = .empty
 
     let captureSession = AVCaptureSession()
 
@@ -117,6 +119,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private var clearQuestionAfterNextResult = false
     private var frameCounter: UInt64 = 0
     private var lastSpokenText = ""
+    private var lastSpeechAttemptAt: CFTimeInterval?
+    private var lastSpeechFinishedAt: CFTimeInterval?
+    private var lastSpeechSuppressedReason = ""
     /// Continuity state for scene-memory / incremental reporting. Reset on stop so a
     /// new session starts fresh (first frame speaks, backend gets no stale context).
     private var lastResult: VqaDisplayResult?
@@ -153,6 +158,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         let savedModel = UserDefaults.standard.string(forKey: Self.modelDefaultsKey)
         self.selectedModel = VqaModelOption(rawValue: savedModel ?? "") ?? .automatic
         super.init()
+        speechSynthesizer.delegate = self
         nearbyServerBrowser.onServersChanged = { [weak self] servers in
             guard let self else {
                 return
@@ -676,6 +682,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         pendingSingleShotOnly = false
         currentVoiceIntent = nil
         clearQuestionAfterNextResult = false
+        localPerceptionSignal = .empty
         inFlightSentAt = nil
         inFlightEncodeMs = nil
         inFlightOCRText = nil
@@ -882,37 +889,19 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         inFlightOCRText = nil
             notifyForRisk(level: result.riskLevel)
 
-            // Speak-gating: a direct answer to a voice question is always spoken;
-            // otherwise only speak on an important change / risk increase / after a
-            // long silence, so standing still doesn't repeat the same description.
             let answeringVoiceQuestion = clearQuestionAfterNextResult
             let now = CACurrentMediaTime()
             let msSinceLastSpoken = lastSpokenAt.map { (now - $0) * 1000.0 }
-            let shouldSpeak = answeringVoiceQuestion || SpeechGate.shouldSpeak(
-                changeSignificance: result.changeSignificance,
+            let voiceDecision = VoiceFeedbackPolicy.decideForModelResult(
+                answeringVoiceQuestion: answeringVoiceQuestion,
+                hasOCROverride: hasOCROverride,
+                ocrText: ocrOverride,
+                result: result,
                 previousRiskLevel: lastResult?.riskLevel,
-                newRiskLevel: result.riskLevel,
                 millisecondsSinceLastSpoken: msSinceLastSpoken,
                 maxSilenceMs: maxSilenceMs
             )
-            if shouldSpeak {
-                // Prefer the concise change delta when it exists and we're not
-                // answering a specific question.
-                let phrase: String
-                if !answeringVoiceQuestion,
-                   result.changeSignificance.lowercased() != "major",
-                   !result.changes.isEmpty {
-                    phrase = result.changes
-                } else if hasOCROverride {
-                    phrase = ReadTextPresentation.spokenText(for: ocrOverride)
-                } else {
-                    phrase = result.spokenText
-                }
-                speak(phrase)
-                lastSpokenAt = now
-            } else {
-                debugText += " [静默：\(result.changeSignificance)]"
-            }
+            applyVoiceFeedbackDecision(voiceDecision, source: "Qwen")
 
             // Record continuity state for the next frame's context.
             lastResult = result
@@ -950,6 +939,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         guard isStreamingActive else {
             return
         }
+        localPerceptionSignal = localVisionSignal.perception
         guard !isRequestInFlight else {
             return
         }
@@ -972,6 +962,15 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             errorText = String(localized: "跳过一帧：JPEG 太大（\(jpegData.count) 字节）。")
             return
         }
+
+        let immediateDecision = WalkingImmediateFeedbackPolicy.decide(
+            mode: selectedMode,
+            signal: localVisionSignal,
+            hasQuestion: !currentQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            millisecondsSinceLastImmediateSpeech: lastSpokenAt.map { (CACurrentMediaTime() - $0) * 1000.0 }
+        )
+        applyVoiceFeedbackDecision(immediateDecision, source: "Local Vision")
+
         isRequestInFlight = true
         isProcessing = true
         let ocrText = await OCRRecognition.recognizeText(
@@ -986,7 +985,10 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             riskText = String(localized: "安全：正在读文字")
             actionText = ReadTextPresentation.action(for: ocrText)
             if hasOCRText && (currentVoiceIntent == .readText || pendingSingleShotOnly) {
-                speak(ReadTextPresentation.spokenText(for: ocrText), force: true)
+                applyVoiceFeedbackDecision(
+                    .speak(text: ReadTextPresentation.spokenText(for: ocrText), force: true, reason: "本地 OCR 读文字"),
+                    source: "Local OCR"
+                )
             }
         }
         frameCounter += 1
@@ -1110,18 +1112,45 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         }
     }
 
-    private func speak(_ text: String, force: Bool = false) {
+    private func applyVoiceFeedbackDecision(_ decision: VoiceFeedbackDecision, source: String) {
+        switch decision {
+        case .speak(let text, let force, let reason):
+            if speak(text, force: force, reason: "\(source)：\(reason)") {
+                lastSpokenAt = CACurrentMediaTime()
+                debugText += " [播报：\(source)：\(reason)]"
+            } else {
+                debugText += " [未播：\(lastSpeechSuppressedReason)]"
+            }
+        case .silent(let reason):
+            lastSpeechSuppressedReason = "\(source)：\(reason)"
+            voiceStatusText = String(localized: "未播报：\(source)：\(reason)")
+            if source == "Qwen" {
+                debugText += " [静默：\(reason)]"
+            }
+        }
+    }
+
+    @discardableResult
+    private func speak(_ text: String, force: Bool = false, reason: String = "") -> Bool {
         guard isVoiceEnabled else {
-            return
+            lastSpeechSuppressedReason = "语音播报已关闭"
+            voiceStatusText = String(localized: "语音播报已关闭")
+            return false
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return
+            lastSpeechSuppressedReason = "播报内容为空"
+            voiceStatusText = String(localized: "未播报：内容为空")
+            return false
         }
         guard force || trimmed != lastSpokenText else {
-            return
+            lastSpeechSuppressedReason = "重复播报已抑制"
+            voiceStatusText = String(localized: "未播报：重复内容")
+            return false
         }
         lastSpokenText = trimmed
+        lastSpeechAttemptAt = CACurrentMediaTime()
+        voiceStatusText = reason.isEmpty ? String(localized: "准备播报") : String(localized: "准备播报：\(reason)")
         if speechSynthesizer.isSpeaking {
             speechSynthesizer.stopSpeaking(at: .word)
         }
@@ -1130,6 +1159,20 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         utterance.rate = 0.48
         utterance.pitchMultiplier = 1.0
         speechSynthesizer.speak(utterance)
+        return true
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        voiceStatusText = String(localized: "正在播报")
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        lastSpeechFinishedAt = CACurrentMediaTime()
+        voiceStatusText = String(localized: "播报完成")
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        voiceStatusText = String(localized: "播报被新的提示打断")
     }
 
     private func configureSpeechAudioSession() {

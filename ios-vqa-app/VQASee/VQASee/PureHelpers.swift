@@ -285,10 +285,13 @@ enum SpeechGate {
         riskRank[riskLevel.lowercased(), default: 0]
     }
 
-    /// Speak when: the model flags a major change, OR risk rose vs last time, OR
-    /// we've been silent longer than `maxSilenceMs` (a safety heartbeat so we
-    /// never go fully quiet). `changeSignificance` "major" also covers the very
-    /// first frame of a session (backend sends major when no context was given).
+    /// Speak when: this is the first visual result, OR the model flags a major
+    /// change, OR risk rose vs last time, OR we've been silent longer than
+    /// `maxSilenceMs` (a safety heartbeat so we never go fully quiet).
+    ///
+    /// First-result speech is explicit because local fast-vision context can make
+    /// the backend return `change_significance=none` even on the first frame; a
+    /// low-vision user still needs to hear that VQASee is seeing something.
     static func shouldSpeak(
         changeSignificance: String,
         previousRiskLevel: String?,
@@ -296,6 +299,9 @@ enum SpeechGate {
         millisecondsSinceLastSpoken: Double?,
         maxSilenceMs: Double
     ) -> Bool {
+        if millisecondsSinceLastSpoken == nil {
+            return true
+        }
         if changeSignificance.lowercased() == "major" {
             return true
         }
@@ -306,6 +312,120 @@ enum SpeechGate {
             return true
         }
         return false
+    }
+}
+
+
+enum VoiceFeedbackDecision: Equatable {
+    case speak(text: String, force: Bool, reason: String)
+    case silent(reason: String)
+
+    var reason: String {
+        switch self {
+        case .speak(_, _, let reason), .silent(let reason):
+            return reason
+        }
+    }
+}
+
+enum VoiceFeedbackPolicy {
+    static func decideForModelResult(
+        answeringVoiceQuestion: Bool,
+        hasOCROverride: Bool,
+        ocrText: String,
+        result: VqaDisplayResult,
+        previousRiskLevel: String?,
+        millisecondsSinceLastSpoken: Double?,
+        maxSilenceMs: Double
+    ) -> VoiceFeedbackDecision {
+        if answeringVoiceQuestion {
+            return .speak(text: hasOCROverride ? ReadTextPresentation.spokenText(for: ocrText) : result.spokenText, force: true, reason: "回答用户提问")
+        }
+
+        let shouldSpeak = SpeechGate.shouldSpeak(
+            changeSignificance: result.changeSignificance,
+            previousRiskLevel: previousRiskLevel,
+            newRiskLevel: result.riskLevel,
+            millisecondsSinceLastSpoken: millisecondsSinceLastSpoken,
+            maxSilenceMs: maxSilenceMs
+        )
+        guard shouldSpeak else {
+            return .silent(reason: "无重要变化")
+        }
+
+        if hasOCROverride {
+            return .speak(text: ReadTextPresentation.spokenText(for: ocrText), force: false, reason: "读文字结果")
+        }
+        if result.changeSignificance.lowercased() != "major", !result.changes.isEmpty {
+            return .speak(text: result.changes, force: false, reason: "重要变化")
+        }
+        if millisecondsSinceLastSpoken == nil {
+            return .speak(text: result.spokenText, force: false, reason: "首次视觉反馈")
+        }
+        if let previousRiskLevel, SpeechGate.rank(result.riskLevel) > SpeechGate.rank(previousRiskLevel) {
+            return .speak(text: result.spokenText, force: false, reason: "风险升高")
+        }
+        if let elapsed = millisecondsSinceLastSpoken, elapsed >= maxSilenceMs {
+            return .speak(text: result.spokenText, force: false, reason: "安全心跳")
+        }
+        return .speak(text: result.spokenText, force: false, reason: "模型要求播报")
+    }
+}
+
+enum WalkingImmediateFeedbackPolicy {
+    static let cooldownMs: Double = 8_000
+
+    static func decide(
+        mode: AssistanceMode,
+        signal: LocalVisionSignal,
+        hasQuestion: Bool,
+        millisecondsSinceLastImmediateSpeech: Double?
+    ) -> VoiceFeedbackDecision {
+        guard mode == .walking else {
+            return .silent(reason: "非行走模式不做本地即时播报")
+        }
+        if hasQuestion {
+            return .silent(reason: "用户提问中，等待回答")
+        }
+        if let elapsed = millisecondsSinceLastImmediateSpeech, elapsed < cooldownMs {
+            return .silent(reason: "本地即时播报冷却中")
+        }
+        if signal.isLikelyCovered {
+            return .speak(text: "镜头可能被挡住，请调整手机。", force: false, reason: "本地检测镜头遮挡")
+        }
+        if signal.isTooDark {
+            return .speak(text: "画面有些暗，请先放慢。", force: false, reason: "本地检测画面偏暗")
+        }
+        if let object = signal.perception.primaryRiskObject {
+            return .speak(
+                text: "\(object.direction.chineseLabel)可能有\(object.kind.chineseLabel)，请放慢，我正在确认。",
+                force: false,
+                reason: "本地感知检测到\(object.kind.chineseLabel)"
+            )
+        }
+        if signal.perception.hasRoadOrDepthCue {
+            return .speak(
+                text: "前方有疑似边界或道路标线，请放慢并自行确认。",
+                force: false,
+                reason: "本地感知道路线索"
+            )
+        }
+        if signal.hasHuman {
+            switch signal.humanDirection {
+            case .left:
+                return .speak(text: "左前方可能有人，我正在确认。", force: false, reason: "本地检测疑似人形")
+            case .right:
+                return .speak(text: "右前方可能有人，我正在确认。", force: false, reason: "本地检测疑似人形")
+            case .center:
+                return .speak(text: "正前方可能有人，我正在确认。", force: false, reason: "本地检测疑似人形")
+            case .unknown:
+                return .speak(text: "前方可能有人，我正在确认。", force: false, reason: "本地检测疑似人形")
+            }
+        }
+        if signal.sceneChangeScore >= max(0.36, WalkingFrameSendPolicy.sceneChangeThreshold * 2) {
+            return .speak(text: "前方画面变化明显，我正在确认。", force: false, reason: "本地检测明显变化")
+        }
+        return .silent(reason: "无本地即时播报条件")
     }
 }
 
