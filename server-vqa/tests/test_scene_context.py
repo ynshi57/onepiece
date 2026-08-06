@@ -58,3 +58,17 @@ def test_elapsed_phrase_uses_minutes_for_long_gaps():
 
 def test_non_dict_context_is_ignored():
     assert build_contextual_prompt(BASE, mode="surroundings", context="oops") == BASE
+
+
+def test_local_vision_context_is_included_without_prior_scene():
+    prompt = build_contextual_prompt(
+        BASE,
+        mode="walking",
+        context={"local_vision": "疑似有人在正前方"},
+    )
+
+    assert prompt.startswith(BASE)
+    assert "iPhone 本地快速感知" in prompt
+    assert "疑似有人在正前方" in prompt
+    assert "不是最终判断" in prompt
+    assert "当前图像为准" in prompt

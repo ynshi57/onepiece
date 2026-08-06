@@ -46,11 +46,13 @@ def test_worker_passes_model_override(monkeypatch):
         model_override: str = "",
         incremental: bool = False,
         previous_image_base64: str = "",
+        fast_response: bool = False,
     ):
         captured["prompt"] = prompt
         captured["model_override"] = model_override
         captured["incremental"] = incremental
         captured["previous_image_base64"] = previous_image_base64
+        captured["fast_response"] = fast_response
         return {
             "objects": ["door"],
             "scene": "hallway",
@@ -75,6 +77,7 @@ def test_worker_passes_model_override(monkeypatch):
         "model_override": "qwen2.5vl:7b",
         "incremental": False,
         "previous_image_base64": "",
+        "fast_response": False,
     }
 
 
@@ -87,10 +90,12 @@ def test_worker_assembles_context_and_marks_incremental(monkeypatch):
         model_override: str = "",
         incremental: bool = False,
         previous_image_base64: str = "",
+        fast_response: bool = False,
     ):
         captured["prompt"] = prompt
         captured["incremental"] = incremental
         captured["previous_image_base64"] = previous_image_base64
+        captured["fast_response"] = fast_response
         return {
             "objects": ["door"],
             "scene": "hallway",
@@ -122,6 +127,7 @@ def test_worker_assembles_context_and_marks_incremental(monkeypatch):
     assert payload["type"] == "inference_result"
     # A context-bearing frame with no explicit question is an incremental frame.
     assert captured["incremental"] is True
+    assert captured["fast_response"] is True
     assert captured["previous_image_base64"] == SAMPLE_JPEG_BASE64
     assert "客户端 OCR 文本" in captured["prompt"]
     assert "出口 EXIT" in captured["prompt"]

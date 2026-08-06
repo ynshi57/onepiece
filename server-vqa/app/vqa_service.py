@@ -56,7 +56,19 @@ def _normalize_qwen_payload(payload: dict, fallback_prompt: str) -> dict:
     objects = payload.get("objects", [])
     if not isinstance(objects, list):
         objects = []
-    objects = [str(item) for item in objects if isinstance(item, (str, int, float))]
+    deduped_objects = []
+    seen_objects = set()
+    for item in objects:
+        if not isinstance(item, (str, int, float)):
+            continue
+        text = str(item).strip()
+        if not text or text in seen_objects:
+            continue
+        seen_objects.add(text)
+        deduped_objects.append(text)
+        if len(deduped_objects) >= 12:
+            break
+    objects = deduped_objects
 
     scene = payload.get("scene", "unknown")
     if not isinstance(scene, str):
@@ -135,12 +147,31 @@ def _parse_qwen_content(content: object, fallback_prompt: str) -> dict:
         "Qwen returned non-JSON content; surfacing raw text instead of heuristic person. len=%d",
         len(stripped),
     )
+    looks_like_broken_json = stripped.startswith(("{", "[")) or '"objects"' in stripped
+    if looks_like_broken_json:
+        raw_preview = stripped[:500].rstrip()
+        return {
+            "objects": [],
+            "scene": "unknown",
+            "vision_location": "unknown",
+            # Keep the diagnostic in debug/description, but never let raw JSON
+            # become the user-facing summary/spoken text.
+            "description": f"模型未按要求输出结构化结果（格式异常）：{raw_preview}",
+            "summary": "模型输出异常，暂时无法可靠描述画面。",
+            "spatial_description": "暂时无法判断左侧、正前方和右侧。",
+            "risk_level": "low",
+            "risk_message": "无法判断是否存在风险，请谨慎移动。",
+            "suggested_action": "请稍微移动手机后重试；如果持续出现，请重启 Mac 后端。",
+            "spoken_text": "模型输出异常，暂时无法可靠描述画面。请谨慎移动。",
+            "change_significance": "major",
+            "changes": "模型输出格式异常",
+        }
+
     return {
         "objects": [],
         "scene": "unknown",
         "vision_location": "unknown",
-        # Prefix the diagnostic reason so debug views make the failure explicit,
-        # while the readable model text still drives the spoken summary.
+        # Natural-language non-JSON can still be useful; let fusion surface it.
         "description": f"（模型未按要求输出结构化结果，以下为原始描述）{stripped}",
     }
 
@@ -234,17 +265,19 @@ def runtime_status() -> dict:
         "routing_reason": info["routing_reason"],
         "image_min_tokens": os.getenv("IMAGE_MIN_TOKENS", "256"),
         "image_max_tokens": os.getenv("IMAGE_MAX_TOKENS", "512"),
+        "max_tokens_fast": _MAX_TOKENS_FAST,
         "max_tokens_incremental": _MAX_TOKENS_INCREMENTAL,
         "max_tokens_full": _MAX_TOKENS_FULL,
+        "send_previous_image_in_incremental": os.getenv("QWEN_SEND_PREVIOUS_IMAGE_IN_INCREMENTAL", "0") == "1",
     }
 
-# These are output CEILINGS, not fixed costs: with the slim JSON schema below the
-# model emits `finish_reason: stop` at ~70-130 tokens, so a higher ceiling adds
-# no latency but prevents mid-JSON truncation (finish_reason: length -> invalid
-# JSON -> "模型未按要求输出" on every frame). The old 96/160 values were BELOW the
-# minimum size of a valid Chinese JSON object, so every response was truncated.
-_MAX_TOKENS_INCREMENTAL = _env_int("QWEN_MAX_TOKENS_INCREMENTAL", 420)
-_MAX_TOKENS_FULL = _env_int("QWEN_MAX_TOKENS_FULL", 640)
+# These are output CEILINGS, not fixed costs. The fast schema used by walking /
+# surroundings frames emits fewer fields, so it can safely use a smaller ceiling.
+# Keep enough margin for valid Chinese JSON; too small -> truncated JSON ->
+# "模型未按要求输出" on every frame.
+_MAX_TOKENS_FAST = _env_int("QWEN_MAX_TOKENS_FAST", 260)
+_MAX_TOKENS_INCREMENTAL = _env_int("QWEN_MAX_TOKENS_INCREMENTAL", _MAX_TOKENS_FAST)
+_MAX_TOKENS_FULL = _env_int("QWEN_MAX_TOKENS_FULL", 520)
 
 
 # Slim output schema. The mode prompts in prompts.py are prose instructions
@@ -288,7 +321,41 @@ _VQA_JSON_SCHEMA = {
 }
 
 
-def _build_response_format(qwen_api_base_url: str) -> dict:
+# Fast safety schema for walking / surroundings. It intentionally omits verbose
+# diagnostic fields (`description`, `ocr_text`) that fusion can fill, while
+# preserving the fields a low-vision user needs immediately: where, risk, and
+# what to do next. Fewer required fields means fewer decode tokens on Qwen 3B.
+_FAST_VQA_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "objects": {"type": "array", "items": {"type": "string"}},
+        "scene": {"type": "string"},
+        "summary": {"type": "string"},
+        "spatial_description": {"type": "string"},
+        "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
+        "risk_message": {"type": "string"},
+        "suggested_action": {"type": "string"},
+        "spoken_text": {"type": "string"},
+        "change_significance": {"type": "string", "enum": ["none", "minor", "major"]},
+        "changes": {"type": "string"},
+    },
+    "required": [
+        "objects",
+        "scene",
+        "summary",
+        "spatial_description",
+        "risk_level",
+        "risk_message",
+        "suggested_action",
+        "spoken_text",
+        "change_significance",
+        "changes",
+    ],
+    "additionalProperties": False,
+}
+
+
+def _build_response_format(qwen_api_base_url: str, fast_response: bool = False) -> dict:
     """Choose the strongest output constraint the runtime supports.
 
     Direct llama-server (:11435) supports `json_schema` with `strict`, which
@@ -298,9 +365,11 @@ def _build_response_format(qwen_api_base_url: str) -> dict:
     """
     if "11434" in qwen_api_base_url:
         return {"type": "json_object"}
+    schema = _FAST_VQA_JSON_SCHEMA if fast_response else _VQA_JSON_SCHEMA
+    name = "vqa_fast_result" if fast_response else "vqa_result"
     return {
         "type": "json_schema",
-        "json_schema": {"name": "vqa_result", "strict": True, "schema": _VQA_JSON_SCHEMA},
+        "json_schema": {"name": name, "strict": True, "schema": schema},
     }
 
 
@@ -310,9 +379,14 @@ def run_vqa_from_frame(
     model_override: str = "",
     incremental: bool = False,
     previous_image_base64: str = "",
+    fast_response: bool = False,
 ) -> dict:
     base64.b64decode(image_base64, validate=True)
-    if previous_image_base64:
+    send_previous_image = (
+        bool(previous_image_base64)
+        and os.getenv("QWEN_SEND_PREVIOUS_IMAGE_IN_INCREMENTAL", "0") == "1"
+    )
+    if send_previous_image:
         base64.b64decode(previous_image_base64, validate=True)
 
     qwen_api_base_url = os.getenv("QWEN_API_BASE_URL", "").rstrip("/")
@@ -329,10 +403,11 @@ def run_vqa_from_frame(
     except ValueError:
         timeout_seconds = 45.0
 
-    max_tokens = _MAX_TOKENS_INCREMENTAL if incremental else _MAX_TOKENS_FULL
+    use_fast_schema = fast_response
+    max_tokens = _MAX_TOKENS_FAST if use_fast_schema else _MAX_TOKENS_FULL
 
     user_content = [{"type": "text", "text": prompt or "Describe the scene in the image."}]
-    if previous_image_base64:
+    if send_previous_image:
         user_content.append(
             {
                 "type": "text",
@@ -357,17 +432,16 @@ def run_vqa_from_frame(
         "model": qwen_model,
         "temperature": 0,
         "max_tokens": max_tokens,
-        "response_format": _build_response_format(qwen_api_base_url),
+        "response_format": _build_response_format(qwen_api_base_url, fast_response=use_fast_schema),
         "messages": [
             {
                 "role": "system",
                 "content": (
                     "You are a visual-assistance VQA parser for blind or low-vision users. "
-                    "Output strict JSON only, no Markdown fences. Required keys: "
-                    "objects(list of short Chinese strings, e.g. [\"行人\",\"台阶\"] — NEVER bounding boxes or dicts), "
-                    "scene(str), description(str), summary(str), spatial_description(str), "
-                    "risk_level(low|medium|high), risk_message(str), suggested_action(str), "
-                    "spoken_text(str), ocr_text(str), change_significance(str: none|minor|major), changes(str). "
+                    "Output strict JSON only, no Markdown fences. Required keys follow the supplied JSON schema. "
+                    "objects must be a list of short Chinese strings, e.g. [\"行人\",\"台阶\"] — NEVER bounding boxes or dicts. "
+                    "Use short Chinese values for scene, summary, spatial_description, risk_message, suggested_action, spoken_text, changes. "
+                    "risk_level must be low, medium, or high; change_significance must be none, minor, or major. "
                     "Do not invent certainty: use 可能/疑似 when unsure. "
                     "spatial_description MUST mention 左侧、正前方、右侧 when visible; say 信息不足 when not visible. "
                     "suggested_action must be a direct action for the user, not a generic description. "

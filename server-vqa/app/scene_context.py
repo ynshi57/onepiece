@@ -76,9 +76,10 @@ def build_contextual_prompt(
     prev_scene = _clean_str(context.get("prev_scene"))
     prev_objects = _clean_objects(context.get("prev_objects"))
     place_label = _clean_str(context.get("place_label"))
+    local_vision = _clean_str(context.get("local_vision"), 160)
 
-    # No meaningful prior state -> behave exactly like the stateless path.
-    if not (prev_summary or prev_scene or prev_objects or place_label):
+    # No meaningful prior/local state -> behave exactly like the stateless path.
+    if not (prev_summary or prev_scene or prev_objects or place_label or local_vision):
         return base
 
     lines: list[str] = ["", "【连续观察上下文】"]
@@ -90,18 +91,26 @@ def build_contextual_prompt(
         lines.append(f"上次已提到的物体：{'、'.join(prev_objects)}。")
     if prev_summary:
         lines.append(f"上次已告诉用户：{prev_summary}")
+    if local_vision:
+        lines.append(f"iPhone 本地快速感知：{local_vision}。这是触发提示，不是最终判断；请结合当前图像确认。")
 
     elapsed = _elapsed_phrase(context)
     if elapsed:
         lines.append(elapsed)
 
-    lines.append(
-        "用户很可能还在同一地点，并且已经知道上面这些信息。"
-        "请只描述与上次相比的重要变化（例如新出现或消失的人、车、障碍、门、台阶，"
-        "或风险等级变化）。"
-        "如果没有重要变化，把 change_significance 设为 none，changes 用一句话说明"
-        "（例如“无明显变化”），不要重复完整场景描述。"
-        "出现需要用户注意的新情况时，把 change_significance 设为 major。"
-    )
+    if prev_summary or prev_scene or prev_objects:
+        lines.append(
+            "用户很可能还在同一地点，并且已经知道上面这些信息。"
+            "请只描述与上次相比的重要变化（例如新出现或消失的人、车、障碍、门、台阶，"
+            "或风险等级变化）。"
+            "如果没有重要变化，把 change_significance 设为 none，changes 用一句话说明"
+            "（例如“无明显变化”），不要重复完整场景描述。"
+            "出现需要用户注意的新情况时，把 change_significance 设为 major。"
+        )
+    else:
+        lines.append(
+            "这是本轮行走观察的快速本地触发信息。请以当前图像为准，"
+            "只输出安全通行相关结论和行动建议。"
+        )
 
     return base + "\n" + "\n".join(lines)

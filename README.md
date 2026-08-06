@@ -93,10 +93,13 @@ store the runtime reads).
 - **Warmup**: after the server is healthy, `start_qwen_local.sh` fires one tiny
   32×32 JPEG inference so the vision path is hot before the first camera frame.
   Best-effort and bounded by `--max-time` — failures are logged, not fatal.
-- **Decode length**: `max_tokens` is smaller for incremental continuous frames
-  (`QWEN_MAX_TOKENS_INCREMENTAL`, default 96) than for full descriptions
-  (`QWEN_MAX_TOKENS_FULL`, default 160), since "only report the change" answers
-  are naturally short.
+- **Decode length**: walking / surroundings frames without an explicit question use
+  a compact safety schema and `QWEN_MAX_TOKENS_FAST` (default 260); full
+  descriptions use `QWEN_MAX_TOKENS_FULL` (default 520).
+- **Continuity cost**: incremental frames default to current image + text scene
+  context only. Previous-image comparison is opt-in via
+  `QWEN_SEND_PREVIOUS_IMAGE_IN_INCREMENTAL=1` because sending two images roughly
+  doubles vision prefill pressure on Qwen 3B.
 
 > Honest expectation: the direct runtime brings a single 3B frame to ~2.5 s on a
 > 16GB Mac (prefill ~1.3 s + decode ~1.2 s) — it does **not** reach 1s for a

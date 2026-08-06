@@ -67,9 +67,10 @@ def test_signaling_websocket_frame_message_returns_frame_level_vqa_result():
 def test_signaling_frame_with_context_assembles_continuity_prompt(monkeypatch):
     captured = {}
 
-    def fake_run_vqa_from_frame(prompt, image_base64, model_override="", incremental=False, previous_image_base64=""):
+    def fake_run_vqa_from_frame(prompt, image_base64, model_override="", incremental=False, previous_image_base64="", fast_response=False):
         captured["prompt"] = prompt
         captured["incremental"] = incremental
+        captured["fast_response"] = fast_response
         return {
             "objects": ["door"],
             "scene": "hallway",
@@ -107,6 +108,7 @@ def test_signaling_frame_with_context_assembles_continuity_prompt(monkeypatch):
     assert "中关村南路附近" in captured["prompt"]
     # Context-bearing frame with no question -> incremental (shorter/faster) answer.
     assert captured["incremental"] is True
+    assert captured["fast_response"] is True
     assert vqa_message["type"] == "vqa_result"
     assert vqa_message["change_significance"] == "none"
     assert vqa_message["changes"] == "无明显变化"

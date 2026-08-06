@@ -53,6 +53,7 @@ def build_inference_result(message: dict) -> dict:
         )
     prompt = build_contextual_prompt(prompt, mode=mode, context=context)
     incremental = context is not None and not question.strip()
+    fast_response = mode in {"walking", "surroundings"} and not question.strip()
     model = str(message.get("model", ""))
     image_base64 = message.get("image_base64")
     previous_image_base64 = message.get("previous_image_base64", "")
@@ -85,6 +86,7 @@ def build_inference_result(message: dict) -> dict:
         model_override=model,
         incremental=incremental,
         previous_image_base64=previous_image_base64 if isinstance(previous_image_base64, str) else "",
+        fast_response=fast_response,
     )
     latency_ms = (perf_counter() - started_at) * 1000.0
     fused_result = fuse_vqa_result(

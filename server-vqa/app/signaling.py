@@ -89,6 +89,7 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                 # A follow-up frame with prior context and no explicit question is an
                 # incremental "what changed" frame -> allow a shorter, faster answer.
                 incremental = context is not None and not question.strip()
+                fast_response = mode in {"walking", "surroundings"} and not question.strip()
                 model = str(message.get("model", ""))
                 gps_payload = normalize_gps(message.get("gps"))
                 image_base64 = message.get("image_base64")
@@ -111,6 +112,7 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                         model_override=model,
                         incremental=incremental,
                         previous_image_base64=previous_image_base64 if isinstance(previous_image_base64, str) else "",
+                        fast_response=fast_response,
                     )
                 except (ValueError, binascii.Error):
                     await websocket.send_json({"type": "error", "reason": "invalid_frame_payload"})
