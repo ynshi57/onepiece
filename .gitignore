@@ -8,3 +8,8 @@ ios-vqa-app/.bundle/
 ios-vqa-app/.bundle-home/
 ios-vqa-app/fastlane/.env
 deploy/ios/ExportOptions.plist
+
+# Xcode user-local state and build products
+ios-vqa-app/VQASee/**/xcuserdata/**/UserInterfaceState.xcuserstate
+ios-vqa-app/VQASee/DerivedData/
+ios-vqa-app/VQASee/build/

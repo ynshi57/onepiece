@@ -1,0 +1,103 @@
+{
+  "sourceLanguage" : "zh-Hans",
+  "strings" : {
+    "CFBundleName" : {
+      "comment" : "Bundle name",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "VQASee"
+          }
+        }
+      }
+    },
+    "NSCameraUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Used to recognize what's in the camera view in real time."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于实时识别画面内容"
+          }
+        }
+      }
+    },
+    "NSLocalNetworkUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Used to connect to a local Mac backend for real-time VQA inference."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于连接本地Mac后端进行实时VQA推理"
+          }
+        }
+      }
+    },
+    "NSLocationWhenInUseUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Used to show your current location and blend it into the scene results."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于显示当前位置并融合场景结果"
+          }
+        }
+      }
+    },
+    "NSMicrophoneUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Used for the real-time audio/video link and voice questions."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于实时音视频链路"
+          }
+        }
+      }
+    },
+    "NSSpeechRecognitionUsageDescription" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Used for voice questions — your speech is transcribed and sent to the recognition model."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用于语音提问，将你的问题转成文字发给识别模型"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

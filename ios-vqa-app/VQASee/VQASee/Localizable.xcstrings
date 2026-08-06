@@ -1,0 +1,1093 @@
+{
+  "sourceLanguage" : "zh-Hans",
+  "strings" : {
+    "%@。%@。方向：%@。建议：%@" : {
+      "comment" : "Combined VoiceOver label for the answer panel, risk-first.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@. %@. Direction: %@. Advice: %@"
+          }
+        }
+      }
+    },
+    "%@模式" : {
+      "comment" : "Mode-name accessibility label, e.g. Walking mode.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ mode"
+          }
+        }
+      }
+    },
+    "%@附近" : {
+      "comment" : "Reverse-geocoded place label used as a physical anchor.",
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Near %@"
+          }
+        }
+      }
+    },
+    "Bonjour 未发现，正在扫描局域网地址…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bonjour found nothing; scanning the local network…"
+          }
+        }
+      }
+    },
+    "client id" : {
+
+    },
+    "Mac 后端 %@，地址 %@" : {
+      "comment" : "Accessibility label for a discovered backend row: name, host.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac backend %@, address %@"
+          }
+        }
+      }
+    },
+    "relay pairing token (only for Relay mode)" : {
+
+    },
+    "worker id" : {
+
+    },
+    "Worker 离线：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Worker offline: %@"
+          }
+        }
+      }
+    },
+    "ws://mac-host.local:9000/ws/signaling" : {
+
+    },
+    "与 Mac 后端的连接已断开。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The connection to the Mac backend has been lost."
+          }
+        }
+      }
+    },
+    "低频观察周围环境，并播报重要变化。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Observe your surroundings at a low frequency and announce important changes."
+          }
+        }
+      }
+    },
+    "你可以问：前方有什么、右边有什么、帮我读文字。" : {
+
+    },
+    "保持手机朝向前方，缓慢移动以获取更多信息。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep the phone facing forward and move slowly to get more information."
+          }
+        }
+      }
+    },
+    "信令错误：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Signaling error: %@"
+          }
+        }
+      }
+    },
+    "停止" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop"
+          }
+        }
+      }
+    },
+    "准确度和场景理解更好，但延迟更高。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Better accuracy and scene understanding, but higher latency."
+          }
+        }
+      }
+    },
+    "刷新" : {
+
+    },
+    "发现 %lld 个后端，请选择" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Found %lld backends — please choose one"
+          }
+        }
+      }
+    },
+    "发现 Mac 后端但解析失败，正在继续搜索…" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Found a Mac backend but couldn't resolve it; still searching…"
+          }
+        }
+      }
+    },
+    "发现多个 Mac 后端，请选择一个：" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Multiple Mac backends found — please choose one:"
+          }
+        }
+      }
+    },
+    "可用模型：%@" : {
+
+    },
+    "后端连接已断开，正在重连…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Backend disconnected. Reconnecting…"
+          }
+        }
+      }
+    },
+    "周围" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Surroundings"
+          }
+        }
+      }
+    },
+    "地点反查失败：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reverse geocoding failed: %@"
+          }
+        }
+      }
+    },
+    "安全" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Safe"
+          }
+        }
+      }
+    },
+    "安全：正在读文字" : {
+
+    },
+    "安全：请继续按需提问画面内容。" : {
+
+    },
+    "完成" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done"
+          }
+        }
+      }
+    },
+    "定位更新失败：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Location update failed: %@"
+          }
+        }
+      }
+    },
+    "已从画面中读取文字。" : {
+
+    },
+    "已优先读取画面文字。" : {
+
+    },
+    "已发现 Mac 后端：%@" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Found Mac backend: %@"
+          }
+        }
+      }
+    },
+    "已发现 Mac 后端：%@（点开始连接）" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Found Mac backend: %@ (tap Start to connect)"
+          }
+        }
+      }
+    },
+    "已识别：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recognized: %@"
+          }
+        }
+      }
+    },
+    "已连接 Mac 后端" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connected to Mac backend"
+          }
+        }
+      }
+    },
+    "已连接 Mac 后端：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connected to Mac backend: %@"
+          }
+        }
+      }
+    },
+    "已连接，开始%@模式。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connected. Starting %@ mode."
+          }
+        }
+      }
+    },
+    "已选择 Mac 后端：%@（点开始连接）" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Selected Mac backend: %@ (tap Start to connect)"
+          }
+        }
+      }
+    },
+    "延迟：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Latency: %@"
+          }
+        }
+      }
+    },
+    "开始视觉辅助" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start Visual Assistance"
+          }
+        }
+      }
+    },
+    "异常：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Error: %@"
+          }
+        }
+      }
+    },
+    "当前实际模型" : {
+
+    },
+    "当前实际模型：%@" : {
+
+    },
+    "当前设备暂不支持中文语音识别。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This device doesn't support Chinese speech recognition yet."
+          }
+        }
+      }
+    },
+    "当前连接不支持模型状态查询。" : {
+
+    },
+    "快速 3B" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fast 3B"
+          }
+        }
+      }
+    },
+    "我主要帮你看画面。日期、时间和天气可以问 Siri 或系统。" : {
+
+    },
+    "我先读前面一部分：%@" : {
+
+    },
+    "按住说出你的问题，松开后优先回答" : {
+      "comment" : "Accessibility hint for the press-to-talk button.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold to speak your question; it's answered first when you release."
+          }
+        }
+      }
+    },
+    "按住说话" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold to talk"
+          }
+        }
+      }
+    },
+    "按模式自动选择：行走和周围用 3B，读文字和详细用 7B。" : {
+
+    },
+    "摄像头初始化失败：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera initialization failed: %@"
+          }
+        }
+      }
+    },
+    "文字不够清晰。" : {
+
+    },
+    "方向：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Direction: %@"
+          }
+        }
+      }
+    },
+    "无法将摄像头输入加入会话。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to add the camera input to the session."
+          }
+        }
+      }
+    },
+    "无法开始录音：%@" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't start recording: %@"
+          }
+        }
+      }
+    },
+    "无法搜索本地网络，请确认已允许本地网络权限。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Can't search the local network. Please allow Local Network permission."
+          }
+        }
+      }
+    },
+    "无法确认本地模型：%@" : {
+
+    },
+    "暂未发现明显危险。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No obvious hazards detected."
+          }
+        }
+      }
+    },
+    "更准 7B" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accurate 7B"
+          }
+        }
+      }
+    },
+    "更新中…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Updating…"
+          }
+        }
+      }
+    },
+    "未开始" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not started"
+          }
+        }
+      }
+    },
+    "未找到后置摄像头。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No rear camera found."
+          }
+        }
+      }
+    },
+    "未获得语音识别权限，请在设置中开启。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speech recognition permission not granted. Please enable it in Settings."
+          }
+        }
+      }
+    },
+    "未获得麦克风权限，请在设置中开启。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Microphone permission not granted. Please enable it in Settings."
+          }
+        }
+      }
+    },
+    "本地模型" : {
+
+    },
+    "本地模型不可用，当前结果仅适合连通性测试。" : {
+
+    },
+    "本地模型未启用，仅使用测试规则。" : {
+
+    },
+    "松开结束" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Release to stop"
+          }
+        }
+      }
+    },
+    "松开结束说话" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Release to stop talking"
+          }
+        }
+      }
+    },
+    "模型" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model"
+          }
+        }
+      }
+    },
+    "正在准备单次识别…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preparing single recognition…"
+          }
+        }
+      }
+    },
+    "正在准备连续观察…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preparing continuous observation…"
+          }
+        }
+      }
+    },
+    "正在听，松开结束说话" : {
+
+    },
+    "正在寻找 Mac 后端…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Searching for a Mac backend…"
+          }
+        }
+      }
+    },
+    "正在寻找附近的 Mac 后端…" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Searching for a nearby Mac backend…"
+          }
+        }
+      }
+    },
+    "正在确认本地模型…" : {
+
+    },
+    "正在聆听，请说出你的问题…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listening — please say your question…"
+          }
+        }
+      }
+    },
+    "正在自动连接 Mac 后端…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auto-connecting to the Mac backend…"
+          }
+        }
+      }
+    },
+    "没有听清，请再试一次。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Didn't catch that — please try again."
+          }
+        }
+      }
+    },
+    "没有听清，请按住 1 秒以上再试。" : {
+
+    },
+    "没有检测到声音，请靠近麦克风再试。" : {
+
+    },
+    "没有读到清晰文字。" : {
+
+    },
+    "没有读到清晰文字。请靠近一点并对准。" : {
+
+    },
+    "注意" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Caution"
+          }
+        }
+      }
+    },
+    "点击开始后详细描述当前画面一次。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap Start to describe the current scene in detail once."
+          }
+        }
+      }
+    },
+    "点击开始视觉辅助" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tap to start visual assistance"
+          }
+        }
+      }
+    },
+    "状态：%@。连接：%@" : {
+      "comment" : "Accessibility label for the status pill.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Status: %@. Connection: %@"
+          }
+        }
+      }
+    },
+    "相机权限被拒绝。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera access denied."
+          }
+        }
+      }
+    },
+    "看周围" : {
+
+    },
+    "空间方向信息不足。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not enough spatial direction information."
+          }
+        }
+      }
+    },
+    "等待空间方向信息" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Waiting for spatial direction info"
+          }
+        }
+      }
+    },
+    "等待结果超时（%llus）：可能是模型太慢或连接中断。可重试或切换到更快的 3B 模型。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Timed out waiting for a result (%llus): the model may be too slow or the connection dropped. Retry, or switch to the faster 3B model."
+          }
+        }
+      }
+    },
+    "等待识别" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Waiting for recognition"
+          }
+        }
+      }
+    },
+    "自动" : {
+
+    },
+    "行走" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Walking"
+          }
+        }
+      }
+    },
+    "行走模式只强调前方风险和避让建议。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Walking mode focuses only on hazards ahead and avoidance advice."
+          }
+        }
+      }
+    },
+    "设置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Settings"
+          }
+        }
+      }
+    },
+    "识别中：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recognizing: %@"
+          }
+        }
+      }
+    },
+    "识别中…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recognizing…"
+          }
+        }
+      }
+    },
+    "详细" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Details"
+          }
+        }
+      }
+    },
+    "详细看" : {
+
+    },
+    "语音与模型" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voice & Model"
+          }
+        }
+      }
+    },
+    "语音会话初始化失败：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voice session setup failed: %@"
+          }
+        }
+      }
+    },
+    "语音播报" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voice broadcast"
+          }
+        }
+      }
+    },
+    "语音识别暂不可用。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speech recognition is currently unavailable."
+          }
+        }
+      }
+    },
+    "请先开启 iPhone 个人热点，并让 Mac 连接该热点；Mac 上运行后端后，App 会自动发现并连接。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "First turn on the iPhone Personal Hotspot and connect your Mac to it; once the backend is running on the Mac, the app discovers and connects automatically."
+          }
+        }
+      }
+    },
+    "请把文字放到画面中央，靠近一点，保持光线充足。" : {
+
+    },
+    "请把文字放在画面中央，点击开始后识别一次。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Center the text in the frame, then tap Start to recognize once."
+          }
+        }
+      }
+    },
+    "请确认 Mac 后端仍在运行；App 会自动尝试重新连接。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Make sure the Mac backend is still running; the app will try to reconnect automatically."
+          }
+        }
+      }
+    },
+    "请让 Mac 连接 iPhone 热点，并启动本地后端。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connect your Mac to the iPhone hotspot and start the local backend."
+          }
+        }
+      }
+    },
+    "请输入有效的 ws/wss 地址。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Please enter a valid ws/wss address."
+          }
+        }
+      }
+    },
+    "读文字" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Read Text"
+          }
+        }
+      }
+    },
+    "调试结果：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Debug: %@"
+          }
+        }
+      }
+    },
+    "走路" : {
+
+    },
+    "超时" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Timed out"
+          }
+        }
+      }
+    },
+    "跳过一帧：JPEG 太大（%lld 字节）。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skipped a frame: the JPEG is too large (%lld bytes)."
+          }
+        }
+      }
+    },
+    "运行中" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Running"
+          }
+        }
+      }
+    },
+    "还没有自动发现 Mac 后端。请确认 iPhone 热点已开启、Mac 已连接该热点，并且 Mac 上已运行 bash ./start_backend.sh。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No Mac backend discovered yet. Make sure the iPhone hotspot is on, your Mac is connected to it, and `bash ./start_backend.sh` is running on the Mac."
+          }
+        }
+      }
+    },
+    "这不是视觉问题。" : {
+
+    },
+    "连接中" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connecting"
+          }
+        }
+      }
+    },
+    "连接失败：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Connection failed: %@"
+          }
+        }
+      }
+    },
+    "连接已断开：%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disconnected: %@"
+          }
+        }
+      }
+    },
+    "选择 Mac 后端" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose Mac backend"
+          }
+        }
+      }
+    },
+    "通常不需要填写。自动发现失败时才手动输入。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usually not needed. Enter manually only if auto-discovery fails."
+          }
+        }
+      }
+    },
+    "速度优先，适合行走连续识别。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speed first — best for continuous recognition while walking."
+          }
+        }
+      }
+    },
+    "音频会话切换失败：%@" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audio session switch failed: %@"
+          }
+        }
+      }
+    },
+    "高级设置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Advanced settings"
+          }
+        }
+      }
+    },
+    "高风险" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "High risk"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}
