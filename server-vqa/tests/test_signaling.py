@@ -167,3 +167,31 @@ def test_signaling_diagnostic_frame_upload_persists_on_backend(monkeypatch, tmp_
     assert (session_dir / "manifest.jsonl").is_file()
     assert (session_dir / "frames" / "frame-0001.jpg").is_file()
     assert "frames/frame-0001.jpg" in (session_dir / "manifest.jsonl").read_text(encoding="utf-8")
+
+
+def test_signaling_walking_quality_gate_returns_visible_warning(monkeypatch):
+    def fail_run_vqa_from_frame(*args, **kwargs):
+        raise AssertionError("quality gate should not call Qwen")
+
+    monkeypatch.setattr(signaling, "run_vqa_from_frame", fail_run_vqa_from_frame)
+
+    with client.websocket_connect("/ws/signaling") as websocket:
+        websocket.receive_json()
+        websocket.send_json({"type": "stream_start", "frame_id": "bootstrap"})
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "type": "frame",
+                "frame_id": "frame-quality",
+                "mode": "walking",
+                "image_base64": SAMPLE_JPEG_BASE64,
+                "frame_quality": {"exposure": "too_dark", "confidence": "high"},
+            }
+        )
+        vqa_message = websocket.receive_json()
+
+    assert vqa_message["type"] == "vqa_result"
+    assert vqa_message["spoken_text"] == "光线太暗，我看不清前方。"
+    assert vqa_message["risk_level"] == "medium"
+    assert vqa_message["diagnostic_metrics"]["quality_gate"] == "short_circuit"

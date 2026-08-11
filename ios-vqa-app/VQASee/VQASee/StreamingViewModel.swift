@@ -78,7 +78,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     /// True when multiple backends are discovered and the user must pick one.
     @Published var showServerPicker = false
     @Published var showAdvancedSettings = false
-    @Published var selectedMode: AssistanceMode = .surroundings
+    // Internal compatibility mode only. The user-visible UI no longer exposes modes;
+    // the send path resolves an ObservationRoute per frame/question.
+    @Published var selectedMode: AssistanceMode = .walking
     @Published var questionInput: String = ""
     @Published var selectedModel: VqaModelOption {
         didSet {
@@ -367,10 +369,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             speak(message, force: true)
             return
         }
-        if intent == .readText {
-            selectMode(.readText)
-        }
         currentVoiceIntent = intent
+        let route = ObservationRoute.resolve(question: text, voiceIntent: intent)
+        frameCaptureProxy.setEncodingProfile(route.encodingProfile)
         questionInput = text
         speechStatusText = String(localized: "已识别：\(text)")
         // Single-turn semantics: this spoken question is answered once, then cleared
@@ -438,10 +439,10 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         }
     }
 
-    private func modelIDForCurrentFrame() -> String {
+    private func modelID(for route: ObservationRoute) -> String {
         RuntimeModelPolicy.modelID(
             selectedModel: selectedModel,
-            mode: selectedMode,
+            mode: route.compatibilityMode,
             status: runtimeStatus
         )
     }
@@ -507,11 +508,11 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         errorText = nil
         // Fresh stream: first frame must always be sent (no stale duplicate hash).
         frameCaptureProxy.resetGateState()
-        frameCaptureProxy.setEncodingProfile(selectedMode.encodingProfile)
+        frameCaptureProxy.setEncodingProfile(ObservationRoute.riskObserve.encodingProfile)
         previousFrameBase64 = nil
         lastBackendFrameSentAt = nil
-        pendingSingleShotOnly = selectedMode.isSingleShotPreferred
-        summaryText = selectedMode.isSingleShotPreferred ? String(localized: "正在准备单次识别…") : String(localized: "正在准备连续观察…")
+        pendingSingleShotOnly = false
+        summaryText = String(localized: "正在准备观察风险…")
         riskText = String(localized: "连接中")
         currentRiskLevel = "low"
 
@@ -541,7 +542,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             }
             refreshRuntimeStatus()
             if isVoiceEnabled {
-                speak(String(localized: "已连接，开始\(selectedMode.title)模式。"), force: true)
+                speak(String(localized: "已连接，开始观察风险。"), force: true)
             }
         } catch {
             streamStatus = .error("transport_connect_failed")
@@ -877,7 +878,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             clearInFlightWatchdog()
             isRequestInFlight = false
             isProcessing = false
-            let ocrOverride = selectedMode == .readText ? (inFlightOCRText ?? "") : ""
+            let ocrOverride = currentVoiceIntent == .readText ? (inFlightOCRText ?? "") : ""
             let hasOCROverride = !ocrOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             summaryText = hasOCROverride ? ReadTextPresentation.summary(for: ocrOverride) : result.summary
             spatialText = hasOCROverride ? String(localized: "已从画面中读取文字。") : result.spatialDescription
@@ -955,11 +956,16 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         }
         localPerceptionSignal = localVisionSignal.perception
         let currentQuestion = questionInput
+        let observationRoute = ObservationRoute.resolve(
+            question: currentQuestion,
+            voiceIntent: currentVoiceIntent
+        )
+        let compatibilityMode = observationRoute.compatibilityMode
         if isRequestInFlight {
             if isDiagnosticRecordingEnabled {
                 uploadDiagnosticFrame(
                     jpegData: jpegData,
-                    mode: selectedMode,
+                    mode: compatibilityMode,
                     question: currentQuestion,
                     localVisionSignal: localVisionSignal,
                     encodeMs: encodeMs,
@@ -973,7 +979,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             (CACurrentMediaTime() - $0) * 1000.0
         }
         let sendDecision = WalkingFrameSendPolicy.decide(
-            mode: selectedMode,
+            mode: compatibilityMode,
             signal: localVisionSignal,
             hasQuestion: !currentQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             pendingSingleShot: pendingSingleShotOnly,
@@ -983,7 +989,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             if isDiagnosticRecordingEnabled {
                 uploadDiagnosticFrame(
                     jpegData: jpegData,
-                    mode: selectedMode,
+                    mode: compatibilityMode,
                     question: currentQuestion,
                     localVisionSignal: localVisionSignal,
                     encodeMs: encodeMs,
@@ -994,13 +1000,13 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             debugText = "local vision: \(reason); \(localVisionSignal.backendContext)"
             return
         }
-        guard jpegData.count <= selectedMode.encodingProfile.maxJPEGBytes else {
+        guard jpegData.count <= observationRoute.encodingProfile.maxJPEGBytes else {
             errorText = String(localized: "跳过一帧：JPEG 太大（\(jpegData.count) 字节）。")
             return
         }
 
         let immediateDecision = WalkingImmediateFeedbackPolicy.decide(
-            mode: selectedMode,
+            mode: compatibilityMode,
             signal: localVisionSignal,
             hasQuestion: !currentQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             millisecondsSinceLastImmediateSpeech: lastSpokenAt.map { (CACurrentMediaTime() - $0) * 1000.0 }
@@ -1011,11 +1017,11 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         isProcessing = true
         let ocrText = await OCRRecognition.recognizeText(
             from: jpegData,
-            mode: selectedMode,
+            mode: compatibilityMode,
             question: currentQuestion
         )
         let hasOCRText = !ocrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if selectedMode == .readText {
+        if observationRoute == .readText {
             summaryText = ReadTextPresentation.summary(for: ocrText)
             spatialText = hasOCRText ? String(localized: "已从画面中读取文字。") : String(localized: "文字不够清晰。")
             riskText = String(localized: "安全：正在读文字")
@@ -1032,7 +1038,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         if isDiagnosticRecordingEnabled {
             uploadDiagnosticFrame(
                 jpegData: jpegData,
-                mode: selectedMode,
+                mode: compatibilityMode,
                 question: currentQuestion,
                 localVisionSignal: localVisionSignal,
                 encodeMs: encodeMs,
@@ -1049,14 +1055,14 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         armInFlightWatchdog(for: frameID)
         await transport.sendFrame(
             frameID: frameID,
-            prompt: selectedMode.prompt,
-            model: modelIDForCurrentFrame(),
+            prompt: observationRoute.prompt,
+            model: modelID(for: observationRoute),
             jpegData: jpegData,
             gps: latestGPS,
-            mode: selectedMode.rawValue,
+            mode: observationRoute.backendMode,
             question: currentQuestion,
             context: currentFrameContext(localVisionSignal: localVisionSignal),
-            previousImageBase64: selectedMode.shouldSendPreviousFrame ? previousFrameBase64 : nil,
+            previousImageBase64: observationRoute.shouldSendPreviousFrame ? previousFrameBase64 : nil,
             ocrText: ocrText
         )
         previousFrameBase64 = jpegData.base64EncodedString()

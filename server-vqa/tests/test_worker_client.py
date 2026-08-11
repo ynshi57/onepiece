@@ -154,3 +154,119 @@ def test_worker_saves_diagnostic_request(monkeypatch, tmp_path):
     assert payload["status"] == "ok"
     assert payload["session_id"] == "relay-diag"
     assert (tmp_path / "session-relay-diag" / "frames" / "frame-0001.jpg").is_file()
+
+
+def test_worker_quality_gate_short_circuits_walking_without_qwen(monkeypatch):
+    def fail_run_vqa_from_frame(*args, **kwargs):
+        raise AssertionError("quality gate should not call Qwen")
+
+    monkeypatch.setattr(worker_client, "run_vqa_from_frame", fail_run_vqa_from_frame)
+    payload = build_inference_result(
+        {
+            "type": "inference_request",
+            "request_id": "req-quality",
+            "mode": "walking",
+            "image_base64": SAMPLE_JPEG_BASE64,
+            "frame_quality": {"blur": "blurry", "confidence": "high"},
+        }
+    )
+
+    assert payload["type"] == "inference_result"
+    assert payload["risk_level"] == "medium"
+    assert payload["spoken_text"] == "画面有些糊，请放慢。"
+    assert payload["diagnostic_metrics"]["quality_gate"] == "short_circuit"
+    assert payload["diagnostic_metrics"]["qwen_http_ms"] == 0.0
+
+
+def test_worker_invalid_base64_still_fails_before_quality_gate(monkeypatch):
+    def fail_run_vqa_from_frame(*args, **kwargs):
+        raise AssertionError("invalid payload should not call Qwen")
+
+    monkeypatch.setattr(worker_client, "run_vqa_from_frame", fail_run_vqa_from_frame)
+    payload = build_inference_result(
+        {
+            "type": "inference_request",
+            "request_id": "req-invalid-quality",
+            "mode": "walking",
+            "image_base64": "not-valid-base64",
+            "frame_quality": {"blur": "blurry", "confidence": "high"},
+        }
+    )
+
+    assert payload["type"] == "inference_error"
+    assert payload["reason"] == "invalid_frame_payload"
+
+
+def test_worker_adds_walking_roi_metadata_to_prompt(monkeypatch):
+    captured = {}
+
+    def fake_run_vqa_from_frame(
+        prompt: str,
+        image_base64: str,
+        model_override: str = "",
+        incremental: bool = False,
+        previous_image_base64: str = "",
+        fast_response: bool = False,
+    ):
+        captured["prompt"] = prompt
+        captured["fast_response"] = fast_response
+        return {
+            "objects": [],
+            "scene": "sidewalk",
+            "vision_location": "outdoor",
+            "description": "近处通行路径暂未发现明显障碍。",
+            "risk_zone": "near",
+            "direction": "front",
+            "distance_confidence": "low",
+        }
+
+    monkeypatch.setattr(worker_client, "run_vqa_from_frame", fake_run_vqa_from_frame)
+    payload = build_inference_result(
+        {
+            "type": "inference_request",
+            "request_id": "req-roi",
+            "mode": "walking",
+            "image_base64": SAMPLE_JPEG_BASE64,
+            "walking_roi": {"near_path": {"x": 0.2, "y": 0.45, "w": 0.6, "h": 0.55}},
+        }
+    )
+
+    assert payload["type"] == "inference_result"
+    assert captured["fast_response"] is True
+    assert "near_path ROI" in captured["prompt"]
+    assert "不要忽略 ROI 外" in captured["prompt"]
+    assert payload["diagnostic_metrics"]["walking_roi_present"] is True
+
+
+def test_worker_no_mode_defaults_to_risk_observe_fast_prompt(monkeypatch):
+    captured = {}
+
+    def fake_run_vqa_from_frame(
+        prompt: str,
+        image_base64: str,
+        model_override: str = "",
+        incremental: bool = False,
+        previous_image_base64: str = "",
+        fast_response: bool = False,
+    ):
+        captured["prompt"] = prompt
+        captured["fast_response"] = fast_response
+        return {
+            "objects": [],
+            "scene": "office",
+            "vision_location": "indoor",
+            "description": "近处暂未发现明显风险。",
+        }
+
+    monkeypatch.setattr(worker_client, "run_vqa_from_frame", fake_run_vqa_from_frame)
+    payload = build_inference_result(
+        {
+            "type": "inference_request",
+            "request_id": "req-risk-default",
+            "image_base64": SAMPLE_JPEG_BASE64,
+        }
+    )
+
+    assert payload["type"] == "inference_result"
+    assert "模式=风险观察" in captured["prompt"]
+    assert captured["fast_response"] is True

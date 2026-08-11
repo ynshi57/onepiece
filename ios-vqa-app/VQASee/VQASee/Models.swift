@@ -134,6 +134,92 @@ enum RuntimeModelPolicy {
     }
 }
 
+
+/// Internal route used after removing user-visible modes. The user sees one
+/// "observe risks" experience; the app still routes frames narrowly for latency
+/// and model quality. These raw values are backend route IDs, not UI labels.
+enum ObservationRoute: String, Equatable {
+    case riskObserve = "risk_observe"
+    case readText = "readText"
+    case question = "question"
+    case detail = "detail"
+
+    static func resolve(question: String, voiceIntent: VoiceQuestionIntent?) -> ObservationRoute {
+        if voiceIntent == .readText {
+            return .readText
+        }
+        let normalized = question.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty {
+            return .riskObserve
+        }
+        if normalized.contains("详细") || normalized.contains("多说") || normalized.contains("描述一下") {
+            return .detail
+        }
+        return .question
+    }
+
+    var prompt: String {
+        switch self {
+        case .riskObserve:
+            return "" // backend default risk_observe prompt; keep iOS prompt quiet.
+        case .readText:
+            return "模式=读文字。请优先读取画面文字，保持原文顺序。若文字不清楚，请说明应该更靠近、对准或增加光线。"
+        case .question:
+            return "模式=风险观察。请优先回答用户问题，并补充必要的风险、障碍和不确定性提醒。不要说可以走、可以开或安全通过。"
+        case .detail:
+            return "模式=详细。请在安全风险优先的前提下，描述当前画面的关键物体、空间关系、文字和不确定性。不要说可以走、可以开或安全通过。"
+        }
+    }
+
+    var backendMode: String {
+        switch self {
+        case .riskObserve:
+            return rawValue
+        case .readText:
+            return rawValue
+        case .question:
+            return "risk_observe"
+        case .detail:
+            return rawValue
+        }
+    }
+
+    var encodingProfile: FrameEncodingProfile {
+        switch self {
+        case .riskObserve, .question:
+            return FrameEncodingProfile(maxDimension: 448, jpegQuality: 0.45, maxJPEGBytes: 120_000)
+        case .detail:
+            return FrameEncodingProfile(maxDimension: 768, jpegQuality: 0.62, maxJPEGBytes: 320_000)
+        case .readText:
+            return FrameEncodingProfile(maxDimension: 1024, jpegQuality: 0.72, maxJPEGBytes: 520_000)
+        }
+    }
+
+    var isSingleShotPreferred: Bool {
+        switch self {
+        case .readText, .detail, .question:
+            return true
+        case .riskObserve:
+            return false
+        }
+    }
+
+    var shouldSendPreviousFrame: Bool {
+        self == .detail
+    }
+
+    var compatibilityMode: AssistanceMode {
+        switch self {
+        case .riskObserve, .question:
+            return .walking
+        case .readText:
+            return .readText
+        case .detail:
+            return .detail
+        }
+    }
+}
+
 enum AssistanceMode: String, CaseIterable, Identifiable {
     case surroundings
     case walking

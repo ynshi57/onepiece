@@ -95,6 +95,8 @@ def test_response_format_uses_json_schema_for_llama_server():
     assert rf["json_schema"]["strict"] is True
     props = rf["json_schema"]["schema"]["properties"]
     assert props["change_significance"]["enum"] == ["none", "minor", "major"]
+    assert props["risk_zone"]["enum"] == ["immediate", "near", "mid", "far", "unknown"]
+    assert "distance_m" not in props
     assert set(rf["json_schema"]["schema"]["required"]) == {
         "objects",
         "scene",
@@ -132,6 +134,24 @@ def test_fast_response_format_uses_compact_safety_schema_for_llama_server():
     } == required
     assert "description" not in required
     assert "ocr_text" not in required
+    assert "risk_zone" not in required
+
+
+def test_walking_fast_response_format_uses_near_path_schema():
+    rf = vqa_service._build_response_format(
+        "http://127.0.0.1:11435",
+        fast_response=True,
+        walking_fast_response=True,
+    )
+
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["name"] == "vqa_walking_fast_result"
+    required = set(rf["json_schema"]["schema"]["required"])
+    assert {"risk_zone", "direction", "distance_confidence"}.issubset(required)
+    props = rf["json_schema"]["schema"]["properties"]
+    assert "distance_m" not in props
+    assert "estimated_distance" not in props
+    assert "meters" not in props
 
 def test_response_format_falls_back_to_json_object_for_ollama():
     # Ollama (:11434) doesn't support json_schema; must not send a payload it rejects.
@@ -209,7 +229,7 @@ def test_incremental_fast_request_does_not_send_previous_image_by_default(monkey
                 "choices": [
                     {
                         "message": {
-                            "content": '{"objects":[],"scene":"走廊","summary":"无明显变化。","spatial_description":"左侧信息不足，正前方可通行，右侧信息不足。","risk_level":"low","risk_message":"暂未发现明显危险。","suggested_action":"继续缓慢前进。","spoken_text":"前方可通行。","change_significance":"none","changes":"无明显变化"}'
+                            "content": '{"objects":[],"scene":"走廊","summary":"无明显变化。","spatial_description":"左侧信息不足，正前方可通行，右侧信息不足。","risk_level":"low","risk_message":"暂未发现明显危险。","suggested_action":"继续缓慢前进。","spoken_text":"前方可通行。","risk_zone":"near","direction":"front","distance_confidence":"low","change_significance":"none","changes":"无明显变化"}'
                         }
                     }
                 ]
@@ -235,7 +255,7 @@ def test_incremental_fast_request_does_not_send_previous_image_by_default(monkey
     ]
     assert len(images) == 1
     assert captured["payload"]["max_tokens"] == vqa_service._MAX_TOKENS_FAST
-    assert captured["payload"]["response_format"]["json_schema"]["name"] == "vqa_fast_result"
+    assert captured["payload"]["response_format"]["json_schema"]["name"] == "vqa_walking_fast_result"
     assert result["change_significance"] == "none"
 
 
@@ -253,3 +273,80 @@ def test_incremental_can_opt_in_to_previous_image_validation(monkeypatch):
         assert "base64" in type(exc).__name__.lower() or "base64" in str(exc).lower()
     else:
         raise AssertionError("invalid opt-in previous image must fail visibly")
+
+
+def test_parse_qwen_content_preserves_near_path_fields():
+    content = (
+        '{"objects":["台阶"],"scene":"人行道","description":"近处正前方疑似有台阶。",'
+        '"risk_zone":"near","direction":"front","distance_confidence":"low"}'
+    )
+
+    result = vqa_service._parse_qwen_content(content, fallback_prompt="p")
+
+    assert result["risk_zone"] == "near"
+    assert result["direction"] == "front"
+    assert result["distance_confidence"] == "low"
+
+
+def test_parse_qwen_content_rejects_fake_distance_enums():
+    content = (
+        '{"objects":[],"scene":"人行道","description":"前方可通行。",'
+        '"risk_zone":"3m","direction":"straight_ahead","distance_confidence":"certain"}'
+    )
+
+    result = vqa_service._parse_qwen_content(content, fallback_prompt="p")
+
+    assert "risk_zone" not in result
+    assert "direction" not in result
+    assert "distance_confidence" not in result
+
+
+def test_fast_schema_exposes_risk_zone_not_meter_distance():
+    rf = vqa_service._build_response_format(
+        "http://127.0.0.1:11435",
+        fast_response=True,
+        walking_fast_response=True,
+    )
+    schema = rf["json_schema"]["schema"]
+
+    assert "risk_zone" in schema["required"]
+    assert "direction" in schema["required"]
+    assert "distance_confidence" in schema["required"]
+    assert "distance_m" not in schema["properties"]
+    assert "estimated_distance" not in schema["properties"]
+    assert "meters" not in schema["properties"]
+
+
+def test_risk_observe_fast_request_uses_near_path_schema(monkeypatch):
+    monkeypatch.setenv("QWEN_API_BASE_URL", "http://127.0.0.1:11435")
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"objects":[],"scene":"办公室","summary":"近处通行路径暂未发现明显风险。","spatial_description":"左侧信息不足，正前方可通行，右侧信息不足。","risk_level":"low","risk_message":"暂未发现明显危险。","suggested_action":"继续观察，缓慢移动。","spoken_text":"近处暂未发现明显风险。","risk_zone":"near","direction":"front","distance_confidence":"low","change_significance":"major","changes":""}'
+                        }
+                    }
+                ]
+            }
+
+    def fake_post(url, json, timeout):
+        captured["payload"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr(vqa_service.httpx, "post", fake_post)
+    result = vqa_service.run_vqa_from_frame(
+        prompt="模式=风险观察。",
+        image_base64="/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+        fast_response=True,
+    )
+
+    assert captured["payload"]["response_format"]["json_schema"]["name"] == "vqa_walking_fast_result"
+    assert result["risk_zone"] == "near"
+    assert result["diagnostic_metrics"]["walking_fast_response"] is True

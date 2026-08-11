@@ -13,3 +13,6 @@ deploy/ios/ExportOptions.plist
 ios-vqa-app/VQASee/**/xcuserdata/**/UserInterfaceState.xcuserstate
 ios-vqa-app/VQASee/DerivedData/
 ios-vqa-app/VQASee/build/
+
+# Local diagnostic captures may contain user images/metadata; never commit.
+server-vqa/diagnostic-captures/

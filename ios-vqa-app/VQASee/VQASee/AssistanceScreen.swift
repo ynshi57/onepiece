@@ -93,11 +93,6 @@ struct AssistanceScreen: View {
                 maxContentHeight: maxAnswerHeight
             )
 
-            ModeBar(
-                selectedMode: viewModel.selectedMode,
-                onSelect: { viewModel.selectMode($0) }
-            )
-
             if !viewModel.speechStatusText.isEmpty {
                 HStack(spacing: Theme.Spacing.sm) {
                     Image(systemName: viewModel.isRecording ? "waveform" : "text.bubble")
@@ -161,7 +156,7 @@ struct AssistanceScreen: View {
                     await viewModel.startStreaming()
                 }
             } label: {
-                Label("开始视觉辅助", systemImage: "eye.fill")
+                Label("开始观察", systemImage: "eye.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)

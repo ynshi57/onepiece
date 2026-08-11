@@ -94,3 +94,38 @@ def test_fuse_vqa_result_defaults_invalid_change_significance_to_major():
     result = fuse_vqa_result(vision_payload=vision_payload, gps_payload=None)
 
     assert result["change_significance"] == "major"
+
+
+def test_fuse_vqa_result_passes_through_near_path_fields():
+    vision_payload = {
+        "objects": ["台阶"],
+        "scene": "sidewalk",
+        "description": "近处正前方疑似有台阶。",
+        "risk_zone": "near",
+        "direction": "front",
+        "distance_confidence": "low",
+        "spoken_text": "近处正前方疑似有台阶，请放慢。",
+    }
+
+    result = fuse_vqa_result(vision_payload=vision_payload, gps_payload=None)
+
+    assert result["risk_zone"] == "near"
+    assert result["direction"] == "front"
+    assert result["distance_confidence"] == "low"
+    assert "米" not in result["spoken_text"]
+
+
+def test_fuse_vqa_result_defaults_invalid_near_path_fields():
+    vision_payload = {
+        "objects": [],
+        "scene": "sidewalk",
+        "risk_zone": "3m",
+        "direction": "straight_ahead",
+        "distance_confidence": "certain",
+    }
+
+    result = fuse_vqa_result(vision_payload=vision_payload, gps_payload=None)
+
+    assert result["risk_zone"] == "unknown"
+    assert result["direction"] == "unknown"
+    assert result["distance_confidence"] == "none"

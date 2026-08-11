@@ -68,3 +68,29 @@ def test_get_templates_ignores_malformed_override_file(tmp_path, monkeypatch):
 
     templates = get_templates()
     assert templates == prompts._BUILTIN_TEMPLATES
+
+
+def test_walking_prompt_focuses_near_path_without_fake_meters():
+    result = resolve_prompt(mode="walking")
+
+    assert "近处通行路径" in result
+    assert "画面下半部" in result
+    assert "不要估算具体米数" in result
+    assert "3米" not in result
+    assert "3 米" not in result
+    assert "米内" not in result
+
+
+def test_default_prompt_is_unified_risk_observe():
+    result = resolve_prompt()
+
+    assert DEFAULT_MODE == "risk_observe"
+    assert result == get_templates()["risk_observe"]
+    assert "模式=风险观察" in result
+    assert "障碍" in result
+    assert "台阶" in result
+    assert "车辆" in result
+    assert "不要估算具体米数" in result
+    assert "不要说可以走" in result
+    assert "可以开" in result
+    assert "安全通过" in result

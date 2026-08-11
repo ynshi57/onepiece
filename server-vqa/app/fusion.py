@@ -118,6 +118,9 @@ def _derive_assistance_payload(
         "suggested_action": suggested_action,
         "spoken_text": spoken_text,
         "ocr_text": "",
+        "risk_zone": "unknown",
+        "direction": "unknown",
+        "distance_confidence": "none",
     }
 
 
@@ -163,12 +166,28 @@ def fuse_vqa_result(
         f"{summary} {risk_message}",
     )
     ocr_text = _string_field(vision_payload, "ocr_text", assistance_payload["ocr_text"])
+    risk_zone = _string_field(vision_payload, "risk_zone", assistance_payload["risk_zone"])
+    if risk_zone not in {"immediate", "near", "mid", "far", "unknown"}:
+        risk_zone = "unknown"
+    direction = _string_field(vision_payload, "direction", assistance_payload["direction"])
+    if direction not in {"left", "center", "right", "left_front", "right_front", "front", "unknown"}:
+        direction = "unknown"
+    distance_confidence = _string_field(
+        vision_payload,
+        "distance_confidence",
+        assistance_payload["distance_confidence"],
+    )
+    if distance_confidence not in {"none", "low", "medium", "high"}:
+        distance_confidence = "none"
 
     # Continuity fields (scene-memory / incremental reporting). Absent when the
     # client sent no context or an older client is connected -> default to
     # "major" so the client speaks the result, matching pre-continuity behaviour.
     change_significance = _change_significance(vision_payload)
     changes = _string_field(vision_payload, "changes", "")
+    diagnostic_metrics = vision_payload.get("diagnostic_metrics")
+    if not isinstance(diagnostic_metrics, dict):
+        diagnostic_metrics = {}
 
     return {
         "objects": objects,
@@ -182,11 +201,15 @@ def fuse_vqa_result(
         "suggested_action": suggested_action,
         "spoken_text": spoken_text,
         "ocr_text": ocr_text,
+        "risk_zone": risk_zone,
+        "direction": direction,
+        "distance_confidence": distance_confidence,
         "change_significance": change_significance,
         "changes": changes,
         "requested_model": _string_field(vision_payload, "requested_model", ""),
         "resolved_model": _string_field(vision_payload, "resolved_model", ""),
         "model_routing_reason": _string_field(vision_payload, "model_routing_reason", ""),
+        "diagnostic_metrics": diagnostic_metrics,
         "gps_location": gps_payload,
         "latency_ms": latency_ms,
         "timestamp": datetime.now(timezone.utc).isoformat(),

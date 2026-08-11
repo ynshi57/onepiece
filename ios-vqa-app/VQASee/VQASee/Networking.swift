@@ -446,10 +446,16 @@ enum FrameJPEGEncoder {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return nil
         }
-        let width = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
-        let height = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
+        // AVCaptureVideoDataOutput delivers camera buffers in sensor orientation.
+        // Vision requests below use `.right`, so the JPEG sent to Qwen and saved in
+        // diagnostics must be oriented the same way. Otherwise the local detector
+        // sees an upright image while the backend/model sees a sideways frame,
+        // which causes poor VQA and confusing diagnostic thumbnails.
+        let orientedImage = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
+        let width = orientedImage.extent.width
+        let height = orientedImage.extent.height
         let scale = min(1.0, maxDimension / max(width, height))
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let ciImage = orientedImage
             .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         for candidateQuality in [quality, 0.45, 0.35] {

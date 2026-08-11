@@ -939,4 +939,44 @@ final class VQASeeTests: XCTestCase {
         XCTAssertNil(SockaddrParser.ipv4String(fromSockaddr: Data([0x02, 0x00])))
     }
 
+    func testObservationRouteDefaultsToRiskObserve() {
+        let route = ObservationRoute.resolve(question: "", voiceIntent: nil)
+
+        XCTAssertEqual(route, .riskObserve)
+        XCTAssertEqual(route.backendMode, "risk_observe")
+        XCTAssertEqual(route.prompt, "")
+        XCTAssertEqual(route.compatibilityMode, .walking)
+        XCTAssertFalse(route.isSingleShotPreferred)
+    }
+
+    func testObservationRouteKeepsReadTextAsInternalIntentOnly() {
+        let route = ObservationRoute.resolve(question: "帮我读一下", voiceIntent: .readText)
+
+        XCTAssertEqual(route, .readText)
+        XCTAssertEqual(route.backendMode, "readText")
+        XCTAssertEqual(route.compatibilityMode, .readText)
+        XCTAssertTrue(route.isSingleShotPreferred)
+        XCTAssertTrue(route.prompt.contains("模式=读文字"))
+    }
+
+    func testObservationRouteDetailOnlyFromQuestionIntent() {
+        let route = ObservationRoute.resolve(question: "请详细描述一下", voiceIntent: .visualQuestion)
+
+        XCTAssertEqual(route, .detail)
+        XCTAssertEqual(route.backendMode, "detail")
+        XCTAssertEqual(route.compatibilityMode, .detail)
+        XCTAssertTrue(route.isSingleShotPreferred)
+        XCTAssertTrue(route.prompt.contains("模式=详细"))
+    }
+
+    func testObservationRouteVisualQuestionUsesRiskObserveBackend() {
+        let route = ObservationRoute.resolve(question: "右边有什么", voiceIntent: .visualQuestion)
+
+        XCTAssertEqual(route, .question)
+        XCTAssertEqual(route.backendMode, "risk_observe")
+        XCTAssertEqual(route.compatibilityMode, .walking)
+        XCTAssertTrue(route.isSingleShotPreferred)
+        XCTAssertTrue(route.prompt.contains("模式=风险观察"))
+    }
+
 }

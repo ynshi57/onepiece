@@ -44,6 +44,9 @@ def test_vqa_endpoint_returns_fused_response():
     assert "spatial_description" in payload
     assert payload["risk_level"] in {"low", "medium", "high"}
     assert isinstance(payload["spoken_text"], str)
+    assert payload["risk_zone"] in {"immediate", "near", "mid", "far", "unknown"}
+    assert payload["direction"] in {"left", "center", "right", "left_front", "right_front", "front", "unknown"}
+    assert payload["distance_confidence"] in {"none", "low", "medium", "high"}
     assert isinstance(payload["suggested_action"], str)
     assert isinstance(payload["latency_ms"], (float, int))
     assert payload["latency_ms"] >= 0
@@ -95,16 +98,31 @@ def test_diagnostics_annotation_ui_and_labels(monkeypatch, tmp_path):
     assert annotate_response.status_code == 200
     assert "保存标注" in annotate_response.text
     assert "frame-0001.jpg" in annotate_response.text
+    assert "真实画面记录" in annotate_response.text
+    assert "真实画面" in annotate_response.text
+    assert "误报内容" in annotate_response.text
+    assert "画面变化检测" in annotate_response.text
 
     label_response = client.post(
         "/diagnostics/sessions/ui-session/labels",
-        json={"frame": "frames/frame-0001.jpg", "label": "false_positive", "note": "水桶误检成车"},
+        json={
+            "frame": "frames/frame-0001.jpg",
+            "label": "wrong_class",
+            "true_scene": "室内走廊，右前方有蓝色水桶",
+            "true_risks": "无明显风险",
+            "false_positives": "水桶被误检成车",
+            "missed_risks": "",
+            "note": "测试结构化标注",
+        },
     )
     assert label_response.status_code == 200
     detail_response = client.get("/diagnostics/sessions/ui-session")
     labels = detail_response.json()["labels"]
-    assert labels[0]["label"] == "false_positive"
-    assert labels[0]["note"] == "水桶误检成车"
+    assert labels[0]["label"] == "wrong_class"
+    assert labels[0]["true_scene"] == "室内走廊，右前方有蓝色水桶"
+    assert labels[0]["true_risks"] == "无明显风险"
+    assert labels[0]["false_positives"] == "水桶被误检成车"
+    assert labels[0]["note"] == "测试结构化标注"
 
 
 def test_diagnostics_delete_session(monkeypatch, tmp_path):
@@ -138,3 +156,90 @@ def test_diagnostics_cleanup_old_sessions(monkeypatch, tmp_path):
     assert "old" in response.json()["deleted"]
     assert not old.exists()
     assert fresh.exists()
+
+
+def test_diagnostics_delete_label(monkeypatch, tmp_path):
+    monkeypatch.setenv("DIAGNOSTIC_CAPTURE_DIR", str(tmp_path))
+    from app.diagnostic_capture import save_diagnostic_frame
+
+    save_diagnostic_frame(
+        session_id="label-delete-session",
+        image_base64="/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+        metadata={"diagnostic_session_id": "label-delete-session", "event": "sent_to_backend"},
+    )
+    response = client.post(
+        "/diagnostics/sessions/label-delete-session/labels",
+        json={"frame": "frames/frame-0001.jpg", "label": "wrong_class", "note": "椅子被识别成摩托车"},
+    )
+    assert response.status_code == 200
+    detail_response = client.get("/diagnostics/sessions/label-delete-session")
+    assert detail_response.json()["labels"][0]["_index"] == 0
+
+    delete_response = client.delete("/diagnostics/sessions/label-delete-session/labels/0")
+
+    assert delete_response.status_code == 200
+    assert delete_response.json()["status"] == "deleted"
+    detail_after = client.get("/diagnostics/sessions/label-delete-session")
+    assert detail_after.json()["labels"] == []
+
+
+def test_diagnostics_report_finds_evolution_tasks(monkeypatch, tmp_path):
+    monkeypatch.setenv("DIAGNOSTIC_CAPTURE_DIR", str(tmp_path))
+    from app.diagnostic_capture import save_diagnostic_frame
+
+    save_diagnostic_frame(
+        session_id="report-session",
+        image_base64="/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+        metadata={
+            "diagnostic_session_id": "report-session",
+            "event": "sent_to_backend",
+            "mode": "walking",
+            "perception": {
+                "model_status": "loaded",
+                "objects": [
+                    {"kind": "car", "label": "车辆", "direction": "center", "confidence": 0.92}
+                ],
+                "road_cues": {},
+                "depth_cues": {},
+            },
+        },
+    )
+    for _ in range(3):
+        save_diagnostic_frame(
+            session_id="report-session",
+            image_base64="/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+            metadata={
+                "diagnostic_session_id": "report-session",
+                "event": "captured_while_in_flight",
+                "mode": "walking",
+                "perception": {"model_status": "loaded", "objects": [], "road_cues": {}, "depth_cues": {}},
+            },
+        )
+    client.post(
+        "/diagnostics/sessions/report-session/labels",
+        json={
+            "frame": "frames/frame-0001.jpg",
+            "label": "wrong_class",
+            "true_scene": "室内走廊，右侧有蓝色水桶",
+            "true_risks": "无明显风险",
+            "false_positives": "水桶被误识别成车辆",
+            "missed_risks": "",
+        },
+    )
+
+    response = client.get("/diagnostics/sessions/report-session/report")
+
+    assert response.status_code == 200
+    report = response.json()
+    codes = {item["code"] for item in report["findings"]}
+    assert "high_in_flight_ratio" in codes
+    assert "indoor_vehicle_false_positive" in codes
+    assert "missing_qwen_raw_output" in codes
+    assert report["metrics"]["captured_while_in_flight"] == 3
+    assert report["metrics"]["vehicle_false_positive_labels"] == 1
+    assert any(task["primary"] in {"罗根", "全麦"} for task in report["task_suggestions"])
+
+    html_response = client.get("/diagnostics/sessions/report-session/report/ui")
+    assert html_response.status_code == 200
+    assert "评估报告" in html_response.text
+    assert "自动发现的问题" in html_response.text

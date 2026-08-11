@@ -2,12 +2,16 @@ import base64
 import json
 import logging
 import os
+from time import perf_counter
 
 import httpx
 
 
 logger = logging.getLogger(__name__)
 ALLOWED_MODEL_OVERRIDES = {"qwen2.5vl:3b", "qwen2.5vl:7b"}
+ALLOWED_RISK_ZONES = {"immediate", "near", "mid", "far", "unknown"}
+ALLOWED_DIRECTIONS = {"left", "center", "right", "left_front", "right_front", "front", "unknown"}
+ALLOWED_DISTANCE_CONFIDENCE = {"none", "low", "medium", "high"}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -31,6 +35,9 @@ def _heuristic_vqa(prompt: str) -> dict:
             "risk_message": "附近可能有车辆，请注意交通风险。",
             "suggested_action": "请先停下或放慢速度，确认左右来车后再移动。",
             "spoken_text": "前方可能是道路场景，附近可能有车辆，请注意交通风险。",
+            "risk_zone": "unknown",
+            "direction": "front",
+            "distance_confidence": "none",
         }
 
     # Generic fallback: we have no usable model output. Do NOT fabricate a
@@ -49,6 +56,9 @@ def _heuristic_vqa(prompt: str) -> dict:
         "risk_message": "无法判断是否存在风险，请谨慎移动。",
         "suggested_action": "请缓慢移动手机重试；若持续无结果，请检查 Mac 后端模型是否正常。",
         "spoken_text": "暂时无法识别画面内容，请谨慎移动。",
+        "risk_zone": "unknown",
+        "direction": "unknown",
+        "distance_confidence": "none",
     }
 
 
@@ -108,6 +118,24 @@ def _normalize_qwen_payload(payload: dict, fallback_prompt: str) -> dict:
         if candidate in {"none", "minor", "major"}:
             normalized["change_significance"] = candidate
 
+    risk_zone = payload.get("risk_zone")
+    if isinstance(risk_zone, str):
+        candidate = risk_zone.strip().lower()
+        if candidate in ALLOWED_RISK_ZONES:
+            normalized["risk_zone"] = candidate
+
+    direction = payload.get("direction")
+    if isinstance(direction, str):
+        candidate = direction.strip().lower()
+        if candidate in ALLOWED_DIRECTIONS:
+            normalized["direction"] = candidate
+
+    distance_confidence = payload.get("distance_confidence")
+    if isinstance(distance_confidence, str):
+        candidate = distance_confidence.strip().lower()
+        if candidate in ALLOWED_DISTANCE_CONFIDENCE:
+            normalized["distance_confidence"] = candidate
+
     return normalized
 
 
@@ -163,6 +191,9 @@ def _parse_qwen_content(content: object, fallback_prompt: str) -> dict:
             "risk_message": "无法判断是否存在风险，请谨慎移动。",
             "suggested_action": "请稍微移动手机后重试；如果持续出现，请重启 Mac 后端。",
             "spoken_text": "模型输出异常，暂时无法可靠描述画面。请谨慎移动。",
+            "risk_zone": "unknown",
+            "direction": "unknown",
+            "distance_confidence": "none",
             "change_significance": "major",
             "changes": "模型输出格式异常",
         }
@@ -299,6 +330,9 @@ _VQA_JSON_SCHEMA = {
         "risk_message": {"type": "string"},
         "suggested_action": {"type": "string"},
         "spoken_text": {"type": "string"},
+        "risk_zone": {"type": "string", "enum": ["immediate", "near", "mid", "far", "unknown"]},
+        "direction": {"type": "string", "enum": ["left", "center", "right", "left_front", "right_front", "front", "unknown"]},
+        "distance_confidence": {"type": "string", "enum": ["none", "low", "medium", "high"]},
         "ocr_text": {"type": "string"},
         "change_significance": {"type": "string", "enum": ["none", "minor", "major"]},
         "changes": {"type": "string"},
@@ -355,7 +389,41 @@ _FAST_VQA_JSON_SCHEMA = {
 }
 
 
-def _build_response_format(qwen_api_base_url: str, fast_response: bool = False) -> dict:
+# Walking-specific fast schema. It adds coarse near-path fields without asking
+# the model for fake meter-level distance. Keep it separate from surroundings so
+# ordinary ambient descriptions do not pay extra decode tokens.
+_WALKING_FAST_VQA_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **_FAST_VQA_JSON_SCHEMA["properties"],
+        "risk_zone": {"type": "string", "enum": ["immediate", "near", "mid", "far", "unknown"]},
+        "direction": {"type": "string", "enum": ["left", "center", "right", "left_front", "right_front", "front", "unknown"]},
+        "distance_confidence": {"type": "string", "enum": ["none", "low", "medium", "high"]},
+    },
+    "required": [
+        *_FAST_VQA_JSON_SCHEMA["required"],
+        "risk_zone",
+        "direction",
+        "distance_confidence",
+    ],
+    "additionalProperties": False,
+}
+
+
+def _uses_near_path_schema(prompt: str) -> bool:
+    """Whether a fast request needs coarse risk-zone fields.
+
+    User-visible modes are being removed, but the backend still needs a compact
+    risk schema for both the old walking mode and the new unified risk observer.
+    """
+    return "模式=行走" in prompt or "模式=风险观察" in prompt
+
+
+def _build_response_format(
+    qwen_api_base_url: str,
+    fast_response: bool = False,
+    walking_fast_response: bool = False,
+) -> dict:
     """Choose the strongest output constraint the runtime supports.
 
     Direct llama-server (:11435) supports `json_schema` with `strict`, which
@@ -365,8 +433,15 @@ def _build_response_format(qwen_api_base_url: str, fast_response: bool = False) 
     """
     if "11434" in qwen_api_base_url:
         return {"type": "json_object"}
-    schema = _FAST_VQA_JSON_SCHEMA if fast_response else _VQA_JSON_SCHEMA
-    name = "vqa_fast_result" if fast_response else "vqa_result"
+    if fast_response and walking_fast_response:
+        schema = _WALKING_FAST_VQA_JSON_SCHEMA
+        name = "vqa_walking_fast_result"
+    elif fast_response:
+        schema = _FAST_VQA_JSON_SCHEMA
+        name = "vqa_fast_result"
+    else:
+        schema = _VQA_JSON_SCHEMA
+        name = "vqa_result"
     return {
         "type": "json_schema",
         "json_schema": {"name": name, "strict": True, "schema": schema},
@@ -391,7 +466,15 @@ def run_vqa_from_frame(
 
     qwen_api_base_url = os.getenv("QWEN_API_BASE_URL", "").rstrip("/")
     if not qwen_api_base_url:
-        return _heuristic_vqa(prompt=prompt)
+        fallback = _heuristic_vqa(prompt=prompt)
+        fallback["diagnostic_metrics"] = {
+            "qwen_http_ms": 0.0,
+            "schema_name": "heuristic",
+            "frame_base64_bytes": len(image_base64.encode("utf-8")),
+            "fast_response": fast_response,
+            "walking_fast_response": fast_response and _uses_near_path_schema(prompt),
+        }
+        return fallback
     model_info = _resolve_qwen_model_info(
         qwen_api_base_url=qwen_api_base_url,
         model_override=model_override,
@@ -404,6 +487,7 @@ def run_vqa_from_frame(
         timeout_seconds = 45.0
 
     use_fast_schema = fast_response
+    walking_fast_response = use_fast_schema and _uses_near_path_schema(prompt)
     max_tokens = _MAX_TOKENS_FAST if use_fast_schema else _MAX_TOKENS_FULL
 
     user_content = [{"type": "text", "text": prompt or "Describe the scene in the image."}]
@@ -428,11 +512,18 @@ def run_vqa_from_frame(
         }
     )
 
+    response_format = _build_response_format(
+        qwen_api_base_url,
+        fast_response=use_fast_schema,
+        walking_fast_response=walking_fast_response,
+    )
+    schema_name = response_format.get("json_schema", {}).get("name", response_format.get("type", "unknown"))
+
     request_payload = {
         "model": qwen_model,
         "temperature": 0,
         "max_tokens": max_tokens,
-        "response_format": _build_response_format(qwen_api_base_url, fast_response=use_fast_schema),
+        "response_format": response_format,
         "messages": [
             {
                 "role": "system",
@@ -446,7 +537,9 @@ def run_vqa_from_frame(
                     "spatial_description MUST mention 左侧、正前方、右侧 when visible; say 信息不足 when not visible. "
                     "suggested_action must be a direct action for the user, not a generic description. "
                     "If client OCR text is provided, use it for ocr_text and text-reading answers, but correct obvious OCR noise. "
-                    "For walking safety, prioritize obstacles, people, vehicles, stairs, doors, edges. "
+                    "For walking safety, prioritize obstacles, people, vehicles, stairs, doors, curbs, holes, edges and the near path in the lower/center image. "
+                    "Never estimate exact meters from a single image; use risk_zone immediate/near/mid/far/unknown, direction left/center/right/left_front/right_front/front/unknown, and distance_confidence none/low/medium/high. "
+                    "If distance is uncertain, set distance_confidence to none or low and say 近处/前方/远处/无法判断 in Chinese. "
                     "When a 【连续观察上下文】 block is present, report only important changes: set "
                     "change_significance to none when nothing important changed (keep description short), "
                     "minor for small changes, major when the user must pay attention; put the delta in changes. "
@@ -461,12 +554,15 @@ def run_vqa_from_frame(
         ],
     }
 
+    qwen_http_ms = 0.0
     try:
+        qwen_started_at = perf_counter()
         response = httpx.post(
             f"{qwen_api_base_url}/v1/chat/completions",
             json=request_payload,
             timeout=timeout_seconds,
         )
+        qwen_http_ms = (perf_counter() - qwen_started_at) * 1000.0
         response.raise_for_status()
         response_data = response.json()
         content = response_data["choices"][0]["message"]["content"]
@@ -474,14 +570,31 @@ def run_vqa_from_frame(
         parsed["requested_model"] = model_info["requested_model"]
         parsed["resolved_model"] = model_info["resolved_model"]
         parsed["model_routing_reason"] = model_info["routing_reason"]
+        parsed["diagnostic_metrics"] = {
+            "qwen_http_ms": qwen_http_ms,
+            "schema_name": schema_name,
+            "frame_base64_bytes": len(image_base64.encode("utf-8")),
+            "fast_response": use_fast_schema,
+            "walking_fast_response": walking_fast_response,
+        }
         return parsed
     except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
+        if qwen_http_ms == 0.0:
+            qwen_http_ms = (perf_counter() - qwen_started_at) * 1000.0 if "qwen_started_at" in locals() else 0.0
         logger.exception("Qwen inference failed; fallback to heuristic path: %s", exc)
         fallback = _heuristic_vqa(prompt=prompt)
         fallback["description"] = f"{fallback['description']} (fallback due to inference error)"
         fallback["requested_model"] = model_info["requested_model"]
         fallback["resolved_model"] = model_info["resolved_model"]
         fallback["model_routing_reason"] = model_info["routing_reason"]
+        fallback["diagnostic_metrics"] = {
+            "qwen_http_ms": qwen_http_ms,
+            "schema_name": schema_name,
+            "frame_base64_bytes": len(image_base64.encode("utf-8")),
+            "fast_response": use_fast_schema,
+            "walking_fast_response": walking_fast_response,
+            "fallback_reason": "qwen_inference_failed",
+        }
         return fallback
 
 

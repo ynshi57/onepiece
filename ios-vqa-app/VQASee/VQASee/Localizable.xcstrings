@@ -78,6 +78,9 @@
     "ws://mac-host.local:9000/ws/signaling" : {
 
     },
+    "上传诊断帧" : {
+
+    },
     "与 Mac 后端的连接已断开。" : {
       "localizations" : {
         "en" : {
@@ -87,6 +90,9 @@
           }
         }
       }
+    },
+    "会把压缩画面和本地模型输出发送到当前连接的 Mac 后端，用于分析误检、漏检和 overlay 对齐。仅测试时开启。" : {
+
     },
     "低频观察周围环境，并播报重要变化。" : {
       "localizations" : {
@@ -310,6 +316,7 @@
       }
     },
     "已连接，开始%@模式。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -318,6 +325,9 @@
           }
         }
       }
+    },
+    "已连接，开始观察风险。" : {
+
     },
     "已选择 Mac 后端：%@（点开始连接）" : {
       "localizations" : {
@@ -340,6 +350,7 @@
       }
     },
     "开始视觉辅助" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -348,6 +359,9 @@
           }
         }
       }
+    },
+    "开始观察" : {
+
     },
     "异常：%@" : {
       "localizations" : {
@@ -616,6 +630,7 @@
       }
     },
     "正在准备单次识别…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -625,7 +640,11 @@
         }
       }
     },
+    "正在准备观察风险…" : {
+
+    },
     "正在准备连续观察…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -856,6 +875,12 @@
           }
         }
       }
+    },
+    "诊断上传" : {
+
+    },
+    "诊断录制已关闭" : {
+
     },
     "详细" : {
       "extractionState" : "stale",

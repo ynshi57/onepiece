@@ -1,3 +1,4 @@
+import base64
 import binascii
 import json
 import os
@@ -8,6 +9,13 @@ from uuid import uuid4
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.diagnostic_capture import save_diagnostic_frame
+from app.frame_metadata import (
+    build_frame_metadata_prompt,
+    normalize_frame_quality,
+    normalize_walking_roi,
+    quality_gate_vqa_payload,
+    should_short_circuit_quality,
+)
 from app.fusion import fuse_vqa_result
 from app.prompts import resolve_prompt
 from app.scene_context import build_contextual_prompt
@@ -100,10 +108,14 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                 question = str(message.get("question", ""))
                 context = message.get("context")
                 context = context if isinstance(context, dict) else None
+                legacy_prompt = str(message.get("prompt", ""))
+                effective_mode = mode if mode.strip() else ("risk_observe" if not legacy_prompt.strip() else "")
+                frame_quality = normalize_frame_quality(message.get("frame_quality"))
+                walking_roi = normalize_walking_roi(message.get("walking_roi"))
                 prompt = resolve_prompt(
                     mode=mode,
                     question=question,
-                    legacy_prompt=str(message.get("prompt", "")),
+                    legacy_prompt=legacy_prompt,
                 )
                 client_ocr_text = str(message.get("client_ocr_text", "")).strip()
                 if client_ocr_text:
@@ -112,10 +124,15 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                         "如果用户在读文字，请优先利用这段 OCR 文本，并结合图像确认。"
                     )
                 prompt = build_contextual_prompt(prompt, mode=mode, context=context)
+                prompt = prompt + build_frame_metadata_prompt(
+                    mode=effective_mode,
+                    frame_quality=frame_quality,
+                    walking_roi=walking_roi,
+                )
                 # A follow-up frame with prior context and no explicit question is an
                 # incremental "what changed" frame -> allow a shorter, faster answer.
                 incremental = context is not None and not question.strip()
-                fast_response = mode in {"walking", "surroundings"} and not question.strip()
+                fast_response = effective_mode in {"risk_observe", "walking", "surroundings"} and not question.strip()
                 model = str(message.get("model", ""))
                 gps_payload = normalize_gps(message.get("gps"))
                 image_base64 = message.get("image_base64")
@@ -130,16 +147,24 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                 if isinstance(previous_image_base64, str) and len(previous_image_base64.encode("utf-8")) > MAX_FRAME_BASE64_BYTES:
                     await websocket.send_json({"type": "error", "reason": "previous_frame_too_large"})
                     continue
+                try:
+                    base64.b64decode(image_base64, validate=True)
+                except (ValueError, binascii.Error):
+                    await websocket.send_json({"type": "error", "reason": "invalid_frame_payload"})
+                    continue
 
                 try:
-                    vision_payload = run_vqa_from_frame(
-                        prompt=prompt,
-                        image_base64=image_base64,
-                        model_override=model,
-                        incremental=incremental,
-                        previous_image_base64=previous_image_base64 if isinstance(previous_image_base64, str) else "",
-                        fast_response=fast_response,
-                    )
+                    if should_short_circuit_quality(mode=effective_mode, question=question, frame_quality=frame_quality):
+                        vision_payload = quality_gate_vqa_payload(frame_quality)
+                    else:
+                        vision_payload = run_vqa_from_frame(
+                            prompt=prompt,
+                            image_base64=image_base64,
+                            model_override=model,
+                            incremental=incremental,
+                            previous_image_base64=previous_image_base64 if isinstance(previous_image_base64, str) else "",
+                            fast_response=fast_response,
+                        )
                 except (ValueError, binascii.Error):
                     await websocket.send_json({"type": "error", "reason": "invalid_frame_payload"})
                     continue
@@ -149,6 +174,18 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                     vision_payload=vision_payload,
                     gps_payload=gps_payload,
                     latency_ms=latency_ms,
+                )
+                fused_result.setdefault("diagnostic_metrics", {})
+                fused_result["diagnostic_metrics"].update(
+                    {
+                        "direct_total_ms": latency_ms,
+                        "frame_base64_bytes": len(image_base64.encode("utf-8")),
+                        "mode": mode,
+                        "fast_response": fast_response,
+                        "incremental": incremental,
+                        "quality": frame_quality,
+                        "walking_roi_present": walking_roi is not None,
+                    }
                 )
                 await websocket.send_json(
                     {

@@ -199,10 +199,20 @@ def main() -> int:
     session_dir = args.session_dir.expanduser().resolve()
     rows = load_manifest(session_dir)
     labels = load_labels(session_dir)
+    repo_server = Path(__file__).resolve().parents[1]
+    if str(repo_server) not in sys.path:
+        sys.path.insert(0, str(repo_server))
+    from app.diagnostic_report import generate_diagnostic_report  # pylint: disable=import-error
+
     report: dict[str, Any] = {
         "session_dir": str(session_dir),
         "summary": summarize(rows),
         "label_summary": summarize_labels(labels),
+        "evaluation_report": generate_diagnostic_report(
+            session_id=session_dir.name.removeprefix("session-"),
+            rows=rows,
+            labels=labels,
+        ),
     }
     if args.run_qwen:
         report["qwen_results"] = run_qwen(session_dir=session_dir, rows=rows, limit=args.limit)

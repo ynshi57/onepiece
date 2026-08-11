@@ -26,11 +26,15 @@ class VqaResponse(BaseModel):
     suggested_action: str
     spoken_text: str
     ocr_text: str
+    risk_zone: str = "unknown"
+    direction: str = "unknown"
+    distance_confidence: str = "none"
     change_significance: str = "major"
     changes: str = ""
     requested_model: str = ""
     resolved_model: str = ""
     model_routing_reason: str = ""
+    diagnostic_metrics: Dict = Field(default_factory=dict)
     gps_location: Optional[Dict]
     latency_ms: Optional[float]
     timestamp: str

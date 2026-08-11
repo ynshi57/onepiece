@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 import json
 import os
 from time import perf_counter
@@ -7,6 +9,13 @@ from typing import Optional
 import websockets
 
 from app.diagnostic_capture import save_diagnostic_frame
+from app.frame_metadata import (
+    build_frame_metadata_prompt,
+    normalize_frame_quality,
+    normalize_walking_roi,
+    quality_gate_vqa_payload,
+    should_short_circuit_quality,
+)
 from app.fusion import fuse_vqa_result
 from app.prompts import resolve_prompt
 from app.scene_context import build_contextual_prompt
@@ -41,10 +50,14 @@ def build_inference_result(message: dict) -> dict:
     question = str(message.get("question", ""))
     context = message.get("context")
     context = context if isinstance(context, dict) else None
+    legacy_prompt = str(message.get("prompt", ""))
+    effective_mode = mode if mode.strip() else ("risk_observe" if not legacy_prompt.strip() else "")
+    frame_quality = normalize_frame_quality(message.get("frame_quality"))
+    walking_roi = normalize_walking_roi(message.get("walking_roi"))
     prompt = resolve_prompt(
         mode=mode,
         question=question,
-        legacy_prompt=str(message.get("prompt", "")),
+        legacy_prompt=legacy_prompt,
     )
     client_ocr_text = str(message.get("client_ocr_text", "")).strip()
     if client_ocr_text:
@@ -53,8 +66,13 @@ def build_inference_result(message: dict) -> dict:
             "如果用户在读文字，请优先利用这段 OCR 文本，并结合图像确认。"
         )
     prompt = build_contextual_prompt(prompt, mode=mode, context=context)
+    prompt = prompt + build_frame_metadata_prompt(
+        mode=effective_mode,
+        frame_quality=frame_quality,
+        walking_roi=walking_roi,
+    )
     incremental = context is not None and not question.strip()
-    fast_response = mode in {"walking", "surroundings"} and not question.strip()
+    fast_response = effective_mode in {"risk_observe", "walking", "surroundings"} and not question.strip()
     model = str(message.get("model", ""))
     image_base64 = message.get("image_base64")
     previous_image_base64 = message.get("previous_image_base64", "")
@@ -78,22 +96,45 @@ def build_inference_result(message: dict) -> dict:
             "request_id": request_id,
             "reason": "previous_frame_too_large",
         }
+    try:
+        base64.b64decode(image_base64, validate=True)
+    except (ValueError, binascii.Error):
+        return {
+            "type": "inference_error",
+            "request_id": request_id,
+            "reason": "invalid_frame_payload",
+        }
 
     started_at = perf_counter()
     gps_payload = normalize_gps(message.get("gps"))
-    vision_payload = run_vqa_from_frame(
-        prompt=prompt,
-        image_base64=image_base64,
-        model_override=model,
-        incremental=incremental,
-        previous_image_base64=previous_image_base64 if isinstance(previous_image_base64, str) else "",
-        fast_response=fast_response,
-    )
+    if should_short_circuit_quality(mode=effective_mode, question=question, frame_quality=frame_quality):
+        vision_payload = quality_gate_vqa_payload(frame_quality)
+    else:
+        vision_payload = run_vqa_from_frame(
+            prompt=prompt,
+            image_base64=image_base64,
+            model_override=model,
+            incremental=incremental,
+            previous_image_base64=previous_image_base64 if isinstance(previous_image_base64, str) else "",
+            fast_response=fast_response,
+        )
     latency_ms = (perf_counter() - started_at) * 1000.0
     fused_result = fuse_vqa_result(
         vision_payload=vision_payload,
         gps_payload=gps_payload,
         latency_ms=latency_ms,
+    )
+    fused_result.setdefault("diagnostic_metrics", {})
+    fused_result["diagnostic_metrics"].update(
+        {
+            "worker_total_ms": latency_ms,
+            "frame_base64_bytes": len(image_base64.encode("utf-8")),
+            "mode": mode,
+            "fast_response": fast_response,
+            "incremental": incremental,
+            "quality": frame_quality,
+            "walking_roi_present": walking_roi is not None,
+        }
     )
     return {
         "type": "inference_result",
