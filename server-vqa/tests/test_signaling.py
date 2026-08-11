@@ -132,3 +132,38 @@ def test_signaling_websocket_rejects_oversized_frame():
 
         assert error_message["type"] == "error"
         assert error_message["reason"] == "frame_too_large"
+
+
+def test_signaling_diagnostic_frame_upload_persists_on_backend(monkeypatch, tmp_path):
+    monkeypatch.setenv("DIAGNOSTIC_CAPTURE_DIR", str(tmp_path))
+    metadata = {
+        "diagnostic_session_id": "test-session",
+        "frame": "diag-1.jpg",
+        "mode": "walking",
+        "event": "sent_to_backend",
+        "perception": {
+            "model_status": "loaded",
+            "objects": [{"kind": "car", "direction": "center", "confidence": 0.86}],
+            "road_cues": {"crosswalk": "unknown", "lane_marking": "unknown", "curb": "unknown"},
+            "depth_cues": {"near_drop": "unknown", "nearest_obstacle_direction": "unknown"},
+        },
+    }
+
+    with client.websocket_connect("/ws/signaling") as websocket:
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "type": "diagnostic_frame",
+                "image_base64": SAMPLE_JPEG_BASE64,
+                "metadata_json": __import__("json").dumps(metadata),
+            }
+        )
+        ack = websocket.receive_json()
+
+    assert ack["type"] == "diagnostic_ack"
+    assert ack["session_id"] == "test-session"
+    session_dir = tmp_path / "session-test-session"
+    assert (session_dir / "metadata.json").is_file()
+    assert (session_dir / "manifest.jsonl").is_file()
+    assert (session_dir / "frames" / "frame-0001.jpg").is_file()
+    assert "frames/frame-0001.jpg" in (session_dir / "manifest.jsonl").read_text(encoding="utf-8")

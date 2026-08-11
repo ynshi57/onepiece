@@ -9,7 +9,6 @@ struct CameraRiskOverlay: View {
         GeometryReader { proxy in
             ZStack {
                 if isActive {
-                    movementGuide(in: proxy.size)
                     roadCueOverlay(in: proxy.size)
                     objectOverlay(in: proxy.size)
                     cueChips
@@ -54,37 +53,6 @@ struct CameraRiskOverlay: View {
             texts.append("最近障碍：\(signal.depthCues.nearestObstacleDirection.chineseLabel)")
         }
         return texts
-    }
-
-    private func movementGuide(in size: CGSize) -> some View {
-        Canvas { context, _ in
-            let bottomY = size.height * 0.92
-            let midY = size.height * 0.52
-            let topY = size.height * 0.30
-            let centerX = size.width * 0.5
-            let bottomHalf = size.width * 0.22
-            let midHalf = size.width * 0.13
-            let topHalf = size.width * 0.07
-
-            var left = Path()
-            left.move(to: CGPoint(x: centerX - bottomHalf, y: bottomY))
-            left.addLine(to: CGPoint(x: centerX - midHalf, y: midY))
-            left.addLine(to: CGPoint(x: centerX - topHalf, y: topY))
-
-            var right = Path()
-            right.move(to: CGPoint(x: centerX + bottomHalf, y: bottomY))
-            right.addLine(to: CGPoint(x: centerX + midHalf, y: midY))
-            right.addLine(to: CGPoint(x: centerX + topHalf, y: topY))
-
-            let style = StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [10, 8])
-            context.stroke(left, with: .color(.cyan.opacity(0.72)), style: style)
-            context.stroke(right, with: .color(.cyan.opacity(0.72)), style: style)
-
-            var center = Path()
-            center.move(to: CGPoint(x: centerX, y: bottomY))
-            center.addLine(to: CGPoint(x: centerX, y: topY))
-            context.stroke(center, with: .color(.white.opacity(0.22)), style: StrokeStyle(lineWidth: 1.5, dash: [4, 10]))
-        }
     }
 
     private func roadCueOverlay(in size: CGSize) -> some View {

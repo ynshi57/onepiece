@@ -167,6 +167,10 @@ protocol VideoTransporting: Sendable {
         previousImageBase64: String?,
         ocrText: String
     ) async
+    func sendDiagnosticFrame(
+        jpegData: Data,
+        metadataJSON: String
+    ) async -> Bool
     func disconnect() async
 }
 
@@ -226,6 +230,10 @@ actor MockWebRTCTransport: VideoTransporting {
         guard isConnected else {
             return
         }
+    }
+
+    func sendDiagnosticFrame(jpegData: Data, metadataJSON: String) async -> Bool {
+        isConnected
     }
 
     func disconnect() async {
@@ -334,6 +342,21 @@ actor WebSocketSignalingTransport: VideoTransporting {
             try await sendJSON(payload)
         } catch {
             return
+        }
+    }
+
+    func sendDiagnosticFrame(jpegData: Data, metadataJSON: String) async -> Bool {
+        do {
+            try await sendJSON(
+                [
+                    "type": "diagnostic_frame",
+                    "image_base64": jpegData.base64EncodedString(),
+                    "metadata_json": metadataJSON,
+                ]
+            )
+            return true
+        } catch {
+            return false
         }
     }
 

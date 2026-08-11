@@ -94,6 +94,16 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     @Published var voiceStatusText = String(localized: "语音待命")
     @Published var speechInputLevel: Double = 0
     @Published var localPerceptionSignal: LocalPerceptionSignal = .empty
+    @Published var isDiagnosticRecordingEnabled = false {
+        didSet {
+            if isDiagnosticRecordingEnabled {
+                diagnosticRecordingText = diagnosticRecorder.start()
+            } else {
+                diagnosticRecordingText = diagnosticRecorder.stop()
+            }
+        }
+    }
+    @Published var diagnosticRecordingText = String(localized: "诊断录制已关闭")
 
     let captureSession = AVCaptureSession()
 
@@ -108,6 +118,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private let videoOutput = AVCaptureVideoDataOutput()
     private let videoOutputQueue = DispatchQueue(label: "vqa.video.output.queue")
     private let frameCaptureProxy = FrameCaptureProxy()
+    private let diagnosticRecorder = DiagnosticCaptureRecorder()
     private var isSessionConfigured = false
     private var latestGPS: (lat: Double, lon: Double)?
     private var isStreamingActive = false
@@ -683,6 +694,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         currentVoiceIntent = nil
         clearQuestionAfterNextResult = false
         localPerceptionSignal = .empty
+        if isDiagnosticRecordingEnabled {
+            isDiagnosticRecordingEnabled = false
+        }
         inFlightSentAt = nil
         inFlightEncodeMs = nil
         inFlightOCRText = nil
@@ -940,10 +954,21 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             return
         }
         localPerceptionSignal = localVisionSignal.perception
-        guard !isRequestInFlight else {
+        let currentQuestion = questionInput
+        if isRequestInFlight {
+            if isDiagnosticRecordingEnabled {
+                uploadDiagnosticFrame(
+                    jpegData: jpegData,
+                    mode: selectedMode,
+                    question: currentQuestion,
+                    localVisionSignal: localVisionSignal,
+                    encodeMs: encodeMs,
+                    event: "captured_while_in_flight",
+                    reason: "backend request still in flight"
+                )
+            }
             return
         }
-        let currentQuestion = questionInput
         let millisecondsSinceLastBackendFrame = lastBackendFrameSentAt.map {
             (CACurrentMediaTime() - $0) * 1000.0
         }
@@ -955,6 +980,17 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             millisecondsSinceLastBackendFrame: millisecondsSinceLastBackendFrame
         )
         if case .skip(let reason) = sendDecision {
+            if isDiagnosticRecordingEnabled {
+                uploadDiagnosticFrame(
+                    jpegData: jpegData,
+                    mode: selectedMode,
+                    question: currentQuestion,
+                    localVisionSignal: localVisionSignal,
+                    encodeMs: encodeMs,
+                    event: "skipped_before_backend",
+                    reason: reason
+                )
+            }
             debugText = "local vision: \(reason); \(localVisionSignal.backendContext)"
             return
         }
@@ -993,6 +1029,17 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         }
         frameCounter += 1
         let frameID = "frame-\(frameCounter)"
+        if isDiagnosticRecordingEnabled {
+            uploadDiagnosticFrame(
+                jpegData: jpegData,
+                mode: selectedMode,
+                question: currentQuestion,
+                localVisionSignal: localVisionSignal,
+                encodeMs: encodeMs,
+                event: "sent_to_backend",
+                reason: frameID
+            )
+        }
         let sentAt = CACurrentMediaTime()
         inFlightSentAt = sentAt
         lastBackendFrameSentAt = sentAt
@@ -1013,6 +1060,42 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             ocrText: ocrText
         )
         previousFrameBase64 = jpegData.base64EncodedString()
+    }
+
+    private func uploadDiagnosticFrame(
+        jpegData: Data,
+        mode: AssistanceMode,
+        question: String,
+        localVisionSignal: LocalVisionSignal,
+        encodeMs: Double,
+        event: String,
+        reason: String
+    ) {
+        let frameName = "diag-\(frameCounter + 1).jpg"
+        guard let metadataJSON = diagnosticRecorder.metadataJSON(
+            frameName: frameName,
+            mode: mode,
+            question: question,
+            localVisionSignal: localVisionSignal,
+            encodeMs: encodeMs,
+            event: event,
+            reason: reason
+        ) else {
+            return
+        }
+        diagnosticRecordingText = diagnosticRecorder.markQueued()
+        Task { [weak self, transport] in
+            let success = await transport.sendDiagnosticFrame(
+                jpegData: jpegData,
+                metadataJSON: metadataJSON
+            )
+            await MainActor.run {
+                guard let self else {
+                    return
+                }
+                self.diagnosticRecordingText = self.diagnosticRecorder.recordUpload(success: success)
+            }
+        }
     }
 
     /// Assemble the continuity context from the previous result + place label so

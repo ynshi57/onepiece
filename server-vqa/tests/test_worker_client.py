@@ -137,3 +137,20 @@ def test_worker_assembles_context_and_marks_incremental(monkeypatch):
     # Continuity fields survive fusion back to the client.
     assert payload["change_significance"] == "none"
     assert payload["changes"] == "无明显变化"
+
+
+def test_worker_saves_diagnostic_request(monkeypatch, tmp_path):
+    monkeypatch.setenv("DIAGNOSTIC_CAPTURE_DIR", str(tmp_path))
+    payload = worker_client.build_diagnostic_result(
+        {
+            "type": "diagnostic_request",
+            "client_id": "relay-client",
+            "image_base64": SAMPLE_JPEG_BASE64,
+            "metadata_json": '{"diagnostic_session_id":"relay-diag","event":"sent_to_backend"}',
+        }
+    )
+
+    assert payload["type"] == "diagnostic_result"
+    assert payload["status"] == "ok"
+    assert payload["session_id"] == "relay-diag"
+    assert (tmp_path / "session-relay-diag" / "frames" / "frame-0001.jpg").is_file()

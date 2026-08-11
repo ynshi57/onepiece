@@ -1,0 +1,46 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+title Mode Switch - Surroundings to Walking
+
+actor User
+participant ModeBar
+participant StreamingViewModel as VM
+participant FrameCaptureProxy as Capture
+participant LocalVisionAnalyzer as Local
+participant Backend
+participant Qwen
+participant VoiceOverlay as UI
+
+User -> ModeBar : tap Walking
+ModeBar -> VM : selectMode(walking)
+VM -> VM : selectedMode = walking
+VM -> Capture : set walking encoding profile
+VM -> VM : previousFrameBase64 = nil
+VM -> VM : lastResult = nil
+VM -> VM : lastResultAt = nil
+VM -> VM : lastBackendFrameSentAt = nil
+VM -> UI : update action text
+
+note over VM
+Connection is not restarted.
+Current in-flight request is not cancelled yet.
+Next captured frame uses walking mode.
+end note
+
+Capture -> Local : next frame
+Local -> UI : update local perception overlay
+Capture -> VM : sendFrame
+VM -> VM : WalkingFrameSendPolicy
+alt risk or first walking frame or heartbeat
+  VM -> UI : possible immediate local voice
+  VM -> Backend : send frame with mode=walking
+  Backend -> Qwen : walking prompt and context
+  Qwen --> Backend : risk/action JSON
+  Backend --> VM : vqa_result
+  VM -> UI : update card and maybe speech
+else stable recent frame
+  VM -> UI : overlay updates only
+end
+@enduml

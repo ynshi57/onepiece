@@ -242,3 +242,45 @@ def test_relay_allows_only_one_inflight_request_per_client():
             assert error_message["type"] == "error"
             assert error_message["request_id"] == "req-inflight-002"
             assert error_message["reason"] == "too_many_inflight_requests"
+
+
+def test_relay_routes_diagnostic_frame_to_worker():
+    worker_id = "worker-diagnostic-001"
+    client_id = "client-diagnostic-001"
+
+    with client.websocket_connect("/ws/worker") as worker_ws:
+        worker_ws.send_json(
+            {
+                "type": "worker_register",
+                "worker_id": worker_id,
+                "pairing_token": TOKEN,
+            }
+        )
+        worker_ws.receive_json()
+
+        with client.websocket_connect("/ws/client") as client_ws:
+            client_ws.send_json(
+                {
+                    "type": "client_register",
+                    "client_id": client_id,
+                    "worker_id": worker_id,
+                    "pairing_token": TOKEN,
+                }
+            )
+            client_ws.receive_json()
+
+            client_ws.send_json(
+                {
+                    "type": "diagnostic_frame",
+                    "image_base64": SAMPLE_JPEG_BASE64,
+                    "metadata_json": '{"diagnostic_session_id":"relay-session","event":"sent_to_backend"}',
+                }
+            )
+            routed = worker_ws.receive_json()
+            assert routed["type"] == "diagnostic_request"
+            assert routed["client_id"] == client_id
+            assert routed["image_base64"] == SAMPLE_JPEG_BASE64
+            assert "relay-session" in routed["metadata_json"]
+
+            ack = client_ws.receive_json()
+            assert ack["type"] == "diagnostic_accepted"

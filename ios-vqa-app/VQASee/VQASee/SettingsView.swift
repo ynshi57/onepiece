@@ -87,6 +87,16 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("诊断上传") {
+                    Toggle("上传诊断帧", isOn: $viewModel.isDiagnosticRecordingEnabled)
+                    Text(viewModel.diagnosticRecordingText)
+                        .font(Theme.Typography.caption)
+                        .foregroundStyle(.secondary)
+                    Text("会把压缩画面和本地模型输出发送到当前连接的 Mac 后端，用于分析误检、漏检和 overlay 对齐。仅测试时开启。")
+                        .font(Theme.Typography.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("高级设置") {
                     Text("通常不需要填写。自动发现失败时才手动输入。")
                         .font(Theme.Typography.caption)

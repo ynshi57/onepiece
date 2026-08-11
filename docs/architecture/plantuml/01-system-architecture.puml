@@ -1,0 +1,65 @@
+@startuml
+skinparam backgroundColor white
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+title VQASee System Architecture
+
+actor "User" as User
+
+package "iPhone App" {
+  component "Camera" as Camera
+  component "Camera Preview" as Preview
+  component "Frame Capture" as Capture
+  component "Local Vision Analyzer" as LVA
+  component "Apple Vision" as Vision
+  component "YOLO11n Object CoreML" as YOLO
+  component "Local Perception Signal" as Signal
+  component "Risk Overlay" as Overlay
+  component "Frame Send Policy" as FramePolicy
+  component "Immediate Voice Policy" as ImmediateVoice
+  component "Voice Feedback Policy" as Voice
+  component "Diagnostic Recorder" as Recorder
+  component "WebSocket Transport" as WSTransport
+}
+
+package "Mac Backend" {
+  component "FastAPI WebSocket" as API
+  component "Prompt Context Builder" as Prompt
+  component "VQA Service" as VQA
+  component "Qwen llama-server" as Qwen
+  component "Fusion" as Fusion
+  component "Offline Analyzer" as Offline
+  component "Road Boundary Prototype" as Road
+}
+
+User --> Camera
+Camera --> Preview
+Camera --> Capture
+Capture --> LVA
+LVA --> Vision
+LVA --> YOLO
+Vision --> Signal
+YOLO --> Signal
+Signal --> Overlay
+Signal --> FramePolicy
+Signal --> ImmediateVoice
+Signal --> Recorder
+ImmediateVoice --> Voice
+FramePolicy --> Capture : send or skip backend
+Capture --> WSTransport : sendFrame
+WSTransport --> API
+API --> Prompt
+Prompt --> VQA
+VQA --> Qwen
+Qwen --> Fusion
+Fusion --> WSTransport
+WSTransport --> Voice
+Recorder --> Offline
+Offline --> Road
+
+note right of Overlay
+No fixed fake trajectory line by default.
+Only model or cue driven overlays should imply risk or boundary.
+end note
+@enduml

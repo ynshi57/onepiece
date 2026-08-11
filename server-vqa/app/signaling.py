@@ -1,4 +1,5 @@
 import binascii
+import json
 import os
 from time import perf_counter
 from typing import Dict, Optional
@@ -6,6 +7,7 @@ from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from app.diagnostic_capture import save_diagnostic_frame
 from app.fusion import fuse_vqa_result
 from app.prompts import resolve_prompt
 from app.scene_context import build_contextual_prompt
@@ -66,6 +68,30 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                         "session_id": session_id,
                     }
                 )
+                continue
+
+            if message_type == "diagnostic_frame":
+                image_base64 = message.get("image_base64")
+                metadata_json = message.get("metadata_json", "{}")
+                if not isinstance(image_base64, str) or not image_base64:
+                    await websocket.send_json({"type": "diagnostic_error", "reason": "invalid_frame_payload"})
+                    continue
+                if len(image_base64.encode("utf-8")) > MAX_FRAME_BASE64_BYTES:
+                    await websocket.send_json({"type": "diagnostic_error", "reason": "frame_too_large"})
+                    continue
+                try:
+                    metadata = json.loads(metadata_json) if isinstance(metadata_json, str) else {}
+                    if not isinstance(metadata, dict):
+                        metadata = {}
+                    saved = save_diagnostic_frame(
+                        session_id=session_id,
+                        image_base64=image_base64,
+                        metadata=metadata,
+                    )
+                except (ValueError, json.JSONDecodeError):
+                    await websocket.send_json({"type": "diagnostic_error", "reason": "invalid_diagnostic_payload"})
+                    continue
+                await websocket.send_json({"type": "diagnostic_ack", **saved})
                 continue
 
             if message_type == "frame":

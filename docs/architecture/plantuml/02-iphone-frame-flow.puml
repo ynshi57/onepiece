@@ -1,0 +1,43 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+title iPhone Realtime Frame Flow
+
+start
+:Camera emits frame;
+:FrameCaptureProxy throttles;
+:LocalVisionAnalyzer runs;
+:Brightness and scene-change score;
+:Apple Vision human detection;
+:YOLO11nObject detection;
+:Merge into LocalPerceptionSignal;
+:Update CameraRiskOverlay;
+
+if (Diagnostic recording enabled?) then (yes)
+  :Save JPEG and JSONL metadata;
+endif
+
+if (Streaming active?) then (yes)
+  if (Request already in flight?) then (yes)
+    :Record captured_while_in_flight;
+    stop
+  else (no)
+    :WalkingFrameSendPolicy;
+    if (Skip backend?) then (yes)
+      :Record skipped_before_backend;
+      stop
+    else (send)
+      :WalkingImmediateFeedbackPolicy;
+      if (Immediate cue?) then (yes)
+        :Speak short local warning;
+      endif
+      :Run OCR if needed;
+      :Send JPEG, mode and context to backend;
+    endif
+  endif
+else (no)
+  stop
+endif
+stop
+@enduml

@@ -6,6 +6,7 @@ from typing import Optional
 
 import websockets
 
+from app.diagnostic_capture import save_diagnostic_frame
 from app.fusion import fuse_vqa_result
 from app.prompts import resolve_prompt
 from app.scene_context import build_contextual_prompt
@@ -101,6 +102,31 @@ def build_inference_result(message: dict) -> dict:
     }
 
 
+def build_diagnostic_result(message: dict) -> dict:
+    client_id = str(message.get("client_id", "relay-client"))
+    image_base64 = message.get("image_base64")
+    metadata_json = message.get("metadata_json", "{}")
+    if not isinstance(image_base64, str) or not image_base64:
+        return {"type": "diagnostic_result", "status": "error", "reason": "invalid_frame_payload"}
+    if len(image_base64.encode("utf-8")) > MAX_FRAME_BASE64_BYTES:
+        return {"type": "diagnostic_result", "status": "error", "reason": "frame_too_large"}
+    try:
+        metadata = json.loads(metadata_json) if isinstance(metadata_json, str) else {}
+    except ValueError:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    try:
+        saved = save_diagnostic_frame(
+            session_id=client_id,
+            image_base64=image_base64,
+            metadata=metadata,
+        )
+    except ValueError as exc:
+        return {"type": "diagnostic_result", "status": "error", "reason": str(exc)}
+    return {"type": "diagnostic_result", "status": "ok", **saved}
+
+
 async def _handle_inference_request(websocket, send_lock: asyncio.Lock, message: dict) -> None:
     request_id = str(message.get("request_id", ""))
     try:
@@ -174,6 +200,11 @@ async def run_worker_once(
 
             message_type = message.get("type")
             if message_type in {"worker_registered", "pong"}:
+                continue
+
+            if message_type == "diagnostic_request":
+                result = await asyncio.to_thread(build_diagnostic_result, message)
+                await _send_json(websocket, send_lock, result)
                 continue
 
             if message_type != "inference_request":

@@ -1,0 +1,28 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+title Backend Qwen Flow
+
+start
+:Receive WebSocket frame;
+:Validate image payload;
+:Resolve mode and question prompt;
+:Add OCR text if provided;
+:Add scene and local_vision context;
+if (QWEN_API_BASE_URL configured?) then (yes)
+  :Build chat completion payload;
+  :Choose fast or full JSON schema;
+  :POST to local Qwen endpoint;
+  if (JSON valid?) then (yes)
+    :Normalize Qwen payload;
+  else (no)
+    :Surface model output error;
+  endif
+else (no)
+  :Heuristic fallback;
+endif
+:Fusion adds risk, action, speech and latency;
+:Return vqa_result;
+stop
+@enduml

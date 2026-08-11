@@ -1,0 +1,33 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+title Diagnostic Capture and Offline Analysis
+
+start
+:User opens Settings;
+:Enable Save Diagnostic Frames;
+repeat
+  :Capture JPEG frame;
+  :Record local vision and perception output;
+  if (Backend request in flight?) then (yes)
+    :event = captured_while_in_flight;
+  else (no)
+    if (Backend skipped?) then (yes)
+      :event = skipped_before_backend;
+    else (sent)
+      :event = sent_to_backend;
+    endif
+  endif
+  :Write frame image;
+  :Append manifest.jsonl;
+repeat while (recording enabled and frames under limit)
+:User disables recording;
+:Copy diagnostics session to Mac;
+:Run analyze_diagnostic_capture.py;
+if (Run Qwen offline?) then (yes)
+  :Offline rerun Qwen per saved frame;
+endif
+:Inspect false positives, false negatives and in-flight backlog;
+stop
+@enduml

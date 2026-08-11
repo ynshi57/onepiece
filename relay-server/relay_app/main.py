@@ -151,6 +151,10 @@ class RelayState:
             self.client_inflight[client_id] += 1
             return True, "ok", worker, expired
 
+    async def get_worker(self, worker_id: str) -> Optional[RelayConnection]:
+        async with self.lock:
+            return self.workers.get(worker_id)
+
     async def complete_request(self, request_id: str) -> Optional[ClientConnection]:
         async with self.lock:
             pending = self.pending.pop(request_id, None)
@@ -325,6 +329,29 @@ async def client_websocket(websocket: WebSocket) -> None:
             message_type = message.get("type")
             if message_type == "ping":
                 await connection.send_json({"type": "pong"})
+                continue
+
+            if message_type == "diagnostic_frame":
+                image_base64 = message.get("image_base64")
+                if not isinstance(image_base64, str) or not image_base64:
+                    await connection.send_json({"type": "diagnostic_error", "reason": "invalid_frame_payload"})
+                    continue
+                if len(image_base64.encode("utf-8")) > MAX_FRAME_BASE64_BYTES:
+                    await connection.send_json({"type": "diagnostic_error", "reason": "frame_too_large"})
+                    continue
+                worker = await state.get_worker(worker_id)
+                if worker is None:
+                    await connection.send_json({"type": "diagnostic_error", "reason": "worker_offline"})
+                    continue
+                await worker.send_json(
+                    {
+                        "type": "diagnostic_request",
+                        "client_id": client_id,
+                        "image_base64": image_base64,
+                        "metadata_json": str(message.get("metadata_json", "{}")),
+                    }
+                )
+                await connection.send_json({"type": "diagnostic_accepted"})
                 continue
 
             if message_type != "frame_request":
