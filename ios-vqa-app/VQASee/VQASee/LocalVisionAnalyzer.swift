@@ -93,8 +93,10 @@ enum WalkingFrameSendDecision: Equatable {
 }
 
 enum WalkingFrameSendPolicy {
-    static let sceneChangeThreshold = 0.18
-    static let heartbeatMs: Double = 6_000
+    static let sceneChangeThreshold = 0.22
+    static let significantSceneChangeThreshold = 0.36
+    static let minimumQwenIntervalMs: Double = 8_000
+    static let heartbeatMs: Double = 12_000
 
     static func decide(
         mode: AssistanceMode,
@@ -118,6 +120,9 @@ enum WalkingFrameSendPolicy {
         if signal.analyzerFailed {
             return .send("本地快速感知失败，安全起见发送")
         }
+        guard let elapsed = millisecondsSinceLastBackendFrame else {
+            return .send("行走模式首帧")
+        }
         if signal.perception.hasPriorityRiskObject {
             return .send("本地感知检测到风险物体")
         }
@@ -125,13 +130,13 @@ enum WalkingFrameSendPolicy {
             return .send("本地检测到疑似人形")
         }
         if signal.isLikelyCovered || signal.isTooDark {
-            return .send("本地检测到画面质量风险")
+            return elapsed >= minimumQwenIntervalMs ? .send("本地检测到画面质量风险") : .skip("画面质量风险已本地提示，等待低频复核")
+        }
+        if signal.sceneChangeScore >= significantSceneChangeThreshold && elapsed >= minimumQwenIntervalMs {
+            return .send("画面变化显著，低频复核")
         }
         if signal.sceneChangeScore >= sceneChangeThreshold {
-            return .send("画面变化明显")
-        }
-        guard let elapsed = millisecondsSinceLastBackendFrame else {
-            return .send("行走模式首帧")
+            return elapsed >= minimumQwenIntervalMs ? .send("画面变化明显，低频复核") : .skip("画面变化已记录，等待低频复核")
         }
         if elapsed >= heartbeatMs {
             return .send("行走模式安全心跳")
@@ -146,6 +151,8 @@ enum WalkingFrameSendPolicy {
 final class LocalVisionAnalyzer {
     private var previousFingerprint: [Double]?
     private let perceptionRunner = LocalPerceptionCoreMLRunner()
+    private let monocularDepthRunner = LocalMonocularDepthRunner()
+    private let segmentationRunner = LocalTraversabilitySegmentationRunner()
 
     func reset() {
         previousFingerprint = nil
@@ -163,18 +170,45 @@ final class LocalVisionAnalyzer {
                 analyzerFailed: true
             )
         }
+        return analyze(pixelBuffer: pixelBuffer)
+    }
 
+    func analyze(
+        pixelBuffer: CVPixelBuffer,
+        depthCues: LocalDepthCueSignal = LocalDepthCueSignal(),
+        depthCapability: LocalPathCapability = LocalDepthCapabilityDetector.currentDepthCapability()
+    ) -> LocalVisionSignal {
         let luminance = Self.luminanceFingerprint(pixelBuffer: pixelBuffer)
         let brightness = luminance.average
         let previous = previousFingerprint
         previousFingerprint = luminance.fingerprint
         let sceneChangeScore = Self.changeScore(current: luminance.fingerprint, previous: previous)
         let human = Self.detectHuman(pixelBuffer: pixelBuffer)
-        let perception = perceptionRunner
+        var perception = perceptionRunner
             .analyze(pixelBuffer: pixelBuffer)
             .merging(visionHuman: human)
+        if let segmentationCue = segmentationRunner.analyze(pixelBuffer: pixelBuffer) {
+            perception.segmentationCues = segmentationCue
+        }
+        var resolvedDepthCues = depthCues
+        var resolvedDepthCapability = depthCapability
+        if resolvedDepthCapability != .active,
+           let monocularCue = monocularDepthRunner.analyze(pixelBuffer: pixelBuffer) {
+            resolvedDepthCues = monocularCue
+            resolvedDepthCapability = .active
+        }
+        if resolvedDepthCues.nearDrop != .unknown || resolvedDepthCues.nearestObstacleDirection != .unknown {
+            perception.depthCues = resolvedDepthCues
+        }
         let isLikelyCovered = brightness < 0.035 || brightness > 0.97
         let isTooDark = brightness < 0.12
+        perception.pathGuidance = LocalPathGuidanceEngine.evaluate(
+            perception: perception,
+            isTooDark: isTooDark,
+            isLikelyCovered: isLikelyCovered,
+            depthCapability: resolvedDepthCapability,
+            segmentationCues: perception.segmentationCues
+        )
 
         return LocalVisionSignal(
             hasHuman: human.hasHuman,

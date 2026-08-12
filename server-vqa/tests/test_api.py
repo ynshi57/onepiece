@@ -243,3 +243,31 @@ def test_diagnostics_report_finds_evolution_tasks(monkeypatch, tmp_path):
     assert html_response.status_code == 200
     assert "评估报告" in html_response.text
     assert "自动发现的问题" in html_response.text
+
+
+def test_diagnostics_report_counts_backend_vqa_result(monkeypatch, tmp_path):
+    monkeypatch.setenv("DIAGNOSTIC_CAPTURE_DIR", str(tmp_path))
+    from app.diagnostic_capture import append_diagnostic_record, save_diagnostic_frame
+
+    save_diagnostic_frame(
+        session_id="raw-session",
+        image_base64="/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+        metadata={"diagnostic_session_id": "raw-session", "event": "sent_to_backend"},
+    )
+    append_diagnostic_record(
+        "raw-session",
+        {
+            "diagnostic_session_id": "raw-session",
+            "event": "backend_vqa_result",
+            "frame_id": "frame-1",
+            "vqa_result": {"summary": "ok"},
+            "diagnostic_metrics": {"qwen_raw_output_preview": "{...}", "schema_name": "vqa_walking_fast_result"},
+        },
+    )
+
+    response = client.get("/diagnostics/sessions/raw-session/report")
+
+    assert response.status_code == 200
+    report = response.json()
+    assert report["metrics"]["qwen_result_frames"] == 1
+    assert "missing_qwen_raw_output" not in {finding["code"] for finding in report["findings"]}

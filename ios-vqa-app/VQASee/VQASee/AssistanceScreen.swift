@@ -27,12 +27,18 @@ struct AssistanceScreen: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                CameraPreview(session: viewModel.captureSession)
-                    .ignoresSafeArea()
-                    // The raw preview layer carries no information for a VoiceOver
-                    // user — the AnswerPanel conveys the scene — so skip it in the
-                    // rotor instead of surfacing an unlabeled element.
-                    .accessibilityHidden(true)
+                Group {
+                    if viewModel.usesARDepthCapture {
+                        ARCameraPreview(session: viewModel.arSession)
+                    } else {
+                        CameraPreview(session: viewModel.captureSession)
+                    }
+                }
+                .ignoresSafeArea()
+                // The raw preview layer carries no information for a VoiceOver
+                // user — the AnswerPanel conveys the scene — so skip it in the
+                // rotor instead of surfacing an unlabeled element.
+                .accessibilityHidden(true)
 
                 CameraRiskOverlay(
                     signal: viewModel.localPerceptionSignal,

@@ -60,6 +60,7 @@ final class VQASeeTests: XCTestCase {
         let response = SignalingResponseParser.parse(
             from: [
                 "type": "vqa_result",
+                "frame_id": "frame-123",
                 "scene": "city street",
                 "objects": ["car", "traffic_light"],
                 "description": "cars on road",
@@ -70,12 +71,28 @@ final class VQASeeTests: XCTestCase {
         guard case let .vqaResult(result) = response else {
             return XCTFail("expected vqaResult, got \(response)")
         }
+        XCTAssertEqual(result.frameID, "frame-123")
         XCTAssertEqual(result.scene, "city street")
         XCTAssertEqual(result.objects, ["car", "traffic_light"])
         XCTAssertEqual(result.description, "cars on road")
         XCTAssertEqual(result.latencyMs, 123.4)
     }
 
+
+    func testParseVQAResultIncludesFrameIDFromRequestID() {
+        let response = SignalingResponseParser.parse(
+            from: [
+                "type": "vqa_result",
+                "request_id": "relay-frame-9",
+                "summary": "ok"
+            ]
+        )
+
+        guard case let .vqaResult(result) = response else {
+            return XCTFail("expected vqaResult, got \(response)")
+        }
+        XCTAssertEqual(result.frameID, "relay-frame-9")
+    }
     func testFrameMessageBuilderIncludesBase64AndGPS() {
         let frameData = Data([0x01, 0x02, 0x03])
         let payload = FrameMessageBuilder.build(
@@ -83,13 +100,15 @@ final class VQASeeTests: XCTestCase {
             prompt: "road scene",
             model: "qwen2.5vl:3b",
             jpegData: frameData,
-            gps: (lat: 37.33, lon: -122.02)
+            gps: (lat: 37.33, lon: -122.02),
+            diagnosticSessionID: "diag-session"
         )
 
         XCTAssertEqual(payload["type"] as? String, "frame")
         XCTAssertEqual(payload["frame_id"] as? String, "frame-123")
         XCTAssertEqual(payload["prompt"] as? String, "road scene")
         XCTAssertEqual(payload["model"] as? String, "qwen2.5vl:3b")
+        XCTAssertEqual(payload["diagnostic_session_id"] as? String, "diag-session")
         XCTAssertEqual(payload["image_base64"] as? String, "AQID")
         let gps = payload["gps"] as? [String: Double]
         XCTAssertEqual(gps?["lat"], 37.33)
@@ -977,6 +996,107 @@ final class VQASeeTests: XCTestCase {
         XCTAssertEqual(route.compatibilityMode, .walking)
         XCTAssertTrue(route.isSingleShotPreferred)
         XCTAssertTrue(route.prompt.contains("模式=风险观察"))
+    }
+
+    func testLocalPathGuidanceMarksCenterObjectAsBlocked() {
+        let object = LocalPerceptionObject(
+            kind: .person,
+            direction: .center,
+            confidence: 0.93,
+            normalizedBoundingBox: CGRect(x: 0.42, y: 0.08, width: 0.18, height: 0.28)
+        )
+        let perception = LocalPerceptionSignal(objects: [object], modelStatus: .loaded)
+
+        let guidance = LocalPathGuidanceEngine.evaluate(
+            perception: perception,
+            isTooDark: false,
+            isLikelyCovered: false,
+            depthCapability: .unsupported
+        )
+
+        XCTAssertEqual(guidance.nearPathStatus, .blocked)
+        XCTAssertEqual(guidance.focusDirection, .center)
+        XCTAssertTrue(guidance.reasons.contains(.objectInNearPath))
+        XCTAssertEqual(guidance.depthCapability, .unsupported)
+        XCTAssertEqual(guidance.segmentationCapability, .unsupported)
+    }
+
+    func testLocalPathGuidanceEmptySceneIsCandidateOpenNotSafe() {
+        let guidance = LocalPathGuidanceEngine.evaluate(
+            perception: .empty,
+            isTooDark: false,
+            isLikelyCovered: false,
+            depthCapability: .unsupported
+        )
+
+        XCTAssertEqual(guidance.nearPathStatus, .candidateOpen)
+        XCTAssertEqual(guidance.focusDirection, .unknown)
+        XCTAssertTrue(guidance.reasons.contains(.yoloOnly))
+    }
+
+    func testLocalPathGuidanceLowLightIsUnknown() {
+        let guidance = LocalPathGuidanceEngine.evaluate(
+            perception: .empty,
+            isTooDark: true,
+            isLikelyCovered: false,
+            depthCapability: .unsupported
+        )
+
+        XCTAssertEqual(guidance.nearPathStatus, .unknown)
+        XCTAssertTrue(guidance.reasons.contains(.lowLight))
+        XCTAssertFalse(guidance.uncertainRegions.isEmpty)
+    }
+
+    func testLocalPathGuidanceRightObjectFocusesRightFront() {
+        let object = LocalPerceptionObject(
+            kind: .obstacle,
+            direction: .right,
+            confidence: 0.88,
+            normalizedBoundingBox: CGRect(x: 0.70, y: 0.18, width: 0.18, height: 0.22)
+        )
+        let perception = LocalPerceptionSignal(objects: [object], modelStatus: .loaded)
+
+        let guidance = LocalPathGuidanceEngine.evaluate(
+            perception: perception,
+            isTooDark: false,
+            isLikelyCovered: false,
+            depthCapability: .unsupported
+        )
+
+        XCTAssertEqual(guidance.rightFrontStatus, .blocked)
+        XCTAssertEqual(guidance.focusDirection, .right)
+        XCTAssertTrue(guidance.reasons.contains(.objectInRightFront))
+    }
+
+    func testLocalPerceptionPostProcessorDowngradesSmallVehicleToObstacleCandidate() {
+        let adjusted = LocalPerceptionPostProcessor.adjustedDetection(
+            kind: .car,
+            confidence: 0.92,
+            boundingBox: CGRect(x: 0.56, y: 0.80, width: 0.18, height: 0.19)
+        )
+
+        XCTAssertEqual(adjusted?.kind, .obstacle)
+        XCTAssertLessThanOrEqual(adjusted?.confidence ?? 1, 0.72)
+    }
+
+    func testLocalPerceptionPostProcessorSuppressesBottomEdgeSmallPerson() {
+        let adjusted = LocalPerceptionPostProcessor.adjustedDetection(
+            kind: .person,
+            confidence: 0.98,
+            boundingBox: CGRect(x: 0.49, y: -0.0003, width: 0.20, height: 0.09)
+        )
+
+        XCTAssertNil(adjusted)
+    }
+
+    func testLocalPerceptionPostProcessorKeepsLargePerson() {
+        let adjusted = LocalPerceptionPostProcessor.adjustedDetection(
+            kind: .person,
+            confidence: 0.91,
+            boundingBox: CGRect(x: 0.42, y: 0.18, width: 0.20, height: 0.34)
+        )
+
+        XCTAssertEqual(adjusted?.kind, .person)
     }
 
 }

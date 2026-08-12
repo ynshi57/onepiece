@@ -8,7 +8,7 @@ from typing import Optional
 
 import websockets
 
-from app.diagnostic_capture import save_diagnostic_frame
+from app.diagnostic_capture import append_diagnostic_record, save_diagnostic_frame
 from app.frame_metadata import (
     build_frame_metadata_prompt,
     normalize_frame_quality,
@@ -136,6 +136,20 @@ def build_inference_result(message: dict) -> dict:
             "walking_roi_present": walking_roi is not None,
         }
     )
+    diagnostic_session_id = str(message.get("diagnostic_session_id", "")).strip()
+    if diagnostic_session_id:
+        append_diagnostic_record(
+            diagnostic_session_id,
+            {
+                "diagnostic_session_id": diagnostic_session_id,
+                "event": "backend_vqa_result",
+                "frame_id": request_id,
+                "mode": mode,
+                "question": question,
+                "vqa_result": fused_result,
+                "diagnostic_metrics": fused_result.get("diagnostic_metrics", {}),
+            },
+        )
     return {
         "type": "inference_result",
         "request_id": request_id,

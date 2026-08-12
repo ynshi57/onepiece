@@ -70,3 +70,34 @@ source .venv/bin/activate && pytest server-vqa/tests
 ```
 
 Then true product validation requires 30–50 real/near-real walking frames and p50/p95 latency reporting.
+
+## 2026-08-12 Latest-frame-wins P0
+
+Problem: in local Mac 16GB + Qwen runtime, Qwen is a slow verifier, not a realtime eye. Previous behavior dropped every camera frame captured while a request was in flight; diagnostics showed sessions with >70% `captured_while_in_flight` frames.
+
+Decision: add iOS-side latest-frame-wins before attempting deeper worker cancellation.
+
+Behavior:
+
+- When a backend/Qwen request is in flight, iOS keeps only the latest captured frame in memory (`pendingLatestFrame`).
+- Newer frames replace older pending frames; no queue grows.
+- Local immediate feedback still runs while Qwen is busy, so users can hear fast local risk hints.
+- When the current Qwen result returns or times out, iOS immediately sends the retained latest frame if streaming is still active.
+- Diagnostic upload still records `captured_while_in_flight`, with reason `backend busy; latest frame retained for next send`.
+
+Safety boundary:
+
+- The running Qwen request is not forcibly cancelled in this P0; stale result suppression is still a future step.
+- Pending frames are cleared on stop/disconnect/worker offline.
+- Single-shot voice questions do not keep the stream alive just to drain pending frames.
+
+Validation:
+
+- Swift business source typecheck passed with existing Swift 6 concurrency warnings.
+- Backend regression passed: `source .venv/bin/activate && pytest server-vqa/tests` → 92 passed.
+
+Next:
+
+- Add frame IDs to VQA results and ignore stale model results when a newer frame has already superseded them.
+- Store latest-frame replacement counts in diagnostics/report metrics.
+- Add backend/worker low-frequency Qwen policy and raw output capture.

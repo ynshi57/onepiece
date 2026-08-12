@@ -1,5 +1,34 @@
 import SwiftUI
 
+private extension LocalPathStatus {
+    var overlayColor: Color {
+        switch self {
+        case .candidateOpen:
+            return .cyan
+        case .caution:
+            return Theme.riskWarning
+        case .blocked:
+            return Theme.riskDanger
+        case .unknown:
+            return .gray
+        }
+    }
+
+    var overlayLabel: String {
+        switch self {
+        case .candidateOpen:
+            return "通行候选区"
+        case .caution:
+            return "通行区域需注意"
+        case .blocked:
+            return "通行区域疑似被占用"
+        case .unknown:
+            return "通行区域信息不足"
+        }
+    }
+}
+
+
 struct CameraRiskOverlay: View {
     let signal: LocalPerceptionSignal
     let mode: AssistanceMode
@@ -9,7 +38,9 @@ struct CameraRiskOverlay: View {
         GeometryReader { proxy in
             ZStack {
                 if isActive {
+                    pathGuidanceOverlay(in: proxy.size)
                     roadCueOverlay(in: proxy.size)
+                    riskRegionOverlay(in: proxy.size)
                     objectOverlay(in: proxy.size)
                     cueChips
                         .padding(.top, 94)
@@ -37,6 +68,10 @@ struct CameraRiskOverlay: View {
 
     private var cueTexts: [String] {
         var texts: [String] = []
+        texts.append(signal.pathGuidance.nearPathStatus.overlayLabel)
+        if let focus = focusDirectionText {
+            texts.append(focus)
+        }
         if signal.roadCues.crosswalk == .possible {
             texts.append("疑似人行横道")
         }
@@ -53,6 +88,139 @@ struct CameraRiskOverlay: View {
             texts.append("最近障碍：\(signal.depthCues.nearestObstacleDirection.chineseLabel)")
         }
         return texts
+    }
+
+    private var shouldDrawGuidanceCorridor: Bool {
+        let guidance = signal.pathGuidance
+        if guidance.nearPathStatus == .candidateOpen
+            && guidance.blockedRegions.isEmpty
+            && guidance.uncertainRegions.isEmpty
+            && guidance.reasons.contains(.yoloOnly) {
+            return false
+        }
+        return guidance.guidanceCorridor != nil
+    }
+
+    private var focusDirectionText: String? {
+        switch signal.pathGuidance.focusDirection {
+        case .left:
+            return "关注左前方"
+        case .center:
+            return "关注正前方"
+        case .right:
+            return "关注右前方"
+        case .unknown:
+            return nil
+        }
+    }
+
+    private func pathGuidanceOverlay(in size: CGSize) -> some View {
+        Canvas { context, _ in
+            let guidance = signal.pathGuidance
+            if shouldDrawGuidanceCorridor, let corridor = guidance.guidanceCorridor {
+                let polygon = guidanceCorridorPath(from: corridor, in: size)
+                let color = guidance.nearPathStatus.overlayColor
+                context.fill(polygon, with: .color(color.opacity(guidance.nearPathStatus == .candidateOpen ? 0.08 : 0.20)))
+                context.stroke(
+                    polygon,
+                    with: .color(color.opacity(0.86)),
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [12, 8])
+                )
+
+                var centerLine = Path()
+                centerLine.move(to: CGPoint(x: size.width * 0.5, y: size.height * 0.90))
+                centerLine.addLine(to: CGPoint(x: size.width * 0.5, y: size.height * 0.50))
+                context.stroke(
+                    centerLine,
+                    with: .color(color.opacity(0.62)),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [7, 7])
+                )
+            } else {
+                drawSubtleNearPathReference(in: &context, size: size)
+            }
+
+            drawAttentionZone(
+                in: &context,
+                size: size,
+                normalizedRect: LocalPathGuidanceEngine.leftFrontROI,
+                status: guidance.leftFrontStatus
+            )
+            drawAttentionZone(
+                in: &context,
+                size: size,
+                normalizedRect: LocalPathGuidanceEngine.rightFrontROI,
+                status: guidance.rightFrontStatus
+            )
+
+            for rect in guidance.uncertainRegions {
+                let viewRect = overlayRect(forNormalizedRect: rect, in: size)
+                let path = Path(roundedRect: viewRect, cornerRadius: 16)
+                context.fill(path, with: .color(.gray.opacity(0.20)))
+                context.stroke(path, with: .color(.gray.opacity(0.70)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+            }
+        }
+    }
+
+    private func riskRegionOverlay(in size: CGSize) -> some View {
+        Canvas { context, _ in
+            for rect in signal.pathGuidance.blockedRegions.prefix(8) {
+                let viewRect = overlayRect(forNormalizedRect: rect, in: size).insetBy(dx: -8, dy: -8)
+                let path = Path(roundedRect: viewRect, cornerRadius: 16)
+                let objectColor = Theme.riskDanger
+                context.fill(path, with: .color(objectColor.opacity(0.16)))
+                context.stroke(
+                    path,
+                    with: .color(objectColor.opacity(0.62)),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [10, 6])
+                )
+            }
+        }
+    }
+
+    private func guidanceCorridorPath(from rect: CGRect, in size: CGSize) -> Path {
+        let bottomY = size.height * (1 - rect.minY)
+        let topY = size.height * (1 - min(rect.maxY, 0.62))
+        var path = Path()
+        path.move(to: CGPoint(x: size.width * 0.30, y: bottomY))
+        path.addLine(to: CGPoint(x: size.width * 0.42, y: topY))
+        path.addQuadCurve(
+            to: CGPoint(x: size.width * 0.58, y: topY),
+            control: CGPoint(x: size.width * 0.50, y: topY - size.height * 0.04)
+        )
+        path.addLine(to: CGPoint(x: size.width * 0.70, y: bottomY))
+        path.closeSubpath()
+        return path
+    }
+
+    private func drawSubtleNearPathReference(in context: inout GraphicsContext, size: CGSize) {
+        var centerLine = Path()
+        centerLine.move(to: CGPoint(x: size.width * 0.5, y: size.height * 0.88))
+        centerLine.addLine(to: CGPoint(x: size.width * 0.5, y: size.height * 0.58))
+        context.stroke(
+            centerLine,
+            with: .color(.cyan.opacity(0.28)),
+            style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [6, 10])
+        )
+    }
+
+    private func drawAttentionZone(
+        in context: inout GraphicsContext,
+        size: CGSize,
+        normalizedRect: CGRect,
+        status: LocalPathStatus
+    ) {
+        guard status == .caution || status == .blocked else {
+            return
+        }
+        let rect = overlayRect(forNormalizedRect: normalizedRect, in: size)
+        let path = Path(roundedRect: rect, cornerRadius: 18)
+        let color = status.overlayColor
+        context.fill(path, with: .color(color.opacity(0.16)))
+        context.stroke(
+            path,
+            with: .color(color.opacity(0.76)),
+            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, dash: [8, 8])
+        )
     }
 
     private func roadCueOverlay(in size: CGSize) -> some View {
@@ -106,6 +274,14 @@ struct CameraRiskOverlay: View {
             .frame(width: rect.width, height: rect.height)
             .position(x: rect.midX, y: rect.midY)
         }
+    }
+
+    private func overlayRect(forNormalizedRect box: CGRect, in size: CGSize) -> CGRect {
+        let width = max(2, box.width * size.width)
+        let height = max(2, box.height * size.height)
+        let x = box.minX * size.width
+        let y = (1 - box.maxY) * size.height
+        return CGRect(x: x, y: y, width: width, height: height)
     }
 
     private func overlayRect(for object: LocalPerceptionObject, in size: CGSize) -> CGRect {

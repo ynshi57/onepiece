@@ -16,3 +16,9 @@ ios-vqa-app/VQASee/build/
 
 # Local diagnostic captures may contain user images/metadata; never commit.
 server-vqa/diagnostic-captures/
+
+# Optional local Core ML depth model (download via deploy/ios/install_depth_anything_v2_small.sh)
+ios-vqa-app/VQASee/VQASee/DepthAnythingV2SmallF16.mlpackage/
+
+# Optional local traversability segmentation model (install via deploy/ios/install_traversability_segmentation_model.sh)
+ios-vqa-app/VQASee/VQASee/VQASeeTraversabilitySegmentation.mlmodelc/

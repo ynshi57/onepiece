@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from app.diagnostic_capture import save_diagnostic_frame
+from app.diagnostic_capture import append_diagnostic_record, save_diagnostic_frame
 from app.frame_metadata import (
     build_frame_metadata_prompt,
     normalize_frame_quality,
@@ -187,6 +187,20 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                         "walking_roi_present": walking_roi is not None,
                     }
                 )
+                diagnostic_session_id = str(message.get("diagnostic_session_id", "")).strip()
+                if diagnostic_session_id:
+                    append_diagnostic_record(
+                        diagnostic_session_id,
+                        {
+                            "diagnostic_session_id": diagnostic_session_id,
+                            "event": "backend_vqa_result",
+                            "frame_id": frame_id,
+                            "mode": mode,
+                            "question": question,
+                            "vqa_result": fused_result,
+                            "diagnostic_metrics": fused_result.get("diagnostic_metrics", {}),
+                        },
+                    )
                 await websocket.send_json(
                     {
                         "type": "vqa_result",

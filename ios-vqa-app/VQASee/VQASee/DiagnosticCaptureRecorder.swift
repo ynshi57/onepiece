@@ -133,7 +133,45 @@ final class DiagnosticCaptureRecorder {
                 "near_drop": signal.depthCues.nearDrop.rawValue,
                 "nearest_obstacle_direction": signal.depthCues.nearestObstacleDirection.rawValue,
             ],
+            "path_guidance": pathGuidancePayload(signal.pathGuidance),
             "backend_context": signal.backendContext,
+        ]
+    }
+
+    private static func pathGuidancePayload(_ signal: LocalPathGuidanceSignal) -> [String: Any] {
+        var payload: [String: Any] = [
+            "near_path_status": signal.nearPathStatus.rawValue,
+            "left_front_status": signal.leftFrontStatus.rawValue,
+            "right_front_status": signal.rightFrontStatus.rawValue,
+            "focus_direction": signal.focusDirection.rawValue,
+            "confidence": signal.confidence,
+            "reasons": signal.reasons.map(\.rawValue),
+            "depth_capability": signal.depthCapability.rawValue,
+            "segmentation_capability": signal.segmentationCapability.rawValue,
+            "blocked_region_count": signal.blockedRegions.count,
+            "uncertain_region_count": signal.uncertainRegions.count,
+            "near_path_traversable_ratio": signal.segmentationCues.nearPathTraversableRatio as Any,
+            "left_front_traversable_ratio": signal.segmentationCues.leftFrontTraversableRatio as Any,
+            "right_front_traversable_ratio": signal.segmentationCues.rightFrontTraversableRatio as Any,
+        ]
+        if let corridor = signal.guidanceCorridor {
+            payload["guidance_corridor"] = rectPayload(corridor)
+        }
+        if !signal.blockedRegions.isEmpty {
+            payload["blocked_regions"] = signal.blockedRegions.map(rectPayload)
+        }
+        if !signal.uncertainRegions.isEmpty {
+            payload["uncertain_regions"] = signal.uncertainRegions.map(rectPayload)
+        }
+        return payload
+    }
+
+    private static func rectPayload(_ rect: CGRect) -> [String: Any] {
+        [
+            "x": rect.minX,
+            "y": rect.minY,
+            "width": rect.width,
+            "height": rect.height,
         ]
     }
 

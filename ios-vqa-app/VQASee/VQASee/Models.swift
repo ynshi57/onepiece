@@ -349,6 +349,7 @@ struct LatencySegments: Equatable {
 }
 
 struct VqaDisplayResult: Equatable {
+    let frameID: String
     let scene: String
     let objects: [String]
     let description: String

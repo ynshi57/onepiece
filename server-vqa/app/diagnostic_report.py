@@ -110,10 +110,21 @@ def generate_diagnostic_report(
     vehicle_detection_frames: set[str] = set()
     person_detection_frames: set[str] = set()
     qwen_result_frames = 0
+    path_status_counts: Counter[str] = Counter()
+    depth_capability_counts: Counter[str] = Counter()
+    segmentation_capability_counts: Counter[str] = Counter()
+    path_guidance_frames = 0
     for row in rows:
         frame = _text(row.get("backend_saved_frame")) or _text(row.get("frame"))
         if _has_qwen_result(row):
             qwen_result_frames += 1
+        perception = row.get("perception") if isinstance(row.get("perception"), dict) else {}
+        path_guidance = perception.get("path_guidance") if isinstance(perception.get("path_guidance"), dict) else {}
+        if path_guidance:
+            path_guidance_frames += 1
+            path_status_counts[str(path_guidance.get("near_path_status", "unknown"))] += 1
+            depth_capability_counts[str(path_guidance.get("depth_capability", "unknown"))] += 1
+            segmentation_capability_counts[str(path_guidance.get("segmentation_capability", "unknown"))] += 1
         for obj in _manifest_objects(row):
             kind = _text(obj.get("kind")) or "unknown"
             object_counts[kind] += 1
@@ -205,6 +216,28 @@ def generate_diagnostic_report(
             recommendation="保存 Qwen raw output，区分 JSON 截断、parser bug 和模型发散。",
         ))
 
+    if total_frames and path_guidance_frames == 0:
+        findings.append(_make_finding(
+            code="missing_path_guidance_signal",
+            severity="medium",
+            owner="system",
+            title="诊断数据缺少本地通行路径信号",
+            evidence=f"总帧 {total_frames}，带 path_guidance 的帧 {path_guidance_frames}。",
+            recommendation="把 LocalPathGuidanceSignal 写入诊断 manifest，并让 overlay 完全由该 signal 驱动。",
+        ))
+
+    depth_not_active = sum(count for key, count in depth_capability_counts.items() if key != "active")
+    segmentation_not_active = sum(count for key, count in segmentation_capability_counts.items() if key != "active")
+    if path_guidance_frames and (depth_not_active or segmentation_not_active):
+        findings.append(_make_finding(
+            code="path_guidance_capability_gap",
+            severity="medium",
+            owner="system",
+            title="本地通行路径仍缺少深度/分割能力",
+            evidence=f"path_guidance 帧 {path_guidance_frames}；depth={dict(depth_capability_counts)}；segmentation={dict(segmentation_capability_counts)}。",
+            recommendation="评估 ARKit/LiDAR depth、地面分割或可通行区域模型，逐步替换 YOLO-only 通行判断。",
+        ))
+
     if sent_to_backend and qwen_result_frames == 0:
         findings.append(_make_finding(
             code="missing_qwen_raw_output",
@@ -259,6 +292,10 @@ def generate_diagnostic_report(
             "vehicle_false_positive_labels": len(vehicle_false_positive_labels),
             "missed_risk_labels": len(missed_risk_labels),
             "output_error_labels": len(output_error_labels),
+            "path_guidance_frames": path_guidance_frames,
+            "path_near_status": dict(path_status_counts),
+            "path_depth_capability": dict(depth_capability_counts),
+            "path_segmentation_capability": dict(segmentation_capability_counts),
         },
         "findings": findings,
         "task_suggestions": [_task_from_finding(finding) for finding in findings],

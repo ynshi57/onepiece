@@ -1,4 +1,5 @@
 import CoreGraphics
+import ARKit
 import CoreML
 import CoreVideo
 import Foundation
@@ -204,11 +205,274 @@ enum LocalPerceptionModelStatus: String, Sendable, Equatable {
     case failed
 }
 
+
+
+enum LocalPathStatus: String, Sendable, Equatable {
+    case candidateOpen
+    case caution
+    case blocked
+    case unknown
+
+    var chineseLabel: String {
+        switch self {
+        case .candidateOpen:
+            return "通行候选区"
+        case .caution:
+            return "需要注意"
+        case .blocked:
+            return "疑似被占用"
+        case .unknown:
+            return "信息不足"
+        }
+    }
+}
+
+enum LocalPathReason: String, Sendable, Equatable {
+    case objectInNearPath
+    case objectInLeftFront
+    case objectInRightFront
+    case lowLight
+    case likelyCovered
+    case depthNearObstacle
+    case depthUnsupported
+    case depthHardwareAvailableButInactive
+    case segmentationUnsupported
+    case segmentationActive
+    case segmentationNearBlocked
+    case yoloOnly
+}
+
+enum LocalPathCapability: String, Sendable, Equatable {
+    case unsupported
+    case hardwareAvailableButInactive
+    case active
+}
+
+enum LocalDepthCapabilityDetector {
+    static func currentDepthCapability() -> LocalPathCapability {
+        guard ARWorldTrackingConfiguration.isSupported else {
+            return .unsupported
+        }
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+            || ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+            // The current VQASee camera pipeline uses AVCaptureSession, not ARSession,
+            // so depth-capable hardware is detected but depth is not yet active.
+            return .hardwareAvailableButInactive
+        }
+        return .unsupported
+    }
+}
+
+struct LocalSegmentationCueSignal: Sendable, Equatable {
+    var nearPathTraversableRatio: Double? = nil
+    var leftFrontTraversableRatio: Double? = nil
+    var rightFrontTraversableRatio: Double? = nil
+
+    var hasCoverage: Bool {
+        nearPathTraversableRatio != nil || leftFrontTraversableRatio != nil || rightFrontTraversableRatio != nil
+    }
+}
+
+struct LocalPathGuidanceSignal: Sendable, Equatable {
+    var nearPathStatus: LocalPathStatus = .unknown
+    var leftFrontStatus: LocalPathStatus = .unknown
+    var rightFrontStatus: LocalPathStatus = .unknown
+    var focusDirection: LocalVisionDirection = .unknown
+    var confidence: Double = 0
+    /// Normalized Vision-style rects (origin lower-left). They are candidates,
+    /// not navigation permissions.
+    var guidanceCorridor: CGRect? = nil
+    var blockedRegions: [CGRect] = []
+    var uncertainRegions: [CGRect] = []
+    var reasons: [LocalPathReason] = []
+    var depthCapability: LocalPathCapability = .unsupported
+    var segmentationCapability: LocalPathCapability = .unsupported
+    var segmentationCues = LocalSegmentationCueSignal()
+
+    static let empty = LocalPathGuidanceSignal(
+        nearPathStatus: .unknown,
+        leftFrontStatus: .unknown,
+        rightFrontStatus: .unknown,
+        focusDirection: .unknown,
+        confidence: 0,
+        guidanceCorridor: nil,
+        blockedRegions: [],
+        uncertainRegions: [],
+        reasons: [.depthUnsupported, .segmentationUnsupported],
+        depthCapability: .unsupported,
+        segmentationCapability: .unsupported,
+        segmentationCues: LocalSegmentationCueSignal()
+    )
+}
+
+enum LocalPathGuidanceEngine {
+    static let nearPathROI = CGRect(x: 0.25, y: 0.00, width: 0.50, height: 0.58)
+    static let leftFrontROI = CGRect(x: 0.00, y: 0.05, width: 0.42, height: 0.62)
+    static let rightFrontROI = CGRect(x: 0.58, y: 0.05, width: 0.42, height: 0.62)
+
+    static func evaluate(
+        perception: LocalPerceptionSignal,
+        isTooDark: Bool,
+        isLikelyCovered: Bool,
+        depthCapability: LocalPathCapability = LocalDepthCapabilityDetector.currentDepthCapability(),
+        segmentationCues: LocalSegmentationCueSignal = LocalSegmentationCueSignal()
+    ) -> LocalPathGuidanceSignal {
+        let segmentationCapability: LocalPathCapability = segmentationCues.hasCoverage ? .active : .unsupported
+        var reasons: [LocalPathReason] = [
+            depthCapability == .hardwareAvailableButInactive ? .depthHardwareAvailableButInactive : .depthUnsupported,
+            segmentationCapability == .active ? .segmentationActive : .segmentationUnsupported,
+            .yoloOnly,
+        ]
+        if isLikelyCovered {
+            reasons.append(.likelyCovered)
+            return LocalPathGuidanceSignal(
+                nearPathStatus: .unknown,
+                leftFrontStatus: .unknown,
+                rightFrontStatus: .unknown,
+                focusDirection: .unknown,
+                confidence: 0.2,
+                guidanceCorridor: nearPathROI,
+                blockedRegions: [],
+                uncertainRegions: [nearPathROI],
+                reasons: reasons,
+                depthCapability: depthCapability,
+                segmentationCapability: segmentationCapability,
+                segmentationCues: segmentationCues
+            )
+        }
+        if isTooDark {
+            reasons.append(.lowLight)
+            return LocalPathGuidanceSignal(
+                nearPathStatus: .unknown,
+                leftFrontStatus: .unknown,
+                rightFrontStatus: .unknown,
+                focusDirection: .unknown,
+                confidence: 0.28,
+                guidanceCorridor: nearPathROI,
+                blockedRegions: [],
+                uncertainRegions: [nearPathROI],
+                reasons: reasons,
+                depthCapability: depthCapability,
+                segmentationCapability: segmentationCapability,
+                segmentationCues: segmentationCues
+            )
+        }
+
+        let riskObjects = perception.objects.filter { $0.kind.isPriorityRisk }
+        let nearObjects = riskObjects.filter { intersects($0.normalizedBoundingBox, nearPathROI) }
+        let leftObjects = riskObjects.filter { intersects($0.normalizedBoundingBox, leftFrontROI) }
+        let rightObjects = riskObjects.filter { intersects($0.normalizedBoundingBox, rightFrontROI) }
+
+        if !nearObjects.isEmpty { reasons.append(.objectInNearPath) }
+        if !leftObjects.isEmpty { reasons.append(.objectInLeftFront) }
+        if !rightObjects.isEmpty { reasons.append(.objectInRightFront) }
+        if perception.depthCues.nearDrop == .possible || perception.depthCues.nearestObstacleDirection != .unknown {
+            reasons.append(.depthNearObstacle)
+        }
+
+        var nearStatus = status(for: nearObjects, blockedThreshold: 0.82)
+        var leftStatus = status(for: leftObjects, blockedThreshold: 0.86)
+        var rightStatus = status(for: rightObjects, blockedThreshold: 0.86)
+        if perception.depthCues.nearDrop == .possible || perception.depthCues.nearestObstacleDirection == .center {
+            nearStatus = maxSeverity(nearStatus, .caution)
+        }
+        if perception.depthCues.nearestObstacleDirection == .left {
+            leftStatus = maxSeverity(leftStatus, .caution)
+        }
+        if perception.depthCues.nearestObstacleDirection == .right {
+            rightStatus = maxSeverity(rightStatus, .caution)
+        }
+        if let ratio = segmentationCues.nearPathTraversableRatio, ratio < 0.35 {
+            nearStatus = maxSeverity(nearStatus, .caution)
+            reasons.append(.segmentationNearBlocked)
+        }
+        if let ratio = segmentationCues.leftFrontTraversableRatio, ratio < 0.30 {
+            leftStatus = maxSeverity(leftStatus, .caution)
+        }
+        if let ratio = segmentationCues.rightFrontTraversableRatio, ratio < 0.30 {
+            rightStatus = maxSeverity(rightStatus, .caution)
+        }
+        let focus = focusDirection(near: nearObjects, left: leftObjects, right: rightObjects, depth: perception.depthCues.nearestObstacleDirection)
+        let confidence = max(
+            riskObjects.map(\.confidence).max() ?? 0.55,
+            nearStatus == .candidateOpen ? 0.55 : 0
+        )
+        let blocked = riskObjects.compactMap(\.normalizedBoundingBox)
+
+        return LocalPathGuidanceSignal(
+            nearPathStatus: nearStatus,
+            leftFrontStatus: leftStatus,
+            rightFrontStatus: rightStatus,
+            focusDirection: focus,
+            confidence: min(confidence, 1.0),
+            guidanceCorridor: nearPathROI,
+            blockedRegions: blocked,
+            uncertainRegions: [],
+            reasons: Array(reasons.prefix(8)),
+            depthCapability: depthCapability,
+            segmentationCapability: segmentationCapability,
+            segmentationCues: segmentationCues
+        )
+    }
+
+    private static func status(for objects: [LocalPerceptionObject], blockedThreshold: Double) -> LocalPathStatus {
+        guard !objects.isEmpty else {
+            return .candidateOpen
+        }
+        if objects.contains(where: { object in
+            object.confidence >= blockedThreshold && (object.normalizedBoundingBox?.area ?? 0.04) >= 0.018
+        }) {
+            return .blocked
+        }
+        return .caution
+    }
+
+    private static func maxSeverity(_ lhs: LocalPathStatus, _ rhs: LocalPathStatus) -> LocalPathStatus {
+        func rank(_ status: LocalPathStatus) -> Int {
+            switch status {
+            case .candidateOpen: return 0
+            case .unknown: return 1
+            case .caution: return 2
+            case .blocked: return 3
+            }
+        }
+        return rank(lhs) >= rank(rhs) ? lhs : rhs
+    }
+
+    private static func focusDirection(
+        near: [LocalPerceptionObject],
+        left: [LocalPerceptionObject],
+        right: [LocalPerceptionObject],
+        depth: LocalVisionDirection
+    ) -> LocalVisionDirection {
+        if !near.isEmpty { return .center }
+        if depth != .unknown { return depth }
+        let leftScore = left.map(\.confidence).max() ?? 0
+        let rightScore = right.map(\.confidence).max() ?? 0
+        if leftScore == 0 && rightScore == 0 { return .unknown }
+        return leftScore >= rightScore ? .left : .right
+    }
+
+    private static func intersects(_ rect: CGRect?, _ roi: CGRect) -> Bool {
+        guard let rect else { return false }
+        return rect.intersection(roi).area > 0.006 || roi.contains(CGPoint(x: rect.midX, y: rect.midY))
+    }
+}
+
+private extension CGRect {
+    var area: Double {
+        max(0, Double(width)) * max(0, Double(height))
+    }
+}
+
+
 struct LocalPerceptionSignal: Sendable, Equatable {
     var objects: [LocalPerceptionObject] = []
     var roadCues = LocalRoadCueSignal()
     var depthCues = LocalDepthCueSignal()
     var modelStatus: LocalPerceptionModelStatus = .unavailable
+    var segmentationCues = LocalSegmentationCueSignal()
+    var pathGuidance = LocalPathGuidanceSignal.empty
 
     static let empty = LocalPerceptionSignal()
 
@@ -243,6 +507,10 @@ struct LocalPerceptionSignal: Sendable, Equatable {
         }
         parts.append(contentsOf: roadCues.backendParts)
         parts.append(contentsOf: depthCues.backendParts)
+        let pathText = pathGuidance.backendContext
+        if !pathText.isEmpty {
+            parts.append(pathText)
+        }
         return parts.joined(separator: "；")
     }
 
@@ -264,6 +532,81 @@ struct LocalPerceptionSignal: Sendable, Equatable {
             at: 0
         )
         return copy
+    }
+}
+
+extension LocalPathGuidanceSignal {
+    var backendContext: String {
+        guard nearPathStatus != .unknown || !reasons.isEmpty else {
+            return ""
+        }
+        var parts = ["本地通行区域：近处\(nearPathStatus.chineseLabel)"]
+        if focusDirection != .unknown {
+            parts.append("关注\(focusDirection.chineseLabel)")
+        }
+        switch depthCapability {
+        case .unsupported:
+            parts.append("深度硬件不支持")
+        case .hardwareAvailableButInactive:
+            parts.append("深度硬件可用但未启用")
+        case .active:
+            break
+        }
+        if segmentationCapability == .unsupported {
+            parts.append("地面分割不可用")
+        }
+        return parts.joined(separator: "，")
+    }
+}
+
+enum LocalPerceptionPostProcessor {
+    static func adjustedDetection(
+        kind: LocalPerceptionObjectKind,
+        confidence: Double,
+        boundingBox: CGRect
+    ) -> (kind: LocalPerceptionObjectKind, confidence: Double)? {
+        if shouldSuppressBottomEdgePerson(kind: kind, boundingBox: boundingBox) {
+            return nil
+        }
+        if shouldDowngradeVehicleCandidate(kind: kind, confidence: confidence, boundingBox: boundingBox) {
+            return (.obstacle, min(confidence, 0.72))
+        }
+        return (kind, confidence)
+    }
+
+    private static func shouldSuppressBottomEdgePerson(
+        kind: LocalPerceptionObjectKind,
+        boundingBox: CGRect
+    ) -> Bool {
+        guard kind == .person else {
+            return false
+        }
+        let area = boundingBox.area
+        let touchesBottom = boundingBox.minY <= 0.02
+        let veryThin = boundingBox.width <= 0.055
+        let veryShort = boundingBox.height <= 0.12
+        let touchesSide = boundingBox.minX <= 0.01 || boundingBox.maxX >= 0.99
+        return (touchesBottom && veryShort) || (touchesSide && veryThin && area < 0.025)
+    }
+
+    private static func shouldDowngradeVehicleCandidate(
+        kind: LocalPerceptionObjectKind,
+        confidence: Double,
+        boundingBox: CGRect
+    ) -> Bool {
+        guard kind == .car || kind == .truck || kind == .bus || kind == .motorcycle || kind == .bicycle else {
+            return false
+        }
+        let area = boundingBox.area
+        let aspect = Double(boundingBox.width / max(boundingBox.height, 0.001))
+        let smallOrMedium = area < 0.08
+        let notWideVehicleShape = aspect < 1.15
+        let edgeCandidate = boundingBox.minX <= 0.02 || boundingBox.maxX >= 0.98
+
+        // COCO vehicle classes are noisy indoors. Without scene/depth confirmation,
+        // small/vertical/edge vehicle detections are safer as generic object
+        // candidates than as user-facing "车辆/摩托车" facts.
+        return confidence < 0.97 && (smallOrMedium || notWideVehicleShape || edgeCandidate)
     }
 }
 
@@ -345,15 +688,23 @@ final class LocalPerceptionCoreMLRunner {
             signal.depthCues.nearDrop = .possible
         }
 
-        let kind = LocalPerceptionObjectKind.from(label: label)
-        guard kind != .unknown || label.contains("obstacle") else {
+        let rawKind = LocalPerceptionObjectKind.from(label: label)
+        guard rawKind != .unknown || label.contains("obstacle") else {
+            return
+        }
+        let normalizedKind = rawKind == .unknown ? .obstacle : rawKind
+        guard let adjusted = LocalPerceptionPostProcessor.adjustedDetection(
+            kind: normalizedKind,
+            confidence: confidence,
+            boundingBox: boundingBox
+        ) else {
             return
         }
         signal.objects.append(
             LocalPerceptionObject(
-                kind: kind == .unknown ? .obstacle : kind,
+                kind: adjusted.kind,
                 direction: Self.direction(for: boundingBox),
-                confidence: confidence,
+                confidence: adjusted.confidence,
                 normalizedBoundingBox: boundingBox
             )
         )

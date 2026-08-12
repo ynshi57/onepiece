@@ -363,7 +363,7 @@ async function deleteLabel(labelIndex) {{
 }}
 </script>"""
     help_text = """<p class='hint'>怎么标：优先填写“真实画面”和“真实风险”。如果系统把不存在的东西说出来，再填写“误报内容”；如果真实有危险但系统没提示，填写“漏报内容”。这些字段会变成可统计的 ground truth，比单纯备注更有用。</p>"""
-    body = f"<p><a href='/diagnostics/ui'>← 返回 sessions</a></p><h1>标注 session: {html.escape(session_id)}</h1>" + help_text + script + "".join(rows)
+    body = f"<p><a href='/diagnostics/ui'>← 返回 sessions</a> · <a href='/diagnostics/sessions/{html.escape(session_id)}/report/ui'>查看评估报告</a></p><h1>标注 session: {html.escape(session_id)}</h1>" + help_text + script + "".join(rows)
     return _html_page(f"标注 {session_id}", body)
 
 

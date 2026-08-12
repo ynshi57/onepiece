@@ -1,3 +1,4 @@
+import ARKit
 import AVFoundation
 import Combine
 import CoreLocation
@@ -15,6 +16,13 @@ import UIKit
 
 @MainActor
 final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDelegate, AVSpeechSynthesizerDelegate {
+    private struct PendingLatestFrame {
+        let jpegData: Data
+        let encodeMs: Double
+        let localVisionSignal: LocalVisionSignal
+        let queuedAt: CFTimeInterval
+    }
+
     private static let serverURLDefaultsKey = "vqasee.server.url.input"
     private static let pairingTokenDefaultsKey = "vqasee.relay.pairing_token"
     private static let workerIDDefaultsKey = "vqasee.relay.worker_id"
@@ -106,8 +114,10 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         }
     }
     @Published var diagnosticRecordingText = String(localized: "诊断录制已关闭")
+    @Published var usesARDepthCapture = false
 
     let captureSession = AVCaptureSession()
+    let arSession = ARSession()
 
     private let transport: VideoTransporting
     private let speechSynthesizer = AVSpeechSynthesizer()
@@ -120,12 +130,15 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private let videoOutput = AVCaptureVideoDataOutput()
     private let videoOutputQueue = DispatchQueue(label: "vqa.video.output.queue")
     private let frameCaptureProxy = FrameCaptureProxy()
+    private let arFrameCaptureProxy = ARFrameCaptureProxy()
     private let diagnosticRecorder = DiagnosticCaptureRecorder()
     private var isSessionConfigured = false
     private var latestGPS: (lat: Double, lon: Double)?
     private var isStreamingActive = false
     private var isRequestInFlight = false
     private var pendingSingleShotOnly = false
+    private var pendingLatestFrame: PendingLatestFrame?
+    private var latestFrameReplacementCount = 0
     private var currentVoiceIntent: VoiceQuestionIntent?
     /// True while a one-off question (typically from voice) is awaiting its answer,
     /// so we can clear `questionInput` after a single reply instead of pinning it to every frame.
@@ -155,6 +168,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private var inFlightSentAt: CFTimeInterval?
     private var inFlightEncodeMs: Double?
     private var inFlightOCRText: String?
+    private var inFlightFrameID: String?
     private var lastBackendFrameSentAt: CFTimeInterval?
     /// Fires if a sent frame gets no result/error back in time, so the UI can't hang
     /// silently on "处理中…". Slightly longer than the backend's own inference timeout.
@@ -198,6 +212,19 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
         frameCaptureProxy.onFrame = { [weak self] jpegData, encodeMs, localVisionSignal in
+            guard let self else {
+                return
+            }
+            Task {
+                await self.sendFrame(
+                    jpegData: jpegData,
+                    encodeMs: encodeMs,
+                    localVisionSignal: localVisionSignal
+                )
+            }
+        }
+        arSession.delegate = arFrameCaptureProxy
+        arFrameCaptureProxy.onFrame = { [weak self] jpegData, encodeMs, localVisionSignal in
             guard let self else {
                 return
             }
@@ -384,6 +411,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             isRequestInFlight = false
             // A spoken question must be answered even if the scene is unchanged.
             frameCaptureProxy.forceNextFrame()
+            arFrameCaptureProxy.forceNextFrame()
         }
     }
 
@@ -508,15 +536,20 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         errorText = nil
         // Fresh stream: first frame must always be sent (no stale duplicate hash).
         frameCaptureProxy.resetGateState()
+        arFrameCaptureProxy.resetGateState()
         frameCaptureProxy.setEncodingProfile(ObservationRoute.riskObserve.encodingProfile)
+        arFrameCaptureProxy.setEncodingProfile(ObservationRoute.riskObserve.encodingProfile)
+        usesARDepthCapture = ARFrameCaptureProxy.isDepthCaptureSupported
         previousFrameBase64 = nil
         lastBackendFrameSentAt = nil
         pendingSingleShotOnly = false
+        pendingLatestFrame = nil
+        latestFrameReplacementCount = 0
         summaryText = String(localized: "正在准备观察风险…")
         riskText = String(localized: "连接中")
         currentRiskLevel = "low"
 
-        startCameraPreviewIfNeeded()
+        startVisualCaptureIfNeeded()
 
         do {
             let relayConfig = RelayAuthConfig(
@@ -692,6 +725,8 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         isRequestInFlight = false
         isProcessing = false
         pendingSingleShotOnly = false
+        pendingLatestFrame = nil
+        latestFrameReplacementCount = 0
         currentVoiceIntent = nil
         clearQuestionAfterNextResult = false
         localPerceptionSignal = .empty
@@ -701,6 +736,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         inFlightSentAt = nil
         inFlightEncodeMs = nil
         inFlightOCRText = nil
+        inFlightFrameID = nil
         lastBackendFrameSentAt = nil
         // Reset scene-continuity so the next session starts fresh (first frame
         // speaks a full description; backend receives no stale context).
@@ -712,6 +748,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         frameCaptureProxy.resetGateState()
         await transport.disconnect()
         speechSynthesizer.stopSpeaking(at: .immediate)
+        arSession.pause()
         if captureSession.isRunning {
             DispatchQueue.global(qos: .userInitiated).async { [captureSession] in
                 captureSession.stopRunning()
@@ -729,6 +766,8 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         inFlightSentAt = nil
         inFlightEncodeMs = nil
         inFlightOCRText = nil
+        inFlightFrameID = nil
+        pendingLatestFrame = nil
 
         // If the user already stopped, this is just the expected teardown; ignore.
         guard isStreamingActive else {
@@ -870,11 +909,17 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             isProcessing = false
             inFlightSentAt = nil
             inFlightEncodeMs = nil
+            pendingLatestFrame = nil
         inFlightOCRText = nil
+            inFlightFrameID = nil
             errorText = String(localized: "Worker 离线：\(workerID)")
         case .streamAck(let frameID):
             debugText = "stream ack: \(frameID), waiting for frame result..."
         case .vqaResult(let result):
+            if !result.frameID.isEmpty, let currentFrameID = inFlightFrameID, result.frameID != currentFrameID {
+                debugText = "stale result ignored: \(result.frameID), current: \(currentFrameID)"
+                return
+            }
             clearInFlightWatchdog()
             isRequestInFlight = false
             isProcessing = false
@@ -931,6 +976,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                 pendingSingleShotOnly = false
             }
             currentVoiceIntent = nil
+            sendPendingLatestFrameIfNeeded(reason: "model_result")
         case .error(let reason):
             clearInFlightWatchdog()
             isRequestInFlight = false
@@ -962,6 +1008,21 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         )
         let compatibilityMode = observationRoute.compatibilityMode
         if isRequestInFlight {
+            pendingLatestFrame = PendingLatestFrame(
+                jpegData: jpegData,
+                encodeMs: encodeMs,
+                localVisionSignal: localVisionSignal,
+                queuedAt: CACurrentMediaTime()
+            )
+            latestFrameReplacementCount += 1
+            let immediateDecision = WalkingImmediateFeedbackPolicy.decide(
+                mode: compatibilityMode,
+                signal: localVisionSignal,
+                hasQuestion: !currentQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                millisecondsSinceLastImmediateSpeech: lastSpokenAt.map { (CACurrentMediaTime() - $0) * 1000.0 }
+            )
+            applyVoiceFeedbackDecision(immediateDecision, source: "Local Vision")
+            debugText = "latest-frame-wins: retained latest frame while backend busy (#\(latestFrameReplacementCount)); \(localVisionSignal.backendContext)"
             if isDiagnosticRecordingEnabled {
                 uploadDiagnosticFrame(
                     jpegData: jpegData,
@@ -970,7 +1031,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                     localVisionSignal: localVisionSignal,
                     encodeMs: encodeMs,
                     event: "captured_while_in_flight",
-                    reason: "backend request still in flight"
+                    reason: "backend busy; latest frame retained for next send"
                 )
             }
             return
@@ -1051,6 +1112,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         lastBackendFrameSentAt = sentAt
         inFlightEncodeMs = encodeMs
         inFlightOCRText = ocrText
+        inFlightFrameID = frameID
         // Keep the previous latencyText visible; the UI shows an "更新中" hint via isProcessing.
         armInFlightWatchdog(for: frameID)
         await transport.sendFrame(
@@ -1063,9 +1125,29 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             question: currentQuestion,
             context: currentFrameContext(localVisionSignal: localVisionSignal),
             previousImageBase64: observationRoute.shouldSendPreviousFrame ? previousFrameBase64 : nil,
-            ocrText: ocrText
+            ocrText: ocrText,
+            diagnosticSessionID: isDiagnosticRecordingEnabled ? diagnosticRecorder.sessionID : ""
         )
         previousFrameBase64 = jpegData.base64EncodedString()
+    }
+
+    private func sendPendingLatestFrameIfNeeded(reason: String) {
+        guard isStreamingActive, !isRequestInFlight, let pending = pendingLatestFrame else {
+            return
+        }
+        pendingLatestFrame = nil
+        let ageMs = (CACurrentMediaTime() - pending.queuedAt) * 1000.0
+        debugText = String(format: "latest-frame-wins: sending retained frame after %@, age %.0f ms", reason, ageMs)
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+            await self.sendFrame(
+                jpegData: pending.jpegData,
+                encodeMs: pending.encodeMs,
+                localVisionSignal: pending.localVisionSignal
+            )
+        }
     }
 
     private func uploadDiagnosticFrame(
@@ -1169,6 +1251,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         inFlightSentAt = nil
         inFlightEncodeMs = nil
         inFlightOCRText = nil
+        inFlightFrameID = nil
         latencyText = String(localized: "超时")
         debugText = "timeout waiting for \(frameID)"
         errorText = String(localized: "等待结果超时（\(inFlightTimeoutSeconds)s）：可能是模型太慢或连接中断。可重试或切换到更快的 3B 模型。")
@@ -1177,6 +1260,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             pendingSingleShotOnly = false
         }
         currentVoiceIntent = nil
+        sendPendingLatestFrameIfNeeded(reason: "timeout")
     }
 
     private func riskTitle(for level: String) -> String {
@@ -1271,6 +1355,21 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             try audioSession.setActive(true)
         } catch {
             errorText = String(localized: "语音会话初始化失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func startVisualCaptureIfNeeded() {
+        if usesARDepthCapture, let configuration = ARFrameCaptureProxy.makeConfiguration() {
+            if captureSession.isRunning {
+                DispatchQueue.global(qos: .userInitiated).async { [captureSession] in
+                    captureSession.stopRunning()
+                }
+            }
+            arSession.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+        } else {
+            usesARDepthCapture = false
+            arSession.pause()
+            startCameraPreviewIfNeeded()
         }
     }
 

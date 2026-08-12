@@ -59,6 +59,47 @@ def list_sessions() -> list[dict]:
     return sessions
 
 
+
+def append_diagnostic_record(session_id: str, metadata: dict[str, Any]) -> dict:
+    """Append a metadata-only diagnostic record to an existing/new session.
+
+    Used for backend results (raw/fused model data) after the iOS frame upload.
+    It intentionally does not persist another image, avoiding duplicate frame files.
+    """
+    diagnostic_session_id = str(metadata.get("diagnostic_session_id") or session_id)
+    session_dir = get_session_dir(diagnostic_session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    metadata_path = session_dir / "metadata.json"
+    if not metadata_path.exists():
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "format": "vqasee-backend-diagnostic-v1",
+                    "source": "backend diagnostic metadata",
+                    "privacy": "user-enabled diagnostic capture stored on local backend",
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    record = dict(metadata) if isinstance(metadata, dict) else {}
+    record["backend_saved_at"] = datetime.now(timezone.utc).isoformat()
+    manifest_path = session_dir / "manifest.jsonl"
+    with manifest_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
+        handle.write("\n")
+
+    return {
+        "session_id": session_dir.name.removeprefix("session-"),
+        "session_dir": str(session_dir),
+    }
+
 def save_diagnostic_frame(session_id: str, image_base64: str, metadata: dict[str, Any]) -> dict:
     if not isinstance(image_base64, str) or not image_base64:
         raise ValueError("invalid_image_base64")

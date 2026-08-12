@@ -49,6 +49,7 @@ struct SignalingResponseParser {
             }
             return .streamAck(frameID: frameID)
         case "vqa_result":
+            let frameID = payload["frame_id"] as? String ?? payload["request_id"] as? String ?? ""
             let scene = payload["scene"] as? String ?? "unknown"
             let objects = payload["objects"] as? [String] ?? []
             let description = payload["description"] as? String ?? "no description"
@@ -71,6 +72,7 @@ struct SignalingResponseParser {
             }
             return .vqaResult(
                 VqaDisplayResult(
+                    frameID: frameID,
                     scene: scene,
                     objects: objects,
                     description: description,
@@ -105,7 +107,8 @@ struct FrameMessageBuilder {
         question: String = "",
         context: FrameContext? = nil,
         previousImageBase64: String? = nil,
-        ocrText: String = ""
+        ocrText: String = "",
+        diagnosticSessionID: String = ""
     ) -> [String: Any] {
         var payload: [String: Any] = [
             "type": "frame",
@@ -136,6 +139,10 @@ struct FrameMessageBuilder {
         if !trimmedOcrText.isEmpty {
             payload["client_ocr_text"] = trimmedOcrText
         }
+        let trimmedDiagnosticSessionID = diagnosticSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedDiagnosticSessionID.isEmpty {
+            payload["diagnostic_session_id"] = trimmedDiagnosticSessionID
+        }
 
         if let gps {
             payload["gps"] = [
@@ -165,7 +172,8 @@ protocol VideoTransporting: Sendable {
         question: String,
         context: FrameContext?,
         previousImageBase64: String?,
-        ocrText: String
+        ocrText: String,
+        diagnosticSessionID: String
     ) async
     func sendDiagnosticFrame(
         jpegData: Data,
@@ -191,6 +199,7 @@ actor MockWebRTCTransport: VideoTransporting {
         onEvent(
             .vqaResult(
                 VqaDisplayResult(
+                    frameID: "mock-frame",
                     scene: "mock-scene",
                     objects: ["person"],
                     description: "mock transport result",
@@ -225,7 +234,8 @@ actor MockWebRTCTransport: VideoTransporting {
         question: String,
         context: FrameContext?,
         previousImageBase64: String?,
-        ocrText: String
+        ocrText: String,
+        diagnosticSessionID: String
     ) async {
         guard isConnected else {
             return
@@ -320,7 +330,8 @@ actor WebSocketSignalingTransport: VideoTransporting {
         question: String,
         context: FrameContext?,
         previousImageBase64: String?,
-        ocrText: String
+        ocrText: String,
+        diagnosticSessionID: String
     ) async {
         var payload = FrameMessageBuilder.build(
             frameID: frameID,
@@ -332,7 +343,8 @@ actor WebSocketSignalingTransport: VideoTransporting {
             question: question,
             context: context,
             previousImageBase64: previousImageBase64,
-            ocrText: ocrText
+            ocrText: ocrText,
+            diagnosticSessionID: diagnosticSessionID
         )
         if usesRelayProtocol {
             payload["type"] = "frame_request"
@@ -446,11 +458,22 @@ enum FrameJPEGEncoder {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return nil
         }
-        // AVCaptureVideoDataOutput delivers camera buffers in sensor orientation.
-        // Vision requests below use `.right`, so the JPEG sent to Qwen and saved in
-        // diagnostics must be oriented the same way. Otherwise the local detector
-        // sees an upright image while the backend/model sees a sideways frame,
-        // which causes poor VQA and confusing diagnostic thumbnails.
+        return encode(
+            pixelBuffer: pixelBuffer,
+            maxDimension: maxDimension,
+            quality: quality,
+            maxBytes: maxBytes
+        )
+    }
+
+    static func encode(
+        pixelBuffer: CVPixelBuffer,
+        maxDimension: CGFloat = StreamingLimits.maxImageDimension,
+        quality: CGFloat = StreamingLimits.jpegQuality,
+        maxBytes: Int = StreamingLimits.maxJPEGBytes
+    ) -> Data? {
+        // Camera buffers arrive in sensor orientation. Vision/AR analysis uses `.right`,
+        // so the JPEG sent to Qwen and diagnostics must match that upright view.
         let orientedImage = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
         let width = orientedImage.extent.width
         let height = orientedImage.extent.height

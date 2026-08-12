@@ -32,6 +32,9 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		4210DF692FCFFEC900080AA6 /* VQASee */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+				YOLO11nObject.mlmodelc = wrapper.mlmodelc;
+			};
 			path = VQASee;
 			sourceTree = "<group>";
 		};

@@ -571,6 +571,7 @@ def run_vqa_from_frame(
         parsed["resolved_model"] = model_info["resolved_model"]
         parsed["model_routing_reason"] = model_info["routing_reason"]
         parsed["diagnostic_metrics"] = {
+            "qwen_raw_output_preview": content[:1200] if isinstance(content, str) else "",
             "qwen_http_ms": qwen_http_ms,
             "schema_name": schema_name,
             "frame_base64_bytes": len(image_base64.encode("utf-8")),
