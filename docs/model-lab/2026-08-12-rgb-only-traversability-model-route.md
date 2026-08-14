@@ -109,3 +109,47 @@ monocularDepthCapability = unsupported
 - Apple Core ML semantic segmentation sample describes loading segmentation models and overlaying masks.
 - Depth Anything V2 provides efficient monocular depth estimation for RGB-only devices.
 - Fast-SCNN is designed for real-time semantic segmentation on embedded devices.
+
+## 2026-08-13 执行记录：Fast-SCNN floor segmentation 转换脚本
+
+已新增：
+
+```bash
+deploy/ios/convert_floor_segmentation_onnx_to_coreml.sh
+```
+
+目标：
+
+1. 从 Hugging Face `Tanishjain9/fast-scnn-floor-segmentation` 下载 ONNX；
+2. 检查本地 ONNX→Core ML 转换环境；
+3. 转换成 `VQASeeTraversabilitySegmentation.mlpackage`；
+4. 调用 `install_traversability_segmentation_model.sh` 安装为 `VQASeeTraversabilitySegmentation.mlmodelc`。
+
+当前执行结果：
+
+- Codex 当前执行环境无法解析 Hugging Face 域名，下载失败：`nodename nor servname provided, or not known`。
+- 本地 `.venv` 缺少 `onnx`。
+- 当前 `coremltools 9.0` 不再暴露 legacy `ct.converters.onnx`，所以即使 ONNX 下载成功，也需要：
+  - 使用兼容的 onnx-coreml/coremltools 环境；或
+  - 重新从 PyTorch 模型导出 TorchScript/MLProgram；或
+  - 直接提供已转换好的 `.mlpackage`。
+
+因此：脚本不会假装转换成功；它会明确告诉开发者缺少哪个环节。
+
+下一步建议：
+
+- 在开发者本机运行下载脚本；
+- 如果 ONNX 转换失败，优先找/生成 PyTorch checkpoint → TorchScript → coremltools.convert 的路径；
+- 或手动把已转换的 segmentation `.mlpackage` 交给：
+
+```bash
+bash deploy/ios/install_traversability_segmentation_model.sh /path/to/model.mlpackage
+```
+
+验证仍通过：
+
+```bash
+source .venv/bin/activate && pytest server-vqa/tests
+```
+
+结果：93 passed。

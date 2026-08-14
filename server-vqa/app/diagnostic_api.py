@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 
 from app.diagnostic_capture import capture_root, get_session_dir, list_sessions
 from app.diagnostic_report import generate_report_from_session_dir
+from app.path_dataset_eval import evaluate_path_guidance, load_jsonl
+from app.path_dataset_import import create_manifest_from_folders
+from app.path_manifest_export import export_session_path_manifest, manifest_to_jsonl
 
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
@@ -59,7 +63,9 @@ def _html_page(title: str, body: str) -> HTMLResponse:
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; margin: 24px; background: #0b0f14; color: #f5f5f7; }}
     a {{ color: #64d2ff; }}
+    .hero {{ background: linear-gradient(135deg, #1c1c1e, #102033); border: 1px solid #3a3a3c; border-radius: 20px; padding: 20px; margin: 16px 0; }}
     .card {{ background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 16px; padding: 16px; margin: 16px 0; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }}
     img {{ max-width: 420px; border-radius: 12px; border: 1px solid #3a3a3c; }}
     input, select, textarea, button {{ font: inherit; margin: 4px; }}
     input, select, textarea {{ background: #2c2c2e; color: #fff; border: 1px solid #555; border-radius: 8px; padding: 8px; }}
@@ -72,7 +78,12 @@ def _html_page(title: str, body: str) -> HTMLResponse:
     .field-grid {{ display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr); gap: 8px; max-width: 760px; }}
     .field-grid label {{ color: #d1d1d6; font-size: 0.92rem; }}
     .field-grid textarea {{ width: 100%; box-sizing: border-box; }}
+    .frame-overlay {{ position: relative; display: inline-block; max-width: 420px; }}
+    .frame-overlay img {{ display: block; width: 100%; height: auto; }}
+    .frame-overlay svg {{ position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }}
     .explain {{ color: #8e8e93; font-size: 0.92rem; margin-top: 4px; }}
+    details {{ background: #151518; border: 1px solid #3a3a3c; border-radius: 12px; padding: 10px; margin: 12px 0; }}
+    summary {{ cursor: pointer; font-weight: 700; }}
     .row {{ display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }}
     pre {{ white-space: pre-wrap; background: #111; padding: 12px; border-radius: 12px; max-width: 680px; }}
   </style>
@@ -157,7 +168,9 @@ def diagnostics_ui():
         cards.append(
             f"<div class='card'><h2>{sid}</h2>"
             f"<p class='muted'>frames: {item['frame_count']} · manifest rows: {item['manifest_rows']}</p>"
-            f"<p><a href='/diagnostics/sessions/{sid}/annotate'>打开标注</a> · "
+            f"<p><a href='/diagnostics/sessions/{sid}/annotate'>标注</a> · "
+            f"<a href='/diagnostics/sessions/{sid}/path-guidance/ui'>引导层可视化</a> · "
+            f"<a href='/diagnostics/sessions/{sid}/report/ui'>评估报告</a> · "
             f"<button onclick=\"deleteSession('{sid}')\">删除 session</button></p></div>"
         )
     script = """<script>
@@ -167,8 +180,102 @@ async function deleteSession(sessionId) {
   if (resp.ok) location.reload(); else alert('删除失败');
 }
 </script>"""
-    body = "<h1>VQASee 诊断标注台</h1><p class='muted'>本页面只服务本地 Mac 后端诊断数据。删除不可恢复。</p>" + script + ("".join(cards) or "<p>暂无 session。</p>")
-    return _html_page("VQASee 诊断标注台", body)
+    hero = """
+<div class='hero'>
+  <h1>VQASee 闭环实验平台</h1>
+  <p class='hint'>从真机诊断帧、开源数据集、本地感知层、Mac 后端 Qwen 到评估报告的一站式实验入口。普通用户不会看到这个页面。</p>
+  <p><span class='pill'>采集数据</span><span class='pill'>结构化标注</span><span class='pill'>引导层可视化</span><span class='pill'>评估报告</span><span class='pill'>任务建议</span></p>
+</div>
+"""
+    modules = """
+<div class='grid'>
+  <div class='card'><h2>1. 真机诊断 Sessions</h2><p class='muted'>查看 iPhone 上传的帧、metadata、本地模型输出和 path guidance。</p></div>
+  <div class='card'><h2>2. 引导层可视化</h2><p class='muted'>把 LocalPathGuidanceSignal 叠加到图片上，检查通行候选区、风险区和不确定区是否合理。</p></div>
+  <div class='card'><h2>3. 评估报告</h2><p class='muted'>自动发现 in-flight、误报、漏报、缺 Qwen raw output、depth/segmentation 能力缺口。</p></div>
+  <div class='card'><h2>4. 开源数据集评估</h2><p class='muted'>CLI：<code>python server-vqa/tools/evaluate_path_guidance_dataset.py docs/datasets/path-guidance-manifest-example.jsonl</code></p><p><a href='/diagnostics/datasets/ui'>打开数据集评估</a></p></div>
+</div>
+"""
+    body = hero + modules + "<h2>Sessions</h2>" + script + ("".join(cards) or "<p>暂无 session。</p>")
+    return _html_page("VQASee 闭环实验平台", body)
+
+
+def _manifest_rows(session_dir: Path) -> list[dict]:
+    manifest_path = session_dir / "manifest.jsonl"
+    if not manifest_path.is_file():
+        return []
+    rows: list[dict] = []
+    for line in manifest_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
+
+
+def _svg_rect(rect: dict, color: str, opacity: float, dash: str = "") -> str:
+    try:
+        x = float(rect.get("x", 0)) * 100
+        y = (1 - float(rect.get("y", 0)) - float(rect.get("height", 0))) * 100
+        w = float(rect.get("width", 0)) * 100
+        h = float(rect.get("height", 0)) * 100
+    except (TypeError, ValueError):
+        return ""
+    if w <= 0 or h <= 0:
+        return ""
+    dash_attr = f" stroke-dasharray='{dash}'" if dash else ""
+    return (
+        f"<rect x='{x:.2f}' y='{y:.2f}' width='{w:.2f}' height='{h:.2f}' rx='3' "
+        f"fill='{color}' fill-opacity='{opacity:.2f}' stroke='{color}' stroke-width='1.2' stroke-opacity='0.85'{dash_attr}/>"
+    )
+
+
+def _svg_corridor(rect: dict, status: str) -> str:
+    color = {
+        "blocked": "#ff453a",
+        "caution": "#ffd60a",
+        "unknown": "#8e8e93",
+        "candidateOpen": "#64d2ff",
+    }.get(status, "#8e8e93")
+    try:
+        min_y = float(rect.get("y", 0))
+        max_y = min_y + float(rect.get("height", 0))
+    except (TypeError, ValueError):
+        return ""
+    bottom_y = (1 - min_y) * 100
+    top_y = (1 - min(max_y, 0.62)) * 100
+    points = f"30,{bottom_y:.2f} 42,{top_y:.2f} 58,{top_y:.2f} 70,{bottom_y:.2f}"
+    opacity = 0.08 if status == "candidateOpen" else 0.20
+    return (
+        f"<polygon points='{points}' fill='{color}' fill-opacity='{opacity:.2f}' "
+        f"stroke='{color}' stroke-width='1.5' stroke-opacity='0.85' stroke-dasharray='4 3'/>"
+        f"<line x1='50' y1='{bottom_y:.2f}' x2='50' y2='{top_y:.2f}' stroke='{color}' "
+        f"stroke-width='0.8' stroke-opacity='0.65' stroke-dasharray='3 3'/>"
+    )
+
+
+def _path_guidance_svg(path_guidance: dict) -> str:
+    if not isinstance(path_guidance, dict) or not path_guidance:
+        return "<svg viewBox='0 0 100 100'></svg>"
+    parts: list[str] = []
+    status = str(path_guidance.get("near_path_status", "unknown"))
+    corridor = path_guidance.get("guidance_corridor")
+    blocked = path_guidance.get("blocked_regions") if isinstance(path_guidance.get("blocked_regions"), list) else []
+    uncertain = path_guidance.get("uncertain_regions") if isinstance(path_guidance.get("uncertain_regions"), list) else []
+    if corridor and not (status == "candidateOpen" and not blocked and not uncertain):
+        parts.append(_svg_corridor(corridor, status))
+    else:
+        parts.append("<line x1='50' y1='88' x2='50' y2='58' stroke='#64d2ff' stroke-width='0.8' stroke-opacity='0.28' stroke-dasharray='3 4'/>")
+    for rect in uncertain:
+        if isinstance(rect, dict):
+            parts.append(_svg_rect(rect, "#8e8e93", 0.20, "3 3"))
+    for rect in blocked:
+        if isinstance(rect, dict):
+            parts.append(_svg_rect(rect, "#ff453a", 0.18, "4 3"))
+    return "<svg viewBox='0 0 100 100' preserveAspectRatio='none'>" + "".join(parts) + "</svg>"
 
 
 @router.get("/sessions/{session_id}/report")
@@ -220,7 +327,7 @@ def session_report_ui(session_id: str):
         task_html = "<p class='muted'>暂无任务建议。</p>"
 
     body = f"""
-<p><a href='/diagnostics/ui'>← 返回 sessions</a> · <a href='/diagnostics/sessions/{html.escape(session_id)}/annotate'>打开标注</a></p>
+<p><a href='/diagnostics/ui'>← 返回 sessions</a> · <a href='/diagnostics/sessions/{html.escape(session_id)}/annotate'>打开标注</a> · <a href='/diagnostics/sessions/{html.escape(session_id)}/path-guidance/ui'>引导层可视化</a></p>
 <h1>评估报告：{html.escape(session_id)}</h1>
 <p class='hint'>这份报告给乔布斯/罗根/思余/全麦看，用于发现产品、系统、UI 和模型问题，不给普通用户看。</p>
 <div class='card'><h2>核心结论</h2><p>{html.escape(str(report.get('headline', '')))}</p></div>
@@ -229,6 +336,284 @@ def session_report_ui(session_id: str):
 <div class='card'><h2>建议任务卡</h2>{task_html}</div>
 """
     return _html_page(f"评估报告 {session_id}", body)
+
+
+@router.get("/sessions/{session_id}/path-manifest", response_class=PlainTextResponse)
+def session_path_manifest(session_id: str):
+    session_dir = get_session_dir(session_id)
+    if not session_dir.is_dir():
+        raise HTTPException(status_code=404, detail="session_not_found")
+    rows = export_session_path_manifest(session_id=session_id, session_dir=session_dir)
+    return PlainTextResponse(manifest_to_jsonl(rows), media_type="application/x-ndjson")
+
+
+@router.get("/sessions/{session_id}/path-eval")
+def session_path_eval(session_id: str) -> dict:
+    session_dir = get_session_dir(session_id)
+    if not session_dir.is_dir():
+        raise HTTPException(status_code=404, detail="session_not_found")
+    rows = export_session_path_manifest(session_id=session_id, session_dir=session_dir)
+    return evaluate_path_guidance(rows)
+
+
+@router.get("/sessions/{session_id}/path-eval/ui", response_class=HTMLResponse)
+def session_path_eval_ui(session_id: str):
+    report = session_path_eval(session_id)
+    metrics = "".join(
+        f"<span class='pill'>{html.escape(str(key))}: {html.escape(str(value))}</span>"
+        for key, value in report.items()
+        if key not in {"status_confusion", "direction_confusion", "risk_misses", "false_blocks", "missing_predictions", "recommendations"}
+    )
+    details = html.escape(json.dumps(report, ensure_ascii=False, indent=2))
+    body = f"""
+<p><a href='/diagnostics/ui'>← 返回 sessions</a> · <a href='/diagnostics/sessions/{html.escape(session_id)}/path-guidance/ui'>引导层可视化</a> · <a href='/diagnostics/sessions/{html.escape(session_id)}/path-manifest'>下载 manifest</a></p>
+<h1>路径评估：{html.escape(session_id)}</h1>
+<div class='card'><h2>指标</h2>{metrics}</div>
+<div class='card'><h2>完整报告</h2><pre>{details}</pre></div>
+"""
+    return _html_page(f"路径评估 {session_id}", body)
+
+
+def _dataset_manifest_candidates() -> list[Path]:
+    roots = [Path("docs/datasets")]
+    configured = os.getenv("VQASEE_DATASET_MANIFEST_DIR", "").strip()
+    if configured:
+        roots.append(Path(configured).expanduser())
+    candidates: list[Path] = []
+    for root in roots:
+        if root.is_dir():
+            candidates.extend(sorted(root.glob("*.jsonl")))
+    return candidates
+
+
+@router.get("/datasets/ui", response_class=HTMLResponse)
+def datasets_ui():
+    cards = []
+    for path in _dataset_manifest_candidates():
+        safe_name = html.escape(path.name)
+        encoded = html.escape(str(path))
+        cards.append(
+            f"<div class='card'><h2>{safe_name}</h2>"
+            f"<p class='muted'>{html.escape(str(path))}</p>"
+            f"<p><a href='/diagnostics/datasets/manifest/ui?manifest={encoded}'>浏览</a> · <a href='/diagnostics/datasets/evaluate/ui?manifest={encoded}'>评估</a></p></div>"
+        )
+    body = (
+        "<p><a href='/diagnostics/ui'>← 返回平台首页</a></p>"
+        "<h1>开源/本地数据集评估</h1><p><a href='/diagnostics/datasets/create/ui'>从图片+mask目录创建 manifest</a></p>"
+        "<p class='hint'>把开源数据集或真机导出的 path manifest 放到 docs/datasets/ 或设置 VQASEE_DATASET_MANIFEST_DIR，然后在这里评估。</p>"
+        + ("".join(cards) or "<p>暂无 manifest。示例：docs/datasets/path-guidance-manifest-example.jsonl</p>")
+    )
+    return _html_page("数据集评估", body)
+
+
+def _allowed_local_roots() -> list[Path]:
+    roots = [Path.cwd().resolve(), Path("/private/tmp").resolve(), Path("/tmp").resolve()]
+    configured = os.getenv("VQASEE_DATASET_ROOT", "").strip()
+    if configured:
+        roots.append(Path(configured).expanduser().resolve())
+    return roots
+
+
+def _safe_local_file(path_text: str) -> Path:
+    path = Path(path_text).expanduser().resolve()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="file_not_found")
+    if not any(root == path or root in path.parents for root in _allowed_local_roots()):
+        raise HTTPException(status_code=403, detail="file_not_allowed")
+    return path
+
+
+@router.get("/local-file")
+def local_file(path: str):
+    file_path = _safe_local_file(path)
+    media = "image/png" if file_path.suffix.lower() == ".png" else "image/jpeg"
+    return FileResponse(file_path, media_type=media)
+
+
+def default_tags_for_dataset(dataset_type: str) -> str:
+    if dataset_type == "road":
+        return "road,vehicle,drivable"
+    if dataset_type == "outdoor":
+        return "outdoor,sidewalk,curb"
+    return "indoor,floor,office"
+
+
+@router.get("/datasets/create/ui", response_class=HTMLResponse)
+def dataset_create_ui():
+    body = """
+<p><a href='/diagnostics/datasets/ui'>← 返回数据集评估</a></p>
+<h1>创建数据集 manifest</h1>
+<p class='hint'>主流程只需要选择数据类型和目录；平台会自动生成 manifest 路径、split 和 tags。高级设置仅供开发者调试，普通测试不用展开。</p>
+<div class='card'>
+  <form action='/diagnostics/datasets/create' method='get'>
+    <h2>1. 选择数据类型</h2>
+    <p><label><input type='radio' name='dataset_type' value='indoor' checked> 室内：办公室 / 走廊 / 地面 / 水桶 / 椅子</label></p>
+    <p><label><input type='radio' name='dataset_type' value='outdoor'> 室外：人行道 / 路沿 / 户外障碍</label></p>
+    <p><label><input type='radio' name='dataset_type' value='road'> 道路/驾驶风险：马路 / 车辆 / 车道 / 可行驶区域</label></p>
+
+    <h2>2. 选择本地数据</h2>
+    <p><label>图片目录<br><input name='images' size='80' placeholder='/path/to/images' required></label></p>
+    <p><label>Mask 目录（可选，白=可通行）<br><input name='masks' size='80' placeholder='/path/to/masks'></label></p>
+
+    <details>
+      <summary>高级设置</summary>
+      <p class='muted'>开发者调试用：不填则自动生成。普通测试请保持默认。</p>
+      <p><label>输出 manifest（默认：docs/datasets/auto-数据类型-manifest.jsonl）<br><input name='output' size='80' placeholder='docs/datasets/auto-indoor-manifest.jsonl'></label></p>
+      <p><label>Split（默认跟随数据类型）<input name='split' placeholder='indoor/outdoor/road'></label></p>
+      <p><label>Tags（默认自动生成）<input name='tags' placeholder='indoor,floor,office'></label></p>
+      <p><label>Mask 阈值（默认 0.5）<input name='threshold' value='0.5'></label> <label>Limit（0=全部）<input name='limit' value='0'></label></p>
+    </details>
+
+    <button type='submit'>生成数据集 manifest</button>
+  </form>
+</div>
+<p class='hint'>安全限制：平台只允许读取仓库目录、/tmp、/private/tmp 或 VQASEE_DATASET_ROOT 下的本地文件。</p>
+"""
+    return _html_page("创建数据集 manifest", body)
+
+
+@router.get("/datasets/create")
+def dataset_create(images: str, output: str = "", masks: str = "", dataset_type: str = "indoor", split: str = "", tags: str = "", threshold: float = 0.5, limit: int = 0, as_json: bool = False):
+    images_dir = Path(images).expanduser()
+    masks_dir = Path(masks).expanduser() if masks.strip() else None
+    safe_type = dataset_type if dataset_type in {"indoor", "outdoor", "road"} else "indoor"
+    split = split.strip() or safe_type
+    if not output.strip():
+        output = f"docs/datasets/auto-{safe_type}-manifest.jsonl"
+    output_path = Path(output).expanduser()
+    allowed_dirs = [images_dir]
+    if masks_dir:
+        allowed_dirs.append(masks_dir)
+    for directory in allowed_dirs:
+        resolved = directory.resolve()
+        if not any(root == resolved or root in resolved.parents for root in _allowed_local_roots()):
+            raise HTTPException(status_code=403, detail=f"dir_not_allowed: {directory}")
+    rows = create_manifest_from_folders(
+        images_dir=images_dir,
+        masks_dir=masks_dir,
+        output_path=output_path,
+        split=split,
+        scene_tags=[tag.strip() for tag in (tags or default_tags_for_dataset(safe_type)).split(",") if tag.strip()],
+        threshold=threshold,
+        limit=limit,
+    )
+    if as_json:
+        return {"status": "ok", "rows": len(rows), "manifest": str(output_path)}
+    return RedirectResponse(url=f"/diagnostics/datasets/manifest/ui?manifest={html.escape(str(output_path))}", status_code=303)
+
+
+@router.get("/datasets/manifest/ui", response_class=HTMLResponse)
+def dataset_manifest_ui(manifest: str):
+    manifest_path = Path(manifest).expanduser()
+    if not manifest_path.is_file():
+        raise HTTPException(status_code=404, detail="manifest_not_found")
+    rows = load_jsonl(manifest_path)
+    cards = []
+    for row in rows[:200]:
+        frame_id = html.escape(str(row.get("frame_id", "")))
+        image_path = str(row.get("image_path") or "")
+        mask_path = str(row.get("mask_path") or "")
+        image_html = "<p class='muted'>无可预览图片路径</p>"
+        if image_path:
+            image_html = f"<img src='/diagnostics/local-file?path={html.escape(image_path)}' alt='{frame_id}'>"
+        mask_html = ""
+        if mask_path:
+            mask_html = f"<div><h3>Mask</h3><img src='/diagnostics/local-file?path={html.escape(mask_path)}' alt='mask {frame_id}'></div>"
+        gt_raw = row.get("ground_truth", {})
+        pred_raw = row.get("prediction", row.get("path_guidance", {}))
+        gt = html.escape(json.dumps(gt_raw, ensure_ascii=False, indent=2))
+        pred = html.escape(json.dumps(pred_raw, ensure_ascii=False, indent=2))
+        coverage = html.escape(json.dumps(row.get("mask_coverage", {}), ensure_ascii=False, indent=2))
+        cards.append(
+            f"""<div class='card'><h2>{frame_id}</h2><div class='row'><div>{image_html}</div>{mask_html}<div><h3>真实答案 Ground Truth</h3><p class='hint'>由 mask 或人工标注生成，表示这一帧真实的通行状态。</p><pre>{gt}</pre><h3>Mask 覆盖率</h3><p class='hint'>每个区域中白色/可通行像素比例。</p><pre>{coverage}</pre><h3>VQASee 预测 Prediction</h3><p class='hint'>模型/算法输出。若为空，说明还没对该 manifest 跑 prediction。</p><pre>{pred}</pre></div></div></div>"""
+        )
+    body = (
+        f"<p><a href='/diagnostics/datasets/ui'>← 返回数据集评估</a> · <a href='/diagnostics/datasets/evaluate/ui?manifest={html.escape(str(manifest_path))}'>评估此 manifest</a></p>"
+        f"<h1>Manifest 浏览：{html.escape(manifest_path.name)}</h1>"
+        + ("".join(cards) or "<p>manifest 为空。</p>")
+    )
+    return _html_page("Manifest 浏览", body)
+
+
+@router.get("/datasets/evaluate")
+def dataset_evaluate(manifest: str) -> dict:
+    manifest_path = Path(manifest).expanduser()
+    if not manifest_path.is_file():
+        raise HTTPException(status_code=404, detail="manifest_not_found")
+    return evaluate_path_guidance(load_jsonl(manifest_path))
+
+
+@router.get("/datasets/evaluate/ui", response_class=HTMLResponse)
+def dataset_evaluate_ui(manifest: str):
+    report = dataset_evaluate(manifest)
+    details = html.escape(json.dumps(report, ensure_ascii=False, indent=2))
+    def card(title: str, value: object, hint: str = "") -> str:
+        return f"<div class='card'><h2>{html.escape(title)}</h2><p style='font-size:2rem;font-weight:800'>{html.escape(str(value))}</p><p class='muted'>{html.escape(hint)}</p></div>"
+    cards = "<div class='grid'>" + "".join([
+        card("总帧数", report.get("frame_count"), "manifest 中的总图像/帧数"),
+        card("有标注帧", report.get("labeled_frames"), "可参与准确率计算的帧"),
+        card("状态准确率", report.get("status_accuracy"), "near/left/right 三个区域的状态匹配率"),
+        card("方向准确率", report.get("focus_direction_accuracy"), "关注方向是否匹配"),
+        card("漏报风险", report.get("risk_miss_count"), "真实 caution/blocked 却预测 candidateOpen"),
+        card("误阻挡", report.get("false_block_count"), "真实 candidateOpen 却预测 caution/blocked"),
+        card("Unknown 比例", report.get("unknown_prediction_rate"), "预测为 unknown 的比例"),
+    ]) + "</div>"
+    recs = "".join(f"<li>{html.escape(str(item))}</li>" for item in report.get("recommendations", []))
+    body = f"""
+<p><a href='/diagnostics/datasets/ui'>← 返回数据集评估</a> · <a href='/diagnostics/datasets/manifest/ui?manifest={html.escape(manifest)}'>浏览 manifest</a></p>
+<h1>数据集评估：{html.escape(Path(manifest).name)}</h1>
+{cards}
+<div class='card'><h2>建议</h2><ul>{recs}</ul></div>
+<details><summary>完整 JSON 报告</summary><pre>{details}</pre></details>
+"""
+    return _html_page("数据集评估报告", body)
+
+
+@router.get("/sessions/{session_id}/path-guidance/ui", response_class=HTMLResponse)
+def path_guidance_ui(session_id: str):
+    session_dir = get_session_dir(session_id)
+    if not session_dir.is_dir():
+        raise HTTPException(status_code=404, detail="session_not_found")
+    rows = _manifest_rows(session_dir)
+    cards: list[str] = []
+    for row in rows[:200]:
+        frame = str(row.get("backend_saved_frame") or row.get("frame") or "")
+        if not frame.endswith(".jpg"):
+            continue
+        frame_name = Path(frame).name
+        safe_frame = html.escape(frame_name)
+        perception = row.get("perception") if isinstance(row.get("perception"), dict) else {}
+        path_guidance = perception.get("path_guidance") if isinstance(perception.get("path_guidance"), dict) else {}
+        svg = _path_guidance_svg(path_guidance)
+        metrics = html.escape(json.dumps(path_guidance or {}, ensure_ascii=False, indent=2))
+        event = html.escape(str(row.get("event", "unknown")))
+        reason = html.escape(str(row.get("reason", "")))
+        cards.append(
+            f"""<div class='card'>
+  <h2>{safe_frame}</h2>
+  <p><span class='pill'>event: {event}</span><span class='pill'>{reason}</span></p>
+  <div class='row'>
+    <div class='frame-overlay'>
+      <img src='/diagnostics/sessions/{html.escape(session_id)}/frames/{safe_frame}' alt='{safe_frame}'>
+      {svg}
+    </div>
+    <div>
+      <h3>path_guidance</h3>
+      <pre>{metrics}</pre>
+      <p class='hint'>蓝/青：通行候选参考；黄：需要注意；红：疑似被占用；灰：信息不足。没有真实 depth/segmentation 时，不应把轻参考线理解为路线。</p>
+    </div>
+  </div>
+</div>"""
+        )
+    body = (
+        f"<p><a href='/diagnostics/ui'>← 返回 sessions</a> · "
+        f"<a href='/diagnostics/sessions/{html.escape(session_id)}/annotate'>打开标注</a> · "
+        f"<a href='/diagnostics/sessions/{html.escape(session_id)}/report/ui'>评估报告</a></p>"
+        f"<h1>引导层可视化：{html.escape(session_id)}</h1>"
+        "<p class='hint'>此页面用于开发/评估，把 LocalPathGuidanceSignal 叠加到诊断帧上，帮助判断 overlay 是否合理。</p>"
+        + ("".join(cards) or "<p>暂无可视化帧。</p>")
+    )
+    return _html_page(f"引导层可视化 {session_id}", body)
 
 
 @router.get("/sessions/{session_id}/annotate", response_class=HTMLResponse)
@@ -363,7 +748,7 @@ async function deleteLabel(labelIndex) {{
 }}
 </script>"""
     help_text = """<p class='hint'>怎么标：优先填写“真实画面”和“真实风险”。如果系统把不存在的东西说出来，再填写“误报内容”；如果真实有危险但系统没提示，填写“漏报内容”。这些字段会变成可统计的 ground truth，比单纯备注更有用。</p>"""
-    body = f"<p><a href='/diagnostics/ui'>← 返回 sessions</a> · <a href='/diagnostics/sessions/{html.escape(session_id)}/report/ui'>查看评估报告</a></p><h1>标注 session: {html.escape(session_id)}</h1>" + help_text + script + "".join(rows)
+    body = f"<p><a href='/diagnostics/ui'>← 返回 sessions</a> · <a href='/diagnostics/sessions/{html.escape(session_id)}/report/ui'>查看评估报告</a> · <a href='/diagnostics/sessions/{html.escape(session_id)}/path-guidance/ui'>引导层可视化</a></p><h1>标注 session: {html.escape(session_id)}</h1>" + help_text + script + "".join(rows)
     return _html_page(f"标注 {session_id}", body)
 
 

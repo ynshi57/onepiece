@@ -91,7 +91,7 @@ def test_diagnostics_annotation_ui_and_labels(monkeypatch, tmp_path):
 
     ui_response = client.get("/diagnostics/ui")
     assert ui_response.status_code == 200
-    assert "VQASee 诊断标注台" in ui_response.text
+    assert "VQASee 闭环实验平台" in ui_response.text
     assert "ui-session" in ui_response.text
 
     annotate_response = client.get("/diagnostics/sessions/ui-session/annotate")
@@ -271,3 +271,151 @@ def test_diagnostics_report_counts_backend_vqa_result(monkeypatch, tmp_path):
     report = response.json()
     assert report["metrics"]["qwen_result_frames"] == 1
     assert "missing_qwen_raw_output" not in {finding["code"] for finding in report["findings"]}
+
+
+def test_diagnostics_path_guidance_visualization_ui(monkeypatch, tmp_path):
+    monkeypatch.setenv("DIAGNOSTIC_CAPTURE_DIR", str(tmp_path))
+    from app.diagnostic_capture import save_diagnostic_frame
+
+    save_diagnostic_frame(
+        session_id="path-ui-session",
+        image_base64="/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+        metadata={
+            "diagnostic_session_id": "path-ui-session",
+            "event": "sent_to_backend",
+            "perception": {
+                "path_guidance": {
+                    "near_path_status": "caution",
+                    "focus_direction": "right",
+                    "guidance_corridor": {"x": 0.25, "y": 0, "width": 0.5, "height": 0.58},
+                    "blocked_regions": [{"x": 0.62, "y": 0.2, "width": 0.2, "height": 0.2}],
+                    "depth_capability": "unsupported",
+                    "segmentation_capability": "active",
+                }
+            },
+        },
+    )
+
+    response = client.get("/diagnostics/sessions/path-ui-session/path-guidance/ui")
+
+    assert response.status_code == 200
+    assert "引导层可视化" in response.text
+    assert "path_guidance" in response.text
+    assert "<svg" in response.text
+    assert "frame-0001.jpg" in response.text
+
+
+def test_diagnostics_session_path_manifest_and_eval_ui(monkeypatch, tmp_path):
+    monkeypatch.setenv("DIAGNOSTIC_CAPTURE_DIR", str(tmp_path))
+    from app.diagnostic_capture import save_diagnostic_frame
+
+    save_diagnostic_frame(
+        session_id="path-export-session",
+        image_base64="/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+        metadata={
+            "diagnostic_session_id": "path-export-session",
+            "event": "sent_to_backend",
+            "perception": {
+                "path_guidance": {
+                    "near_path_status": "caution",
+                    "left_front_status": "candidateOpen",
+                    "right_front_status": "candidateOpen",
+                    "focus_direction": "center",
+                }
+            },
+        },
+    )
+    client.post(
+        "/diagnostics/sessions/path-export-session/labels",
+        json={
+            "frame": "frames/frame-0001.jpg",
+            "label": "no_obvious_risk",
+            "true_scene": "室内走廊",
+            "true_risks": "无明显风险",
+        },
+    )
+
+    manifest_response = client.get("/diagnostics/sessions/path-export-session/path-manifest")
+    assert manifest_response.status_code == 200
+    assert "path-export-session/frames/frame-0001.jpg" in manifest_response.text
+
+    eval_response = client.get("/diagnostics/sessions/path-export-session/path-eval")
+    assert eval_response.status_code == 200
+    assert eval_response.json()["labeled_frames"] == 1
+
+    eval_ui_response = client.get("/diagnostics/sessions/path-export-session/path-eval/ui")
+    assert eval_ui_response.status_code == 200
+    assert "路径评估" in eval_ui_response.text
+
+
+def test_diagnostics_datasets_ui_and_evaluate():
+    ui_response = client.get("/diagnostics/datasets/ui")
+    assert ui_response.status_code == 200
+    assert "开源/本地数据集评估" in ui_response.text
+
+    eval_response = client.get("/diagnostics/datasets/evaluate?manifest=docs/datasets/path-guidance-manifest-example.jsonl")
+    assert eval_response.status_code == 200
+    assert "status_accuracy" in eval_response.json()
+
+
+def test_datasets_create_and_manifest_browser(monkeypatch, tmp_path):
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    from PIL import Image
+
+    images = tmp_path / "images"
+    masks = tmp_path / "masks"
+    images.mkdir()
+    masks.mkdir()
+    Image.new("RGB", (20, 20), "black").save(images / "sample.jpg")
+    Image.new("L", (20, 20), 255).save(masks / "sample.png")
+    output = tmp_path / "manifest.jsonl"
+
+    response = client.get(
+        "/diagnostics/datasets/create",
+        params={
+            "images": str(images),
+            "masks": str(masks),
+            "output": str(output),
+            "split": "indoor",
+            "tags": "office,floor",
+            "as_json": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"] == 1
+    assert output.is_file()
+
+    browse = client.get("/diagnostics/datasets/manifest/ui", params={"manifest": str(output)})
+    assert browse.status_code == 200
+    assert "Manifest 浏览" in browse.text
+    assert "sample.jpg" in browse.text or "indoor/sample" in browse.text
+
+    eval_response = client.get("/diagnostics/datasets/evaluate", params={"manifest": str(output)})
+    assert eval_response.status_code == 200
+    assert eval_response.json()["labeled_frames"] == 1
+
+
+def test_datasets_create_uses_wizard_defaults(monkeypatch, tmp_path):
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    from PIL import Image
+
+    images = tmp_path / "images"
+    masks = tmp_path / "masks"
+    images.mkdir()
+    masks.mkdir()
+    Image.new("RGB", (20, 20), "black").save(images / "sample.jpg")
+    Image.new("L", (20, 20), 255).save(masks / "sample.png")
+
+    response = client.get(
+        "/diagnostics/datasets/create",
+        params={"images": str(images), "masks": str(masks), "dataset_type": "indoor", "as_json": "true"},
+    )
+
+    assert response.status_code == 200
+    manifest = tmp_path / response.json()["manifest"]
+    assert manifest.is_file()
+    text = manifest.read_text(encoding="utf-8")
+    assert "indoor" in text
+    assert "office" in text
