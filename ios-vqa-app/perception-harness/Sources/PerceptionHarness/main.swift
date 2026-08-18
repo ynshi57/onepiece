@@ -235,7 +235,43 @@ for row in rows {
         "prediction_source": "ios_coreml_offline_harness",
         "config_version": config.version,
     ]
-    let outRow: [String: Any] = ["frame_id": id, "prediction": prediction]
+
+    // Detected objects (Vision-normalized boxes, origin lower-left) so the
+    // platform can DRAW what the on-device perception actually recognized.
+    var objectsOut: [[String: Any]] = []
+    for object in signal.perception.objects {
+        var entry: [String: Any] = [
+            "kind": object.kind.rawValue,
+            "label": object.kind.chineseLabel,
+            "confidence": object.confidence,
+            "direction": object.direction.rawValue,
+        ]
+        if let box = object.normalizedBoundingBox {
+            entry["box"] = [
+                "x": Double(box.origin.x),
+                "y": Double(box.origin.y),
+                "w": Double(box.size.width),
+                "h": Double(box.size.height),
+            ]
+        }
+        objectsOut.append(entry)
+    }
+
+    // ROI rects actually used (from the config that ran) so overlays never drift
+    // from the decision. Vision-normalized, origin lower-left.
+    func roiDict(_ rect: CGRect) -> [String: Any] {
+        ["x": Double(rect.origin.x), "y": Double(rect.origin.y), "w": Double(rect.size.width), "h": Double(rect.size.height)]
+    }
+    let outRow: [String: Any] = [
+        "frame_id": id,
+        "prediction": prediction,
+        "objects": objectsOut,
+        "roi": [
+            "near": roiDict(config.nearROI),
+            "left": roiDict(config.leftROI),
+            "right": roiDict(config.rightROI),
+        ],
+    ]
     guard let data = try? JSONSerialization.data(withJSONObject: outRow, options: [.sortedKeys]),
           let jsonLine = String(data: data, encoding: .utf8) else {
         continue

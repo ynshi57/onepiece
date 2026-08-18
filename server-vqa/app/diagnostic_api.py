@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 import urllib.request
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -106,6 +109,9 @@ def _html_page(title: str, body: str) -> HTMLResponse:
     details {{ background: #151518; border: 1px solid #3a3a3c; border-radius: 12px; padding: 10px; margin: 12px 0; }}
     summary {{ cursor: pointer; font-weight: 700; }}
     .row {{ display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }}
+    table {{ border-collapse: collapse; margin: 8px 0; }}
+    th, td {{ border: 1px solid #3a3a3c; padding: 6px 10px; text-align: left; font-size: 0.92rem; }}
+    th {{ color: #a1a1a6; font-weight: 600; }}
     pre {{ white-space: pre-wrap; background: #111; padding: 12px; border-radius: 12px; max-width: 680px; }}
   </style>
 </head>
@@ -1199,23 +1205,108 @@ def dataset_ios_harness_ui(manifest: str, predictions: str = ""):
     if not manifest_path.is_file():
         raise HTTPException(status_code=404, detail="manifest_not_found")
     encoded_manifest = html.escape(manifest)
-    default_out = f"/tmp/{manifest_path.stem}-ios-harness.jsonl"
+    default_out = str(_harness_out_path(manifest_path))
+    cache = _harness_cache_info(manifest_path)
     run_cmd = (
         "ios-vqa-app/perception-harness/.build/debug/PerceptionHarness \\\n"
         f"  --manifest {manifest} \\\n"
         f"  --out {default_out}"
     )
-    steps = f"""
+    run_script = f"""<script>
+async function runHarness(force) {{
+  const status = document.getElementById('runStatus');
+  const btn = document.getElementById('runBtn');
+  const btn2 = document.getElementById('rerunBtn');
+  status.style.display = 'block';
+  status.className = 'status';
+  status.textContent = force ? '正在强制重跑真身感知…（约 10–30 秒）' : '正在处理…（若已有结果会秒回，否则跑真身约 10–30 秒）';
+  if (btn) btn.disabled = true;
+  if (btn2) btn2.disabled = true;
+  try {{
+    const url = '/diagnostics/datasets/ios-harness/run?manifest={encoded_manifest}' + (force ? '&force=true' : '');
+    const resp = await fetch(url, {{method: 'POST'}});
+    const payload = await resp.json();
+    if (!resp.ok) {{ status.className = 'status error'; status.textContent = '触发失败：' + (payload.detail || resp.statusText); if(btn)btn.disabled=false; if(btn2)btn2.disabled=false; return; }}
+    if (payload.status === 'ok' || payload.status === 'cached') {{
+      status.className = 'status ok';
+      status.textContent = (payload.note || '完成') + ' 正在打开评估结果…';
+      const next = '/diagnostics/datasets/ios-harness/ui?manifest={encoded_manifest}&predictions=' + encodeURIComponent(payload.predictions);
+      window.location.href = next;
+      return;
+    }}
+    status.className = 'status error';
+    let msg = payload.reason || ('状态：' + payload.status);
+    if (payload.stderr) {{ msg += '\\n\\nstderr:\\n' + payload.stderr; }}
+    if (payload.build_stderr) {{ msg += '\\n\\n编译报错:\\n' + payload.build_stderr; }}
+    status.innerHTML = '<pre style="margin:0;white-space:pre-wrap">' + msg.replace(/</g,'&lt;') + '</pre><p class="muted">可改用下方手动步骤。</p>';
+    if(btn)btn.disabled=false; if(btn2)btn2.disabled=false;
+  }} catch (error) {{ status.className = 'status error'; status.textContent = '请求失败：' + error; if(btn)btn.disabled=false; if(btn2)btn2.disabled=false; }}
+}}
+</script>"""
+
+    if cache.get("exists"):
+        eval_url = (
+            f"/diagnostics/datasets/ios-harness/ui?manifest={encoded_manifest}"
+            f"&predictions={html.escape(cache['out_path'])}"
+        )
+        cfg_v = cache.get("config_version")
+        basis = "按内容指纹判定" if cache.get("fingerprint") == "content" else "按时间近似判定"
+        summary = (
+            f"已有上次结果：<b>{cache.get('count', 0)}</b> 帧，生成于 "
+            f"{html.escape(str(cache.get('generated_at', '?')))}"
+            + (f"，配置 v{cfg_v}" if cfg_v is not None else "")
+            + f"（{basis}）"
+        )
+        if cache.get("fresh"):
+            cache_state = (
+                "<div class='status ok'>结果仍然新鲜（数据集/感知代码/配置都没变）——"
+                "<b>不用重跑</b>，直接评估即可。</div>"
+            )
+        else:
+            reasons = "".join(f"<li>{html.escape(r)}</li>" for r in cache.get("stale_reasons", []))
+            cache_state = (
+                f"<div class='status error'>结果可能已过期，建议重跑：<ul>{reasons}</ul></div>"
+            )
+        cache_card = f"""
 <div class='card'>
-  <h2><span class='step'>1</span>在 Mac 上跑真身感知</h2>
-  <p class='hint'>平台跑的是 iPhone 上一模一样的感知代码（YOLO11n Core ML + 通行区域引擎），不是近似实现。需在装有 App 的 Core ML 模型的 Mac 上执行一次：</p>
-  <pre>cd ios-vqa-app/perception-harness &amp;&amp; swift build</pre>
-  <pre>{html.escape(run_cmd)}</pre>
+  <h2><span class='step'>1</span>用真身结果（已有缓存）</h2>
+  <p class='hint'>{summary}</p>
+  {cache_state}
+  <p>
+    <a href='{eval_url}'><button type='button'>直接查看评估（用缓存）</button></a>
+    <button id='rerunBtn' class='secondary' onclick='runHarness(true)'>↻ 用当前配置重新跑</button>
+  </p>
+  <div id='runStatus' class='status' style='display:none'></div>
+  <details><summary>什么时候需要重跑？</summary>
+    <p class='hint'>换了数据集、重新编译了感知代码/模型、或在“Perception Config (OTA)”里改了 ROI/阈值并升级了版本时才需要重跑；否则复用缓存即可。重跑会用<b>当前生效配置</b>，所以调完参数重跑才能看到变化。</p>
+  </details>
+</div>"""
+        run_button_block = ""
+    else:
+        cache_card = ""
+        run_button_block = f"""
+<div class='card'>
+  <h2><span class='step'>1</span>跑真身感知</h2>
+  <p class='hint'>平台跑的是 iPhone 上一模一样的感知代码（YOLO11n Core ML + 通行区域引擎），不是近似实现。诊断台就在这台 Mac 上，可直接一键触发，无需自己开终端。跑一次后会缓存，之后无需每次重跑。</p>
+  <div class='callout'>
+    <p><b>推荐：一键在本机跑</b>（服务器直接调用已编译的 harness；首次会自动编译）</p>
+    <button id='runBtn' onclick='runHarness(false)'>▶ 一键在本机跑真身感知</button>
+    <div id='runStatus' class='status' style='display:none'></div>
+    <p class='muted'>仅在诊断台运行于 macOS 时可用；非 Mac 或缺 Core ML 模型会明确报错，不会静默假装成功。</p>
+  </div>
+  <details><summary>或手动执行（等价命令）</summary>
+    <pre>cd ios-vqa-app/perception-harness &amp;&amp; swift build</pre>
+    <pre>{html.escape(run_cmd)}</pre>
+  </details>
   <p class='muted'>说明：离线环境没有 LiDAR/ARKit 深度，这反映 iPhone 的“仅相机”分支；每行结果都会标注 depth_capability，不隐藏这一点。</p>
-</div>
+</div>"""
+    steps = f"""
+{run_script}
+{cache_card}
+{run_button_block}
 <div class='card'>
   <h2><span class='step'>2</span>把结果喂回平台评估</h2>
-  <p class='hint'>粘贴上一步生成的预测文件路径，用数据集真实答案给 iPhone 真身打分。</p>
+  <p class='hint'>一键跑完会自动带着预测路径进入评估。也可手动粘贴上一步生成的预测文件路径。</p>
   <form method='get' action='/diagnostics/datasets/ios-harness/ui'>
     <input type='hidden' name='manifest' value='{encoded_manifest}'>
     <label>预测文件路径（harness 的 --out）<br>
@@ -1293,10 +1384,21 @@ async function runParity() {{
 """
     details = html.escape(json.dumps(report, ensure_ascii=False, indent=2))
     recs = "".join(f"<li>{html.escape(str(item))}</li>" for item in report.get("recommendations", []))
+    frames_url = (
+        f"/diagnostics/datasets/ios-harness/frames/ui?manifest={encoded_manifest}"
+        f"&predictions={html.escape(str(pred_path))}"
+    )
+    frames_callout = (
+        f"<div class='callout'><h2>看图：iPhone 感知层在每张图上识别成了什么</h2>"
+        f"<p class='hint'>光看数字不够。逐帧视图会在 CamVid 原图上叠加 iPhone 真身检测到的物体框、"
+        f"近/左/右三个判断区域及其状态，让你直接看清“为什么漏报/误阻挡”。</p>"
+        f"<p><a href='{frames_url}'>→ 打开逐帧识别效果</a></p></div>"
+    )
     body = (
         header
         + parity_script
         + f"<div class='status ok'>已用 {html.escape(str(pred_path.name))} 对 iPhone 真身打分（prediction_source=ios_coreml_offline_harness）。</div>"
+        + frames_callout
         + cards
         + parity_card
         + f"<div class='card'><h2>建议</h2><ul>{recs}</ul></div>"
@@ -1304,6 +1406,633 @@ async function runParity() {{
         + steps
     )
     return _html_page("iPhone 真身评估", body)
+
+
+def _repo_root() -> Path:
+    # server-vqa/app/diagnostic_api.py -> repo root is two parents up from app/.
+    return Path(__file__).resolve().parents[2]
+
+
+def _harness_bin() -> Path:
+    return _repo_root() / "ios-vqa-app" / "perception-harness" / ".build" / "debug" / "PerceptionHarness"
+
+
+def _harness_out_path(manifest_path: Path) -> Path:
+    return Path(f"/tmp/{manifest_path.stem}-ios-harness.jsonl")
+
+
+def _harness_meta_path(manifest_path: Path) -> Path:
+    return Path(f"/tmp/{manifest_path.stem}-ios-harness.meta.json")
+
+
+def _sha256_file(path: Path) -> str | None:
+    """Content fingerprint of a file (first 16 hex of sha256). None on error so
+    callers degrade gracefully instead of raising."""
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()[:16]
+    except OSError:
+        return None
+
+
+def _write_harness_meta(manifest_path: Path, *, count: int, config_version, config_hash) -> None:
+    """Write a sidecar fingerprint next to the predictions so freshness can be
+    judged by CONTENT (manifest bytes + config behavior hash + harness binary
+    fingerprint) rather than only file mtimes."""
+    bin_path = _harness_bin()
+    meta = {
+        "manifest_hash": _sha256_file(manifest_path),
+        "config_version": config_version,
+        "config_hash": config_hash,
+        "harness_hash": _sha256_file(bin_path) if bin_path.is_file() else None,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "count": count,
+        "predictions": str(_harness_out_path(manifest_path)),
+    }
+    try:
+        _harness_meta_path(manifest_path).write_text(
+            json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError:
+        pass  # non-fatal: freshness will fall back to mtime heuristic
+
+
+def _harness_cache_info(manifest_path: Path) -> dict:
+    """Inspect any cached harness predictions for this manifest and decide whether
+    they are still fresh. Prefers CONTENT fingerprints (meta sidecar) and falls
+    back to mtime heuristics for predictions produced outside the server (manual
+    runs). Re-running the on-device perception is only necessary when the dataset,
+    the perception code/model, or the active config actually changed — surfaced
+    explicitly so the user never re-runs blindly or trusts a stale result."""
+    out_path = _harness_out_path(manifest_path)
+    info: dict = {"out_path": str(out_path), "exists": out_path.is_file()}
+    if not info["exists"]:
+        return info
+    try:
+        stat = out_path.stat()
+    except OSError:
+        info["exists"] = False
+        return info
+    info["generated_at"] = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+    count = 0
+    cfg_version = None
+    try:
+        with open(out_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                count += 1
+                if cfg_version is None:
+                    try:
+                        row = json.loads(line)
+                        cfg_version = (row.get("prediction") or {}).get("config_version")
+                    except json.JSONDecodeError:
+                        pass
+    except OSError:
+        pass
+    info["count"] = count
+    info["config_version"] = cfg_version
+
+    try:
+        active_cfg = load_active_config()
+        active_version = active_cfg.version
+        active_hash = active_cfg.content_hash()
+    except ConfigValidationError:
+        active_version = None
+        active_hash = None
+    info["active_config_version"] = active_version
+
+    # Prefer the content-fingerprint meta sidecar when present (server-produced).
+    meta = None
+    meta_path = _harness_meta_path(manifest_path)
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            meta = None
+
+    reasons: list = []
+    if meta:
+        info["fingerprint"] = "content"
+        info["generated_at"] = meta.get("generated_at", info["generated_at"])
+        current_manifest_hash = _sha256_file(manifest_path)
+        if (
+            meta.get("manifest_hash")
+            and current_manifest_hash
+            and meta["manifest_hash"] != current_manifest_hash
+        ):
+            reasons.append("数据集 manifest 内容已变化（哈希不一致）")
+        if (
+            meta.get("config_hash")
+            and active_hash
+            and meta["config_hash"] != active_hash
+        ):
+            v_from = meta.get("config_version")
+            reasons.append(
+                f"感知配置行为已变化（v{v_from}→v{active_version}，ROI/阈值哈希不一致），需用新配置重跑"
+            )
+        current_bin_hash = _sha256_file(_harness_bin()) if _harness_bin().is_file() else None
+        if (
+            meta.get("harness_hash")
+            and current_bin_hash
+            and meta["harness_hash"] != current_bin_hash
+        ):
+            reasons.append("感知代码/模型已重新编译（harness 二进制哈希不一致）")
+    else:
+        # Fallback: no content fingerprint (e.g. manual harness run) -> mtime.
+        info["fingerprint"] = "mtime"
+        if cfg_version is not None and active_version is not None and cfg_version != active_version:
+            reasons.append(f"感知配置已从 v{cfg_version} 更新到 v{active_version}，需用新配置重跑")
+        try:
+            if manifest_path.stat().st_mtime > stat.st_mtime:
+                reasons.append("数据集 manifest 在预测生成后有改动（按时间近似判断）")
+        except OSError:
+            pass
+        try:
+            bin_path = _harness_bin()
+            if bin_path.is_file() and bin_path.stat().st_mtime > stat.st_mtime:
+                reasons.append("感知代码/模型已重新编译（按时间近似判断）")
+        except OSError:
+            pass
+
+    info["stale_reasons"] = reasons
+    info["fresh"] = not reasons
+    return info
+
+
+@router.post("/datasets/ios-harness/run")
+def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) -> dict:
+    """Run the REAL on-device perception harness on this Mac, server-side.
+
+    Removes the manual "open a terminal, swift build, copy the path" step: since
+    the diagnostic server and the harness live on the same Mac, the server can
+    invoke the already-built binary directly.
+
+    You do NOT need to re-run every time: if fresh cached predictions already
+    exist (dataset/model/config unchanged) it returns them as status="cached"
+    unless force=true. The run evaluates the CURRENTLY ACTIVE perception config
+    (via --config), so tuning the config and re-running actually changes results.
+
+    Honest capability reporting (never a silent failure):
+      - not macOS            -> status=unsupported (Core ML/Vision are Apple-only)
+      - binary missing       -> best-effort `swift build`; if still missing, needs_build
+      - harness non-zero rc  -> error with stderr tail (e.g. YOLO model not found)
+    """
+    manifest_path = Path(manifest).expanduser()
+    if not manifest_path.is_file():
+        raise HTTPException(status_code=404, detail="manifest_not_found")
+
+    # Reuse cached predictions when nothing changed — cached results are
+    # platform-independent to read, so allow this even off macOS.
+    cache = _harness_cache_info(manifest_path)
+    if not force and cache.get("exists") and cache.get("fresh"):
+        return {
+            "status": "cached",
+            "predictions": cache["out_path"],
+            "predicted": cache.get("count", 0),
+            "config_version": cache.get("config_version"),
+            "note": (
+                f"复用上次结果：{cache.get('count', 0)} 帧，生成于 "
+                f"{cache.get('generated_at', '?')}（配置未变，无需重跑）。"
+            ),
+        }
+
+    if sys.platform != "darwin":
+        return {
+            "status": "unsupported",
+            "capability": "not_macos",
+            "reason": (
+                f"当前服务器平台是 {sys.platform}，不是 macOS。iPhone 真身感知依赖 "
+                "Core ML / Vision，只能在 Mac 上跑。请在 Mac 上运行诊断台，或按手动步骤执行。"
+            ),
+        }
+
+    repo_root = _repo_root()
+    harness_dir = repo_root / "ios-vqa-app" / "perception-harness"
+    harness_bin = harness_dir / ".build" / "debug" / "PerceptionHarness"
+
+    build_note = ""
+    if not harness_bin.is_file():
+        # Best-effort build. The harness has no third-party deps (only Apple
+        # frameworks + symlinked app sources), so this is offline-capable.
+        try:
+            build = subprocess.run(
+                ["swift", "build"],
+                cwd=str(harness_dir),
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except FileNotFoundError:
+            return {
+                "status": "unsupported",
+                "capability": "needs_build",
+                "reason": "找不到 swift 工具链。请安装 Xcode Command Line Tools 后重试，或手动执行 swift build。",
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "error",
+                "capability": "needs_build",
+                "reason": "swift build 超时（>600s）。请在 Mac 终端手动执行 swift build 后重试。",
+            }
+        if build.returncode != 0 or not harness_bin.is_file():
+            tail = (build.stderr or build.stdout or "").strip().splitlines()[-12:]
+            return {
+                "status": "error",
+                "capability": "needs_build",
+                "reason": "自动编译失败，请在 Mac 终端手动执行 `cd ios-vqa-app/perception-harness && swift build` 查看完整报错。",
+                "build_stderr": "\n".join(tail),
+            }
+        build_note = "已自动编译 harness。"
+
+    out_path = str(_harness_out_path(manifest_path))
+    cmd = [str(harness_bin), "--manifest", str(manifest_path), "--out", out_path]
+    if limit and limit > 0:
+        cmd += ["--limit", str(limit)]
+
+    # Evaluate the CURRENTLY ACTIVE perception config so tuning it (and bumping
+    # the version) is reflected in the harness result — this is what makes the
+    # tune -> re-run -> gate -> ship loop coherent. Fall back to compiled defaults
+    # (no --config) if the active config can't be serialized; never fake success.
+    config_file = None
+    try:
+        active_cfg = load_active_config().to_dict()
+        config_file = Path(f"/tmp/{manifest_path.stem}-perception-config.json")
+        config_file.write_text(json.dumps(active_cfg), encoding="utf-8")
+        cmd += ["--config", str(config_file)]
+    except (ConfigValidationError, OSError):
+        config_file = None
+    try:
+        run = subprocess.run(
+            cmd,
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "reason": "真身感知运行超时（>900s）。可用 limit 参数先跑少量帧验证，或在终端手动执行。",
+        }
+
+    stderr_tail = (run.stderr or "").strip().splitlines()[-8:]
+    if run.returncode != 0:
+        return {
+            "status": "error",
+            "reason": "真身感知运行失败（非零退出）。常见原因：缺少 YOLO Core ML 模型。见下方 stderr。",
+            "returncode": run.returncode,
+            "stderr": "\n".join(stderr_tail),
+        }
+
+    try:
+        predicted = sum(1 for _ in open(out_path, "r", encoding="utf-8"))
+    except OSError:
+        predicted = 0
+    if predicted == 0:
+        return {
+            "status": "error",
+            "reason": f"运行结束但未产出预测（{out_path} 为空）。见下方 stderr。",
+            "stderr": "\n".join(stderr_tail),
+        }
+
+    cfg_version = active_cfg.get("version") if config_file else None
+    cfg_hash = active_cfg.get("hash") if config_file else None
+    _write_harness_meta(
+        manifest_path, count=predicted, config_version=cfg_version, config_hash=cfg_hash
+    )
+    return {
+        "status": "ok",
+        "predictions": out_path,
+        "predicted": predicted,
+        "config_version": cfg_version,
+        "note": (
+            build_note
+            + f"已在本机跑完真身感知，产出 {predicted} 帧预测"
+            + (f"（配置 v{cfg_version}）。" if cfg_version is not None else "。")
+        ).strip(),
+        "stderr": "\n".join(stderr_tail),
+    }
+
+
+# Region/status colors shared by the per-frame overlay. Mirrors the app's
+# green=go / yellow=caution / red=blocked / gray=unknown language.
+_STATUS_COLOR = {
+    "candidateOpen": "#30d158",
+    "caution": "#ffd60a",
+    "blocked": "#ff453a",
+    "unknown": "#8e8e93",
+}
+_STATUS_LABEL = {
+    "candidateOpen": "可走候选",
+    "caution": "注意",
+    "blocked": "疑似占用",
+    "unknown": "信息不足",
+}
+IOS_FRAMES_PAGE_SIZE = 12
+
+
+def _overlay_svg(roi: dict, objects: list, prediction: dict) -> str:
+    """Build an SVG overlay (viewBox 0..100, stretched to the image) drawing the
+    three decision ROIs colored by predicted status plus the detected object
+    boxes. Vision-normalized coords have origin lower-left, so y is flipped for
+    the top-left screen space of an <img>."""
+
+    def to_screen(box: dict) -> tuple:
+        x = float(box.get("x", 0.0)) * 100.0
+        w = float(box.get("w", 0.0)) * 100.0
+        h = float(box.get("h", 0.0)) * 100.0
+        y = (1.0 - (float(box.get("y", 0.0)) + float(box.get("h", 0.0)))) * 100.0
+        return x, y, w, h
+
+    parts = [
+        "<svg viewBox='0 0 100 100' preserveAspectRatio='none' "
+        "xmlns='http://www.w3.org/2000/svg'>"
+    ]
+
+    roi_regions = [
+        ("near", prediction.get("near_path_status", "unknown"), "近"),
+        ("left", prediction.get("left_front_status", "unknown"), "左"),
+        ("right", prediction.get("right_front_status", "unknown"), "右"),
+    ]
+    for key, status, short in roi_regions:
+        rect = (roi or {}).get(key)
+        if not isinstance(rect, dict):
+            continue
+        x, y, w, h = to_screen(rect)
+        color = _STATUS_COLOR.get(str(status), "#8e8e93")
+        parts.append(
+            f"<rect x='{x:.2f}' y='{y:.2f}' width='{w:.2f}' height='{h:.2f}' "
+            f"fill='{color}' fill-opacity='0.14' stroke='{color}' stroke-width='0.9'/>"
+        )
+        label = f"{short} {_STATUS_LABEL.get(str(status), status)}"
+        ty = max(3.2, y + 3.2)
+        parts.append(
+            f"<text x='{x + 0.8:.2f}' y='{ty:.2f}' fill='{color}' "
+            f"font-size='3.4' font-weight='700'>{html.escape(label)}</text>"
+        )
+
+    for obj in objects or []:
+        box = obj.get("box") if isinstance(obj, dict) else None
+        if not isinstance(box, dict):
+            continue
+        x, y, w, h = to_screen(box)
+        conf = obj.get("confidence")
+        try:
+            conf_txt = f" {round(float(conf) * 100)}%"
+        except (TypeError, ValueError):
+            conf_txt = ""
+        label = f"{obj.get('label') or obj.get('kind') or '物体'}{conf_txt}"
+        parts.append(
+            f"<rect x='{x:.2f}' y='{y:.2f}' width='{w:.2f}' height='{h:.2f}' "
+            f"fill='none' stroke='#0a84ff' stroke-width='0.7' stroke-dasharray='1.4 0.8'/>"
+        )
+        ty = max(2.8, y - 0.8)
+        parts.append(
+            f"<text x='{x + 0.5:.2f}' y='{ty:.2f}' fill='#64d2ff' "
+            f"font-size='3.0' font-weight='700'>{html.escape(label)}</text>"
+        )
+
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+_FRAME_REGION_KEYS = ("near_path_status", "left_front_status", "right_front_status")
+
+# Filter definitions for the per-frame viewer: id -> (label, hint). Order here is
+# the order shown in the selector. "all" is implicit and always first.
+_FRAME_FILTERS = {
+    "risk_miss": ("漏报", "真实 注意/占用，却报 可走候选（最危险）"),
+    "false_block": ("误阻挡", "真实 可走，却报 注意/占用（过度保守）"),
+    "mismatch": ("有分歧", "任一区域预测≠真实"),
+    "correct": ("全对", "三区域预测与真实全一致"),
+    "no_prediction": ("无预测", "该帧没有对应预测行"),
+}
+
+
+def _frame_flags(gt: dict, prediction: dict) -> set:
+    """Classify one frame into filter buckets from GT vs prediction. Empty
+    prediction -> {"no_prediction"}; otherwise a frame may carry several tags
+    (e.g. both risk_miss and false_block across different regions)."""
+    if not prediction:
+        return {"no_prediction"}
+    flags = set()
+    all_present_equal = True
+    for key in _FRAME_REGION_KEYS:
+        g = gt.get(key)
+        p = prediction.get(key)
+        if g is None or p is None:
+            all_present_equal = False
+            continue
+        if g != p:
+            all_present_equal = False
+            flags.add("mismatch")
+            if g in ("caution", "blocked") and p == "candidateOpen":
+                flags.add("risk_miss")
+            elif g == "candidateOpen" and p in ("caution", "blocked"):
+                flags.add("false_block")
+    if all_present_equal:
+        flags.add("correct")
+    return flags
+
+
+@router.get("/datasets/ios-harness/frames/ui", response_class=HTMLResponse)
+def dataset_ios_harness_frames_ui(
+    manifest: str, predictions: str, page: int = 1, filter: str = "all"
+):
+    """Per-frame visualization: draw the iPhone on-device perception output
+    (detected object boxes + near/left/right ROI status) on top of each CamVid
+    image, side by side with the ground-truth answer. This is the "看得见" view
+    that turns aggregate metrics into inspectable pictures."""
+    manifest_path = Path(manifest).expanduser()
+    if not manifest_path.is_file():
+        raise HTTPException(status_code=404, detail="manifest_not_found")
+    pred_path = Path(predictions).expanduser()
+    if not pred_path.is_file():
+        raise HTTPException(status_code=404, detail="predictions_not_found")
+
+    manifest_rows = load_jsonl(manifest_path)
+    pred_index: dict = {}
+    for row in load_jsonl(pred_path):
+        fid = row.get("frame_id")
+        if fid is not None:
+            pred_index[str(fid)] = row
+
+    # Classify every frame once so we can both filter and show per-category counts
+    # (with 701 frames the user needs to jump straight to the bad ones).
+    flags_by_index: list = []
+    counts = {key: 0 for key in _FRAME_FILTERS}
+    for row in manifest_rows:
+        gt = row.get("ground_truth", {}) or {}
+        pred = (pred_index.get(str(row.get("frame_id", ""))) or {}).get("prediction", {}) or {}
+        flags = _frame_flags(gt, pred)
+        flags_by_index.append(flags)
+        for key in flags:
+            if key in counts:
+                counts[key] += 1
+
+    if filter not in _FRAME_FILTERS:
+        filter = "all"
+    if filter == "all":
+        filtered_rows = manifest_rows
+    else:
+        filtered_rows = [
+            row for row, flags in zip(manifest_rows, flags_by_index) if filter in flags
+        ]
+
+    grand_total = len(manifest_rows)
+    total = len(filtered_rows)
+    total_pages = max(1, (total + IOS_FRAMES_PAGE_SIZE - 1) // IOS_FRAMES_PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * IOS_FRAMES_PAGE_SIZE
+    page_rows = filtered_rows[start : start + IOS_FRAMES_PAGE_SIZE]
+
+    encoded_manifest = html.escape(str(manifest_path))
+    encoded_pred = html.escape(str(pred_path))
+
+    def status_pill(status: str) -> str:
+        color = _STATUS_COLOR.get(str(status), "#8e8e93")
+        label = _STATUS_LABEL.get(str(status), str(status))
+        return (
+            f"<span class='pill' style='border:1px solid {color};color:{color}'>"
+            f"{html.escape(label)}</span>"
+        )
+
+    cards = []
+    for row in page_rows:
+        frame_id = str(row.get("frame_id", ""))
+        image_path = str(row.get("image_path") or "")
+        gt = row.get("ground_truth", {}) or {}
+        pred_row = pred_index.get(frame_id, {})
+        prediction = pred_row.get("prediction", {}) or {}
+        objects = pred_row.get("objects", []) or []
+        roi = pred_row.get("roi", {}) or {}
+
+        if not image_path:
+            image_block = "<p class='muted'>无图片路径</p>"
+        elif not prediction:
+            thumb = f"/diagnostics/local-file?path={html.escape(image_path)}&w=560"
+            image_block = (
+                f"<div class='frame-overlay'><img loading='lazy' decoding='async' "
+                f"src='{thumb}' alt='{html.escape(frame_id)}'></div>"
+                f"<p class='muted'>该帧没有对应预测（可能被 --limit 截断）。</p>"
+            )
+        else:
+            thumb = f"/diagnostics/local-file?path={html.escape(image_path)}&w=560"
+            full = f"/diagnostics/local-file?path={html.escape(image_path)}"
+            overlay = _overlay_svg(roi, objects, prediction)
+            image_block = (
+                f"<a href='{full}' target='_blank'><div class='frame-overlay'>"
+                f"<img loading='lazy' decoding='async' src='{thumb}' alt='{html.escape(frame_id)}'>"
+                f"{overlay}</div></a>"
+            )
+
+        def region_row(name: str, key: str) -> str:
+            g = gt.get(key, "—")
+            p = prediction.get(key, "—")
+            flag = ""
+            if g in ("caution", "blocked") and p == "candidateOpen":
+                flag = " <span style='color:#ff453a'>⚠ 漏报</span>"
+            elif g == "candidateOpen" and p in ("caution", "blocked"):
+                flag = " <span style='color:#ffd60a'>误阻挡</span>"
+            return (
+                f"<tr><td>{name}</td><td>{status_pill(g)}</td>"
+                f"<td>{status_pill(p) if prediction else '—'}{flag}</td></tr>"
+            )
+
+        obj_labels = ", ".join(
+            html.escape(str(o.get("label") or o.get("kind") or "物体")) for o in objects
+        ) or "（未检出物体）"
+
+        cards.append(
+            f"""<div class='card'><h2>{html.escape(frame_id)}</h2>
+<div class='row'>
+  <div>{image_block}
+    <p class='explain'>蓝虚线框 = iPhone 检测到的物体；绿/黄/红框 = 近/左/右区域预测状态。</p>
+  </div>
+  <div>
+    <table>
+      <tr><th>区域</th><th>真实答案</th><th>iPhone 预测</th></tr>
+      {region_row('近处', 'near_path_status')}
+      {region_row('左前', 'left_front_status')}
+      {region_row('右前', 'right_front_status')}
+    </table>
+    <p class='explain'>关注方向：真实 {html.escape(str(gt.get('focus_direction', '—')))} / 预测 {html.escape(str(prediction.get('focus_direction', '—')))}</p>
+    <p class='explain'>检出物体：{obj_labels}</p>
+  </div>
+</div></div>"""
+        )
+
+    def page_url(p: int) -> str:
+        return (
+            f"/diagnostics/datasets/ios-harness/frames/ui?manifest={encoded_manifest}"
+            f"&predictions={encoded_pred}&filter={filter}&page={p}"
+        )
+
+    def filter_url(f: str) -> str:
+        return (
+            f"/diagnostics/datasets/ios-harness/frames/ui?manifest={encoded_manifest}"
+            f"&predictions={encoded_pred}&filter={f}"
+        )
+
+    # Filter selector: one pill per bucket, active one highlighted, each with a
+    # live count so the user knows how many bad frames exist before clicking.
+    def filter_pill(f: str, label: str, count: int, hint: str = "") -> str:
+        active = f == filter
+        style = (
+            "background:#0a84ff;color:#fff;border:1px solid #0a84ff"
+            if active
+            else "background:#2c2c2e;color:#d1d1d6;border:1px solid #555"
+        )
+        title = f" title='{html.escape(hint)}'" if hint else ""
+        return (
+            f"<a href='{filter_url(f)}' class='pill' style='{style};text-decoration:none'{title}>"
+            f"{html.escape(label)} <b>{count}</b></a>"
+        )
+
+    filter_pills = [filter_pill("all", "全部", grand_total)]
+    for key, (label, hint) in _FRAME_FILTERS.items():
+        filter_pills.append(filter_pill(key, label, counts[key], hint))
+    filter_bar = (
+        "<div class='card'><h3 style='margin:0 0 8px'>只看哪种结果</h3>"
+        "<p class='hint' style='margin:0 0 10px'>帧较多时用它直接跳到关心的样本，"
+        "尤其是“漏报”和“误阻挡”这两类最该复盘。</p>"
+        + " ".join(filter_pills)
+        + "</div>"
+    )
+
+    nav_bits = [f"<span class='muted'>本类 {total} 帧 · 第 {page}/{total_pages} 页</span>"]
+    if page > 1:
+        nav_bits.append(f"<a href='{page_url(page - 1)}'>← 上一页</a>")
+    if page < total_pages:
+        nav_bits.append(f"<a href='{page_url(page + 1)}'>下一页 →</a>")
+    nav = "<p class='hint'>" + " · ".join(nav_bits) + "</p>"
+
+    empty_msg = (
+        "<p class='muted'>该类别下没有帧——挺好，说明这种问题不存在。换个筛选看看。</p>"
+        if filter != "all"
+        else "<p>没有可显示的帧。</p>"
+    )
+
+    header = (
+        f"<p><a href='/diagnostics/datasets/ios-harness/ui?manifest={encoded_manifest}"
+        f"&predictions={encoded_pred}'>← 返回 iPhone 真身评估</a> · "
+        f"<a href='/diagnostics/datasets/manifest/ui?manifest={encoded_manifest}'>浏览 manifest</a></p>"
+        f"<h1>逐帧识别效果：{html.escape(manifest_path.name)}</h1>"
+        f"<div class='callout'><p class='hint'>每张图上叠加的是 iPhone 上一模一样的感知代码（YOLO11n Core ML + 通行区域引擎）真实跑出的结果。"
+        f"图例：<span style='color:#64d2ff'>蓝虚线</span>=检测物体，"
+        f"<span style='color:#30d158'>绿</span>可走候选 / "
+        f"<span style='color:#ffd60a'>黄</span>注意 / "
+        f"<span style='color:#ff453a'>红</span>疑似占用 / "
+        f"<span style='color:#8e8e93'>灰</span>信息不足。</p></div>"
+    )
+
+    body = header + filter_bar + nav + ("".join(cards) or empty_msg) + (nav if cards else "")
+    return _html_page("逐帧识别效果", body)
 
 
 @router.get("/perception-config")

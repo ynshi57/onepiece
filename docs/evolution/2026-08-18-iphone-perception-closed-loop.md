@@ -61,6 +61,27 @@ CamVid(GT) → macOS harness(=iPhone 真身: YOLO+分割+通行引擎) → predi
 - 模型 OTA（下发 .mlmodelc）未做（按选择只做配置 OTA）。
 - 自动扫描候选配置（评测驱动自动 bump）未做，当前为手动调参 + 门禁把关。
 
+## 追加：逐帧「看得见」识别效果（2026-08-18 补）
+
+用户反馈：iPhone 真身评估页只有聚合指标卡，「没看到 CamVid 图片，也没看到感知层在图上识别的效果」。这违背 VQASee「视觉引导优先、用户能直观看到」的北极星——诊断台自己却只有数字。
+
+改动：
+
+- harness `main.swift` 逐帧额外吐出 `objects`（YOLO 检出物体：kind/中文 label/confidence/direction + Vision 归一化 box）与 `roi`（本帧实际使用的近/左/右 ROI，避免叠加层与决策漂移）。prediction 主体 schema 不变，评分/parity 无感。
+- 新增 `GET /diagnostics/datasets/ios-harness/frames/ui`：分页在每张 CamVid 原图上用 SVG 叠加——蓝虚线=检出物体框，绿/黄/红/灰=近/左/右区域预测状态；右侧「真实答案 vs iPhone 预测」对照表并自动标「漏报/误阻挡」。Vision 坐标下-左原点，叠加时翻转 y 贴合 `<img>`。
+- 无预测的帧显式提示「该帧没有对应预测」，不静默丢弃。iPhone 真身评估结果页加醒目入口。
+- 测试：`test_perception_config_api.py` 增 2 例（叠加/对照渲染 + 漏报标记 + 缺文件 404）；全套 `pytest server-vqa/tests` → **165 passed**。
+
+意义：`status_accuracy=0.38 / false_block=549` 从抽象数字变成可肉眼核查的画面——能直接看清真身把公交车、交通灯识别在哪、近处 ROI 为何在驾驶图上过度报「疑似占用」，为下一轮调阈值/换数据集提供证据。
+
+**结果缓存 + 按需重跑（补）**：用户问「每次都要跑真身吗」。答案是否——预测跑完存成文件，评估/逐帧页直接读，无需每次重跑。`/run` 加 `force` 参数与新鲜度判断（`_harness_cache_info`）：数据集 manifest、harness 二进制、生效配置版本都没变时返回 `status=cached` 秒回，不重复跑；任一变化则在向导页明确提示「建议重跑」并列出原因，绝不静默复用过期结果。同时修一个闭环缺口——`/run` 现在把**当前生效的 perception config** 写临时文件用 `--config` 传给 harness，所以在 OTA 编辑器调完 ROI/阈值再重跑，结果才会真正变化（tune→rerun→gate→ship 闭环成立）。向导页 Step 1 有缓存时改为「直接查看评估（用缓存）」+「↻ 用当前配置重新跑」。测试：`test_ios_harness_run_reuses_fresh_cache_without_running`（断言有缓存时绝不 spawn 子进程）、`test_ios_harness_cache_marked_stale_after_config_bump`。
+
+**内容指纹新鲜度（补）**：把新鲜度判定从「靠文件 mtime」升级为「靠内容指纹」。`/run` 成功后写一份 meta 边车 `/tmp/{stem}-ios-harness.meta.json`，记录 manifest 内容 sha256、配置行为哈希（`PerceptionConfig.content_hash`，只对 ROI/阈值取哈希）、harness 二进制哈希、生成时间与帧数。`_harness_cache_info` 优先按这三者比对（`fingerprint=content`）：即使字节变了但 mtime 未变也能识破；手动跑（无 meta）时降级为 mtime 近似（`fingerprint=mtime`），向导页显式标注判定依据。测试：`test_ios_harness_cache_uses_content_fingerprint_meta`（改 manifest 字节 / bump 配置行为哈希 → 判为过期）。全套 → **171 passed**。
+
+**一键在本机跑真身（补）**：用户反馈手动 `swift build`+跑 harness+复制路径太繁琐。因为诊断台与 harness 同在一台 Mac，新增 `POST /diagnostics/datasets/ios-harness/run`：服务器直接 subprocess 调用已编译二进制（缺则 best-effort `swift build`），跑完把预测路径自动带入评估页。诚实能力报告、无静默失败：非 macOS→`unsupported/not_macos`；无 swift 工具链或编译失败→`needs_build`（附编译报错尾部）；harness 非零退出（如缺 YOLO 模型）→`error`（附 stderr 尾部）；产出为空也报错。向导页 Step 1 改为「▶ 一键在本机跑」按钮 + 手动命令折叠兜底。测试：`test_ios_harness_run_404_when_manifest_missing`、`test_ios_harness_run_reports_unsupported_off_macos`（monkeypatch 平台，断言绝不 spawn 子进程）。全套 → **168 passed**。
+
+**结果筛选器（补）**：701 帧无法逐条看，逐帧页加 `filter` 参数与顶部选择器（全部/漏报/误阻挡/有分歧/全对/无预测），每类带**实时计数**，非法值回退「全部」不报错、不静默空。CamVid 上按帧计数：漏报 208、误阻挡 517、有分歧 684、全对 17、无预测 0（注意这是**按帧**去重计数，与报告里 `risk_miss_count/false_block_count` 的**按区域**计数口径不同）。用户可一键跳到最该复盘的坏例子。测试：`test_ios_harness_frames_ui_filters_by_result_category`。全套 `pytest server-vqa/tests` → **166 passed**。
+
 ## 角色评审
 
 - 乔布斯：闭环成立——平台能用客观 GT 考 iPhone 真身，且调参能经门禁回流到设备；普通路径向导化。
