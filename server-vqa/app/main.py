@@ -3,13 +3,14 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, WebSocket
 from time import perf_counter
 
 from app.diagnostic_api import router as diagnostic_router
 from app.discovery import BonjourAdvertiser
 from app.fusion import fuse_vqa_result
 from app.models import VqaRequest, VqaResponse
+from app.perception_config import ConfigValidationError, load_active_config
 from app.signaling import handle_signaling_websocket
 from app.vqa_service import run_vqa, runtime_status, warmup_model
 
@@ -58,6 +59,20 @@ def health() -> dict:
 @app.get("/runtime/status")
 def runtime_status_endpoint() -> dict:
     return runtime_status()
+
+
+@app.get("/runtime/perception-config")
+def runtime_perception_config() -> dict:
+    """OTA read endpoint: the iPhone fetches the active versioned perception
+    config after connecting and applies it if valid (else falls back to its
+    compiled-in defaults, visibly). Served over the same HTTP side-channel as
+    /runtime/status. A corrupt server-side store is surfaced as a 500 rather
+    than silently masquerading as defaults.
+    """
+    try:
+        return load_active_config().to_dict()
+    except ConfigValidationError as exc:
+        raise HTTPException(status_code=500, detail=f"perception_config_invalid: {exc}") from exc
 
 
 @app.post("/v1/vqa", response_model=VqaResponse)

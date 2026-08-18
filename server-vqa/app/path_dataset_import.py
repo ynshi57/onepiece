@@ -8,10 +8,31 @@ from typing import Iterable
 import numpy as np
 from PIL import Image
 
+from app.path_roi import (
+    LEFT_ROI,
+    NEAR_ROI,
+    RIGHT_ROI,
+    focus_direction,
+    roi_coverage,
+    status_from_coverage,
+)
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-NEAR_ROI = (0.25, 0.00, 0.50, 0.58)
-LEFT_ROI = (0.00, 0.05, 0.42, 0.62)
-RIGHT_ROI = (0.58, 0.05, 0.42, 0.62)
+
+__all__ = [
+    "IMAGE_EXTENSIONS",
+    "NEAR_ROI",
+    "LEFT_ROI",
+    "RIGHT_ROI",
+    "iter_images",
+    "find_mask",
+    "load_mask",
+    "roi_coverage",
+    "status_from_coverage",
+    "focus_direction",
+    "row_for_image",
+    "create_manifest_from_folders",
+]
 
 
 def iter_images(images_dir: Path) -> Iterable[Path]:
@@ -32,43 +53,6 @@ def load_mask(mask_path: Path, threshold: float) -> np.ndarray:
     image = Image.open(mask_path).convert("L")
     arr = np.asarray(image, dtype=np.float32) / 255.0
     return arr >= threshold
-
-
-def roi_coverage(mask: np.ndarray, roi: tuple[float, float, float, float]) -> float | None:
-    height, width = mask.shape[:2]
-    x, y, w, h = roi
-    x0 = max(0, min(width - 1, int(x * width)))
-    x1 = max(x0 + 1, min(width, int((x + w) * width)))
-    y_top = 1.0 - y - h
-    y_bottom = 1.0 - y
-    y0 = max(0, min(height - 1, int(y_top * height)))
-    y1 = max(y0 + 1, min(height, int(y_bottom * height)))
-    crop = mask[y0:y1, x0:x1]
-    if crop.size == 0:
-        return None
-    return round(float(crop.mean()), 4)
-
-
-def status_from_coverage(value: float | None) -> str:
-    if value is None:
-        return "unknown"
-    if value >= 0.60:
-        return "candidateOpen"
-    if value >= 0.28:
-        return "caution"
-    return "blocked"
-
-
-def focus_direction(near: str, left: str, right: str) -> str:
-    if near in {"blocked", "caution"}:
-        return "center"
-    if left in {"blocked", "caution"} and right not in {"blocked", "caution"}:
-        return "left"
-    if right in {"blocked", "caution"} and left not in {"blocked", "caution"}:
-        return "right"
-    if left in {"blocked", "caution"} and right in {"blocked", "caution"}:
-        return "left"
-    return "unknown"
 
 
 def row_for_image(*, image_path: Path, images_dir: Path, mask_path: Path | None, split: str, scene_tags: list[str], threshold: float) -> dict:

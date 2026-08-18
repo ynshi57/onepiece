@@ -27,7 +27,11 @@ final class LocalTraversabilitySegmentationRunner {
         visionModel != nil
     }
 
-    func analyze(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation = .right) -> LocalSegmentationCueSignal? {
+    func analyze(
+        pixelBuffer: CVPixelBuffer,
+        orientation: CGImagePropertyOrientation = .right,
+        config: PerceptionConfig = .default
+    ) -> LocalSegmentationCueSignal? {
         guard let visionModel else { return nil }
         let request = VNCoreMLRequest(model: visionModel)
         request.imageCropAndScaleOption = .scaleFill
@@ -39,19 +43,19 @@ final class LocalTraversabilitySegmentationRunner {
         }
         for result in request.results ?? [] {
             if let pixelBufferObservation = result as? VNPixelBufferObservation,
-               let cue = Self.cue(fromPixelBuffer: pixelBufferObservation.pixelBuffer) {
+               let cue = Self.cue(fromPixelBuffer: pixelBufferObservation.pixelBuffer, config: config) {
                 return cue
             }
             if let feature = result as? VNCoreMLFeatureValueObservation,
                let array = feature.featureValue.multiArrayValue,
-               let cue = Self.cue(fromMultiArray: array) {
+               let cue = Self.cue(fromMultiArray: array, config: config) {
                 return cue
             }
         }
         return nil
     }
 
-    private static func cue(fromPixelBuffer pixelBuffer: CVPixelBuffer) -> LocalSegmentationCueSignal? {
+    private static func cue(fromPixelBuffer pixelBuffer: CVPixelBuffer, config: PerceptionConfig) -> LocalSegmentationCueSignal? {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
@@ -73,10 +77,10 @@ final class LocalTraversabilitySegmentationRunner {
             }
             return nil
         }
-        return cue(width: width, height: height, sample: sample)
+        return cue(width: width, height: height, sample: sample, config: config)
     }
 
-    private static func cue(fromMultiArray array: MLMultiArray) -> LocalSegmentationCueSignal? {
+    private static func cue(fromMultiArray array: MLMultiArray, config: PerceptionConfig) -> LocalSegmentationCueSignal? {
         let shape = array.shape.map { $0.intValue }
         guard shape.count >= 2 else { return nil }
         let height = shape[shape.count - 2]
@@ -90,10 +94,11 @@ final class LocalTraversabilitySegmentationRunner {
             let value = array[y * hStride + x * wStride].doubleValue
             return value.isFinite ? value : nil
         }
-        return cue(width: width, height: height, sample: sample)
+        return cue(width: width, height: height, sample: sample, config: config)
     }
 
-    private static func cue(width: Int, height: Int, sample: (Int, Int) -> Double?) -> LocalSegmentationCueSignal? {
+    private static func cue(width: Int, height: Int, sample: (Int, Int) -> Double?, config: PerceptionConfig) -> LocalSegmentationCueSignal? {
+        let traversablePixel = config.thresholds.segTraversablePixel
         func coverage(in roi: CGRect) -> Double? {
             let xStart = max(0, Int(roi.minX * CGFloat(width)))
             let xEnd = min(width - 1, Int(roi.maxX * CGFloat(width)))
@@ -107,16 +112,16 @@ final class LocalTraversabilitySegmentationRunner {
                 for x in stride(from: xStart, through: xEnd, by: stepX) {
                     guard let value = sample(x, y) else { continue }
                     valid += 1
-                    if value >= 0.55 { traversable += 1 }
+                    if value >= traversablePixel { traversable += 1 }
                 }
             }
             guard valid >= 8 else { return nil }
             return Double(traversable) / Double(valid)
         }
         return LocalSegmentationCueSignal(
-            nearPathTraversableRatio: coverage(in: LocalPathGuidanceEngine.nearPathROI),
-            leftFrontTraversableRatio: coverage(in: LocalPathGuidanceEngine.leftFrontROI),
-            rightFrontTraversableRatio: coverage(in: LocalPathGuidanceEngine.rightFrontROI)
+            nearPathTraversableRatio: coverage(in: config.nearROI),
+            leftFrontTraversableRatio: coverage(in: config.leftROI),
+            rightFrontTraversableRatio: coverage(in: config.rightROI)
         )
     }
 }

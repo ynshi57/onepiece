@@ -150,9 +150,34 @@ enum WalkingFrameSendPolicy {
 /// bundled yet.
 final class LocalVisionAnalyzer {
     private var previousFingerprint: [Double]?
-    private let perceptionRunner = LocalPerceptionCoreMLRunner()
-    private let monocularDepthRunner = LocalMonocularDepthRunner()
-    private let segmentationRunner = LocalTraversabilitySegmentationRunner()
+    private let perceptionRunner: LocalPerceptionCoreMLRunner
+    private let monocularDepthRunner: LocalMonocularDepthRunner
+    private let segmentationRunner: LocalTraversabilitySegmentationRunner
+    private var config: PerceptionConfig
+
+    /// Default init keeps the shipping behavior: all runners load from the main
+    /// app bundle and the built-in default perception config is used.
+    init(config: PerceptionConfig = .default) {
+        self.perceptionRunner = LocalPerceptionCoreMLRunner()
+        self.monocularDepthRunner = LocalMonocularDepthRunner()
+        self.segmentationRunner = LocalTraversabilitySegmentationRunner()
+        self.config = config
+    }
+
+    /// Inject a model bundle so the offline macOS evaluation harness can load the
+    /// exact same Core ML models the app ships, without duplicating perception
+    /// logic. iOS callers keep using the default init unchanged.
+    init(modelBundle: Bundle, config: PerceptionConfig = .default) {
+        self.perceptionRunner = LocalPerceptionCoreMLRunner(bundle: modelBundle)
+        self.monocularDepthRunner = LocalMonocularDepthRunner(bundle: modelBundle)
+        self.segmentationRunner = LocalTraversabilitySegmentationRunner(bundle: modelBundle)
+        self.config = config
+    }
+
+    /// Apply a new perception config at runtime (e.g. after an OTA config fetch).
+    func apply(config: PerceptionConfig) {
+        self.config = config
+    }
 
     func reset() {
         previousFingerprint = nil
@@ -175,6 +200,7 @@ final class LocalVisionAnalyzer {
 
     func analyze(
         pixelBuffer: CVPixelBuffer,
+        orientation: CGImagePropertyOrientation = .right,
         depthCues: LocalDepthCueSignal = LocalDepthCueSignal(),
         depthCapability: LocalPathCapability = LocalDepthCapabilityDetector.currentDepthCapability()
     ) -> LocalVisionSignal {
@@ -183,17 +209,17 @@ final class LocalVisionAnalyzer {
         let previous = previousFingerprint
         previousFingerprint = luminance.fingerprint
         let sceneChangeScore = Self.changeScore(current: luminance.fingerprint, previous: previous)
-        let human = Self.detectHuman(pixelBuffer: pixelBuffer)
+        let human = Self.detectHuman(pixelBuffer: pixelBuffer, orientation: orientation)
         var perception = perceptionRunner
-            .analyze(pixelBuffer: pixelBuffer)
+            .analyze(pixelBuffer: pixelBuffer, orientation: orientation)
             .merging(visionHuman: human)
-        if let segmentationCue = segmentationRunner.analyze(pixelBuffer: pixelBuffer) {
+        if let segmentationCue = segmentationRunner.analyze(pixelBuffer: pixelBuffer, orientation: orientation, config: config) {
             perception.segmentationCues = segmentationCue
         }
         var resolvedDepthCues = depthCues
         var resolvedDepthCapability = depthCapability
         if resolvedDepthCapability != .active,
-           let monocularCue = monocularDepthRunner.analyze(pixelBuffer: pixelBuffer) {
+           let monocularCue = monocularDepthRunner.analyze(pixelBuffer: pixelBuffer, orientation: orientation) {
             resolvedDepthCues = monocularCue
             resolvedDepthCapability = .active
         }
@@ -207,7 +233,8 @@ final class LocalVisionAnalyzer {
             isTooDark: isTooDark,
             isLikelyCovered: isLikelyCovered,
             depthCapability: resolvedDepthCapability,
-            segmentationCues: perception.segmentationCues
+            segmentationCues: perception.segmentationCues,
+            config: config
         )
 
         return LocalVisionSignal(
@@ -222,9 +249,9 @@ final class LocalVisionAnalyzer {
         )
     }
 
-    private static func detectHuman(pixelBuffer: CVPixelBuffer) -> (hasHuman: Bool, direction: LocalVisionDirection, boundingBox: CGRect?, confidence: Double) {
+    private static func detectHuman(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation = .right) -> (hasHuman: Bool, direction: LocalVisionDirection, boundingBox: CGRect?, confidence: Double) {
         let request = VNDetectHumanRectanglesRequest()
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .right, options: [:])
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
         do {
             try handler.perform([request])
         } catch {

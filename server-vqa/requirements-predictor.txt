@@ -1,0 +1,12 @@
+# Optional dependencies for the offline server-side traversability predictor
+# (app/traversability_predictor.py). Not required for the core backend or the
+# diagnostics platform; install only when you want to batch-predict open
+# datasets on the Mac:
+#
+#   source .venv/bin/activate && pip install -r server-vqa/requirements-predictor.txt
+#
+# Without these, the predictor honestly reports capability=unsupported.
+-r requirements.txt
+onnxruntime
+numpy
+Pillow

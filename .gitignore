@@ -22,3 +22,14 @@ ios-vqa-app/VQASee/VQASee/DepthAnythingV2SmallF16.mlpackage/
 
 # Optional local traversability segmentation model (install via deploy/ios/install_traversability_segmentation_model.sh)
 ios-vqa-app/VQASee/VQASee/VQASeeTraversabilitySegmentation.mlmodelc/
+
+# Perception harness (macOS offline evaluation) build artifacts
+ios-vqa-app/perception-harness/.build/
+ios-vqa-app/perception-harness/.swiftpm-cache/
+ios-vqa-app/perception-harness/.swiftpm/
+
+# Runtime perception config store (versioned config is bumped at runtime, not source)
+server-vqa/data/perception_config.json
+
+# Server-side offline traversability predictor ONNX model (large binary; not committed).
+server-vqa/models/

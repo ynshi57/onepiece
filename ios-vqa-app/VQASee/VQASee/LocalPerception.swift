@@ -1,5 +1,7 @@
 import CoreGraphics
+#if canImport(ARKit)
 import ARKit
+#endif
 import CoreML
 import CoreVideo
 import Foundation
@@ -250,6 +252,7 @@ enum LocalPathCapability: String, Sendable, Equatable {
 
 enum LocalDepthCapabilityDetector {
     static func currentDepthCapability() -> LocalPathCapability {
+        #if canImport(ARKit)
         guard ARWorldTrackingConfiguration.isSupported else {
             return .unsupported
         }
@@ -260,6 +263,11 @@ enum LocalDepthCapabilityDetector {
             return .hardwareAvailableButInactive
         }
         return .unsupported
+        #else
+        // Non-iOS builds (e.g. the macOS offline evaluation harness) have no
+        // ARKit and no LiDAR: report unsupported so the camera-only path runs.
+        return .unsupported
+        #endif
     }
 }
 
@@ -315,8 +323,12 @@ enum LocalPathGuidanceEngine {
         isTooDark: Bool,
         isLikelyCovered: Bool,
         depthCapability: LocalPathCapability = LocalDepthCapabilityDetector.currentDepthCapability(),
-        segmentationCues: LocalSegmentationCueSignal = LocalSegmentationCueSignal()
+        segmentationCues: LocalSegmentationCueSignal = LocalSegmentationCueSignal(),
+        config: PerceptionConfig = .default
     ) -> LocalPathGuidanceSignal {
+        let nearPathROI = config.nearROI
+        let leftFrontROI = config.leftROI
+        let rightFrontROI = config.rightROI
         let segmentationCapability: LocalPathCapability = segmentationCues.hasCoverage ? .active : .unsupported
         var reasons: [LocalPathReason] = [
             depthCapability == .hardwareAvailableButInactive ? .depthHardwareAvailableButInactive : .depthUnsupported,
@@ -370,9 +382,9 @@ enum LocalPathGuidanceEngine {
             reasons.append(.depthNearObstacle)
         }
 
-        var nearStatus = status(for: nearObjects, blockedThreshold: 0.82)
-        var leftStatus = status(for: leftObjects, blockedThreshold: 0.86)
-        var rightStatus = status(for: rightObjects, blockedThreshold: 0.86)
+        var nearStatus = status(for: nearObjects, blockedThreshold: config.thresholds.nearBlockedArea)
+        var leftStatus = status(for: leftObjects, blockedThreshold: config.thresholds.sideBlockedArea)
+        var rightStatus = status(for: rightObjects, blockedThreshold: config.thresholds.sideBlockedArea)
         if perception.depthCues.nearDrop == .possible || perception.depthCues.nearestObstacleDirection == .center {
             nearStatus = maxSeverity(nearStatus, .caution)
         }
@@ -382,14 +394,14 @@ enum LocalPathGuidanceEngine {
         if perception.depthCues.nearestObstacleDirection == .right {
             rightStatus = maxSeverity(rightStatus, .caution)
         }
-        if let ratio = segmentationCues.nearPathTraversableRatio, ratio < 0.35 {
+        if let ratio = segmentationCues.nearPathTraversableRatio, ratio < config.thresholds.segNearCautionRatio {
             nearStatus = maxSeverity(nearStatus, .caution)
             reasons.append(.segmentationNearBlocked)
         }
-        if let ratio = segmentationCues.leftFrontTraversableRatio, ratio < 0.30 {
+        if let ratio = segmentationCues.leftFrontTraversableRatio, ratio < config.thresholds.segSideCautionRatio {
             leftStatus = maxSeverity(leftStatus, .caution)
         }
-        if let ratio = segmentationCues.rightFrontTraversableRatio, ratio < 0.30 {
+        if let ratio = segmentationCues.rightFrontTraversableRatio, ratio < config.thresholds.segSideCautionRatio {
             rightStatus = maxSeverity(rightStatus, .caution)
         }
         let focus = focusDirection(near: nearObjects, left: leftObjects, right: rightObjects, depth: perception.depthCues.nearestObstacleDirection)

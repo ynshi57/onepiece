@@ -50,6 +50,16 @@ struct SettingsView: View {
                         .font(Theme.Typography.caption)
                         .foregroundStyle(.secondary)
 
+                    HStack {
+                        Text("感知配置版本")
+                        Spacer()
+                        Text("v\(viewModel.perceptionConfigVersion)")
+                            .foregroundStyle(viewModel.perceptionConfigUsingFallback ? Color.orange : .secondary)
+                    }
+                    Text(viewModel.perceptionConfigText)
+                        .font(Theme.Typography.caption)
+                        .foregroundStyle(viewModel.perceptionConfigUsingFallback ? Color.orange : .secondary)
+
                     let modelOptions = viewModel.selectableModelOptions
                     if modelOptions.count > 1 {
                         Picker("模型", selection: $viewModel.selectedModel) {

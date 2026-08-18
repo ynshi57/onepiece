@@ -98,6 +98,11 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     @Published var runtimeStatusText = String(localized: "正在确认本地模型…")
     @Published var runtimeStatus: RuntimeStatus?
     @Published var isRefreshingRuntimeStatus = false
+    /// Active on-device perception config version and whether we fell back to the
+    /// compiled-in default. Surfaced in Settings so config OTA never fails silently.
+    @Published var perceptionConfigVersion: Int = PerceptionConfig.default.version
+    @Published var perceptionConfigUsingFallback = false
+    @Published var perceptionConfigText = String(localized: "感知配置：内置默认")
     @Published var isVoiceEnabled = true
     @Published var isRecording = false
     @Published var speechStatusText = ""
@@ -467,6 +472,63 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         }
     }
 
+    /// Fetch the versioned perception config over the HTTP side-channel and apply
+    /// it to the local analyzers. Invalid or unreachable config falls back to the
+    /// compiled-in default and is shown in Settings (never silent).
+    func refreshPerceptionConfig() {
+        guard let configURL = runtimeConfigURL() else {
+            return
+        }
+        Task {
+            do {
+                var request = URLRequest(url: configURL)
+                request.timeoutInterval = 2.5
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                    throw URLError(.badServerResponse)
+                }
+                let wire = try JSONDecoder().decode(PerceptionConfigWire.self, from: data)
+                let config = try PerceptionConfig(wire: wire)
+                await MainActor.run {
+                    self.applyPerceptionConfig(config, usingFallback: false)
+                }
+            } catch {
+                // Explicit fallback: keep the compiled-in default and say so.
+                await MainActor.run {
+                    self.applyPerceptionConfig(.default, usingFallback: true, error: error)
+                }
+            }
+        }
+    }
+
+    private func applyPerceptionConfig(_ config: PerceptionConfig, usingFallback: Bool, error: Error? = nil) {
+        frameCaptureProxy.applyPerceptionConfig(config)
+        arFrameCaptureProxy.applyPerceptionConfig(config)
+        perceptionConfigVersion = config.version
+        perceptionConfigUsingFallback = usingFallback
+        if usingFallback {
+            let reason = error?.localizedDescription ?? String(localized: "配置无效")
+            perceptionConfigText = String(localized: "感知配置获取失败，已使用内置默认 v\(config.version)（\(reason)）")
+        } else {
+            perceptionConfigText = String(localized: "感知配置：已应用远程 v\(config.version)")
+        }
+    }
+
+    private func runtimeConfigURL() -> URL? {
+        guard let serverURL = StreamingConfigValidator.normalizeServerURL(serverURLInput) else {
+            return nil
+        }
+        guard serverURL.path.contains("/ws/signaling") else {
+            return nil
+        }
+        var components = URLComponents()
+        components.scheme = serverURL.scheme == "wss" ? "https" : "http"
+        components.host = serverURL.host
+        components.port = serverURL.port
+        components.path = "/runtime/perception-config"
+        return components.url
+    }
+
     private func modelID(for route: ObservationRoute) -> String {
         RuntimeModelPolicy.modelID(
             selectedModel: selectedModel,
@@ -574,6 +636,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                 nearbyServerText = String(localized: "已连接 Mac 后端")
             }
             refreshRuntimeStatus()
+            refreshPerceptionConfig()
             if isVoiceEnabled {
                 speak(String(localized: "已连接，开始观察风险。"), force: true)
             }

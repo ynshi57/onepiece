@@ -348,6 +348,37 @@ def test_diagnostics_session_path_manifest_and_eval_ui(monkeypatch, tmp_path):
     assert "路径评估" in eval_ui_response.text
 
 
+def test_extract_zip_flat_flattens_despite_zip_in_output_dir(tmp_path):
+    # Reproduce the CamVid failure: a GitHub-style archive nests everything under
+    # one top-level folder, and the zip lives in the same output dir. The zip
+    # must not block the flatten (previously it did -> nested CamVid_RGB -> 500).
+    import zipfile
+
+    from app.diagnostic_api import _extract_zip_flat
+
+    output_dir = tmp_path / "camvid"
+    output_dir.mkdir()
+    zip_path = output_dir / "camvid.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("CamVid-main/CamVid_RGB/frame.png", "img")
+        archive.writestr("CamVid-main/CamVid_Label/frame.png", "lbl")
+
+    _extract_zip_flat(zip_path, output_dir)
+
+    assert (output_dir / "CamVid_RGB" / "frame.png").is_file()
+    assert (output_dir / "CamVid_Label" / "frame.png").is_file()
+    assert not (output_dir / "CamVid-main").exists()
+
+
+def test_find_dataset_dir_locates_nested_directory(tmp_path):
+    from app.diagnostic_api import _find_dataset_dir
+
+    nested = tmp_path / "CamVid-main" / "CamVid_RGB"
+    nested.mkdir(parents=True)
+    assert _find_dataset_dir(tmp_path, "CamVid_RGB") == nested
+    assert _find_dataset_dir(tmp_path, "DoesNotExist") is None
+
+
 def test_diagnostics_datasets_ui_and_evaluate():
     ui_response = client.get("/diagnostics/datasets/ui")
     assert ui_response.status_code == 200
@@ -356,6 +387,56 @@ def test_diagnostics_datasets_ui_and_evaluate():
     eval_response = client.get("/diagnostics/datasets/evaluate?manifest=docs/datasets/path-guidance-manifest-example.jsonl")
     assert eval_response.status_code == 200
     assert "status_accuracy" in eval_response.json()
+
+
+def test_dataset_evaluate_ui_surfaces_missing_predictions():
+    response = client.get("/diagnostics/datasets/evaluate/ui?manifest=docs/datasets/path-guidance-manifest-example.jsonl")
+    assert response.status_code == 200
+    # The evaluate page must expose the prediction-coverage card and the run-predict step.
+    assert ("缺预测帧" in response.text) or ("预测覆盖" in response.text)
+    assert "运行预测" in response.text
+
+
+def test_dataset_predict_reports_unsupported_without_model(monkeypatch, tmp_path):
+    # No onnxruntime/model in test env: predict must say unsupported, not fake it.
+    monkeypatch.setenv("VQASEE_TRAVERSABILITY_ONNX", str(tmp_path / "missing.onnx"))
+    response = client.post(
+        "/diagnostics/datasets/predict",
+        params={"manifest": "docs/datasets/path-guidance-manifest-example.jsonl", "write_back": "false"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["capability"] == "unsupported"
+    assert payload["predicted"] == 0
+    assert payload["reason"]
+
+
+def test_session_close_loop_saves_baseline(monkeypatch, tmp_path):
+    monkeypatch.setenv("DIAGNOSTIC_CAPTURE_DIR", str(tmp_path / "captures"))
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(tmp_path / "baselines"))
+    from app.diagnostic_capture import save_diagnostic_frame
+
+    save_diagnostic_frame(
+        session_id="close-loop-session",
+        image_base64="/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+        metadata={"event": "sent_to_backend", "mode": "walking", "frame": "frames/frame-0001.jpg"},
+    )
+    client.post(
+        "/diagnostics/sessions/close-loop-session/labels",
+        json={"frame": "frames/frame-0001.jpg", "label": "no_obvious_risk", "true_risks": "无明显风险"},
+    )
+
+    response = client.post("/diagnostics/sessions/close-loop-session/close-loop")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["baseline"] == "session-close-loop-session"
+    assert (tmp_path / "baselines" / "session-close-loop-session.json").is_file()
+
+    baselines = client.get("/diagnostics/baselines")
+    assert baselines.status_code == 200
+    names = {item["name"] for item in baselines.json()["baselines"]}
+    assert "session-close-loop-session" in names
 
 
 def test_datasets_create_and_manifest_browser(monkeypatch, tmp_path):
@@ -394,6 +475,52 @@ def test_datasets_create_and_manifest_browser(monkeypatch, tmp_path):
     eval_response = client.get("/diagnostics/datasets/evaluate", params={"manifest": str(output)})
     assert eval_response.status_code == 200
     assert eval_response.json()["labeled_frames"] == 1
+
+
+def test_manifest_browser_paginates_and_lazy_loads_thumbnails(monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    from PIL import Image
+
+    image_path = tmp_path / "frame.png"
+    Image.new("RGB", (1280, 720), "black").save(image_path)
+    manifest = tmp_path / "manifest.jsonl"
+    lines = []
+    for i in range(30):
+        lines.append(
+            json.dumps(
+                {
+                    "frame_id": f"road/frame-{i:03d}",
+                    "image_path": str(image_path),
+                    "ground_truth": {"near_path_status": "candidateOpen"},
+                },
+                ensure_ascii=False,
+            )
+        )
+    manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    page1 = client.get("/diagnostics/datasets/manifest/ui", params={"manifest": str(manifest)})
+    assert page1.status_code == 200
+    # Lazy-loaded thumbnails, not eager full-size images.
+    assert "loading='lazy'" in page1.text
+    assert "&w=480" in page1.text
+    # Only one page's worth of frames rendered; page 2 link present.
+    assert "frame-000" in page1.text
+    assert "frame-024" not in page1.text
+    assert "共 30 帧 · 第 1/2 页" in page1.text
+    assert "page=2" in page1.text
+
+    page2 = client.get("/diagnostics/datasets/manifest/ui", params={"manifest": str(manifest), "page": 2})
+    assert page2.status_code == 200
+    assert "frame-024" in page2.text
+    assert "frame-000" not in page2.text
+
+    # Thumbnail endpoint returns a downscaled JPEG far smaller than the source PNG.
+    thumb = client.get("/diagnostics/local-file", params={"path": str(image_path), "w": 480})
+    assert thumb.status_code == 200
+    assert thumb.headers["content-type"] == "image/jpeg"
+    assert len(thumb.content) < image_path.stat().st_size
 
 
 def test_datasets_create_uses_wizard_defaults(monkeypatch, tmp_path):
@@ -516,3 +643,47 @@ def test_diagnostics_create_open_camvid_dataset(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.json()["rows"] == 1
     assert output.is_file()
+
+
+def test_diagnostics_create_open_camvid_autodetects_downloaded_dirs(monkeypatch, tmp_path):
+    from PIL import Image
+    import numpy as np
+
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    # Simulate the real download layout where dirs sit nested under CamVid-main.
+    images = tmp_path / "camvid" / "CamVid-main" / "CamVid_RGB"
+    labels = tmp_path / "camvid" / "CamVid-main" / "CamVid_Label"
+    images.mkdir(parents=True)
+    labels.mkdir(parents=True)
+    Image.new("RGB", (40, 40), "black").save(images / "frame.png")
+    label = np.zeros((40, 40, 3), dtype=np.uint8)
+    label[18:40, 10:30] = np.array([128, 64, 128], dtype=np.uint8)
+    Image.fromarray(label).save(labels / "frame.png")
+    output = tmp_path / "camvid-manifest.jsonl"
+
+    # UI must auto-fill the detected nested paths, not the old flat placeholder.
+    ui_response = client.get("/diagnostics/datasets/create-open/ui")
+    assert ui_response.status_code == 200
+    assert str(images) in ui_response.text
+    assert "已检测到本地 CamVid" in ui_response.text
+
+    # Blank images/labels → auto-detect and still generate the manifest.
+    response = client.get(
+        "/diagnostics/datasets/create-open",
+        params={"dataset": "camvid", "output": str(output), "as_json": "true"},
+    )
+    assert response.status_code == 200
+    assert response.json()["rows"] == 1
+    assert output.is_file()
+
+
+def test_diagnostics_create_open_camvid_missing_returns_clear_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    output = tmp_path / "camvid-manifest.jsonl"
+    response = client.get(
+        "/diagnostics/datasets/create-open",
+        params={"dataset": "camvid", "output": str(output), "as_json": "true"},
+    )
+    assert response.status_code == 404
+    assert "camvid_not_found" in response.json()["detail"]
+    assert not output.exists()

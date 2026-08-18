@@ -24,6 +24,11 @@ final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         encodingProfile = profile
     }
 
+    /// Apply a perception config (e.g. after an OTA fetch) to the local analyzer.
+    func applyPerceptionConfig(_ config: PerceptionConfig) {
+        localVisionAnalyzer.apply(config: config)
+    }
+
     func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
@@ -107,6 +112,11 @@ final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
 
     func setEncodingProfile(_ profile: FrameEncodingProfile) {
         encodingProfile = profile
+    }
+
+    /// Apply a perception config (e.g. after an OTA fetch) to the local analyzer.
+    func applyPerceptionConfig(_ config: PerceptionConfig) {
+        localVisionAnalyzer.apply(config: config)
     }
 
     func forceNextFrame() {
