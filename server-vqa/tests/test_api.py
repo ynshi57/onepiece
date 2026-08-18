@@ -419,3 +419,100 @@ def test_datasets_create_uses_wizard_defaults(monkeypatch, tmp_path):
     text = manifest.read_text(encoding="utf-8")
     assert "indoor" in text
     assert "office" in text
+
+
+def test_diagnostics_create_open_bdd100k_dataset(monkeypatch, tmp_path):
+    from PIL import Image
+    import json
+
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    images = tmp_path / "bdd" / "images"
+    images.mkdir(parents=True)
+    Image.new("RGB", (100, 100), "black").save(images / "frame.jpg")
+    labels = tmp_path / "bdd" / "drivable.json"
+    labels.write_text(
+        json.dumps([
+            {
+                "name": "frame.jpg",
+                "labels": [
+                    {
+                        "category": "drivable area",
+                        "attributes": {"areaType": "direct"},
+                        "poly2d": [[[25, 45], [75, 45], [75, 99], [25, 99]]],
+                    }
+                ],
+            }
+        ]),
+        encoding="utf-8",
+    )
+    output = tmp_path / "bdd-manifest.jsonl"
+
+    ui_response = client.get("/diagnostics/datasets/create-open/ui")
+    assert ui_response.status_code == 200
+    assert "BDD100K" in ui_response.text
+
+    response = client.get(
+        "/diagnostics/datasets/create-open",
+        params={
+            "dataset": "bdd100k_drivable",
+            "images": str(images),
+            "labels": str(labels),
+            "output": str(output),
+            "as_json": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"] == 1
+    assert output.is_file()
+
+
+def test_diagnostics_open_dataset_demo_flow():
+    from pathlib import Path
+
+    ui_response = client.get("/diagnostics/datasets/create-open/ui")
+    assert ui_response.status_code == 200
+    assert "一键下载 CamVid GitHub 数据" in ui_response.text
+    assert "一键下载 CamVid GitHub 数据" in ui_response.text
+    assert "VQASEE_DATASET_ROOT" in ui_response.text
+    assert "高级：接入 BDD100K 大数据集" in ui_response.text
+    assert "downloadCamvid()" in ui_response.text
+    assert "downloadStatus" in ui_response.text
+
+    demo_response = client.get("/diagnostics/datasets/create-open-demo?as_json=true")
+    assert demo_response.status_code == 200
+    payload = demo_response.json()
+    assert payload["rows"] == 1
+    assert payload["manifest"] == "docs/datasets/bdd100k-demo-manifest.jsonl"
+    Path(payload["manifest"]).unlink(missing_ok=True)
+
+
+def test_diagnostics_create_open_camvid_dataset(monkeypatch, tmp_path):
+    from PIL import Image
+    import numpy as np
+
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    images = tmp_path / "camvid" / "CamVid_RGB"
+    labels = tmp_path / "camvid" / "CamVid_Label"
+    images.mkdir(parents=True)
+    labels.mkdir(parents=True)
+    Image.new("RGB", (40, 40), "black").save(images / "frame.png")
+    label = np.zeros((40, 40, 3), dtype=np.uint8)
+    label[18:40, 10:30] = np.array([128, 64, 128], dtype=np.uint8)
+    Image.fromarray(label).save(labels / "frame.png")
+    output = tmp_path / "camvid-manifest.jsonl"
+
+    response = client.get(
+        "/diagnostics/datasets/create-open",
+        params={
+            "dataset": "camvid",
+            "images": str(images),
+            "labels": str(labels),
+            "output": str(output),
+            "as_json": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rows"] == 1
+    assert output.is_file()
