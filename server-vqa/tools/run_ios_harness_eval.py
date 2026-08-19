@@ -40,7 +40,11 @@ if str(SERVER_ROOT) not in sys.path:
 
 from app.eval_baseline import load_baseline, save_baseline  # noqa: E402
 from app.guidance_path import GuidancePath, GuidancePathError  # noqa: E402
-from app.guidance_path_eval import evaluate_guidance_paths, gate_guidance  # noqa: E402
+from app.guidance_path_eval import (  # noqa: E402
+    GUIDANCE_BASELINE_KEYS,
+    evaluate_guidance_paths,
+    gate_guidance,
+)
 from app.path_dataset_eval import evaluate_path_guidance, load_jsonl  # noqa: E402
 from app.path_parity import compute_parity  # noqa: E402
 from app.regression_gate import check_regression  # noqa: E402
@@ -152,6 +156,7 @@ def main() -> int:
                 f"{args.baseline}-guidance",
                 {k: v for k, v in guidance_report.items() if k != "per_frame"},
                 source="ios_coreml_offline_harness_guidance",
+                metric_keys=GUIDANCE_BASELINE_KEYS,
             )
             output["guidance_baseline"] = str(g_saved)
 

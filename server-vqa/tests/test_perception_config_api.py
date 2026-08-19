@@ -228,11 +228,14 @@ def test_ios_harness_frames_ui_draws_guidance_lines(client, tmp_path):
     assert resp.status_code == 200
     text = resp.text
     # Both the predicted line (polyline) and its corridor band (polygon) render,
-    # plus the legend explaining the two lines.
+    # plus the legend explaining the two lines as the primary signal.
     assert "<polyline" in text
     assert "<polygon" in text
-    assert "预测引导线" in text
-    assert "真值可通行引导线" in text
+    assert "紫实线=iPhone 预测路径" in text
+    assert "绿虚线=真值路径" in text
+    # On-image "预测"/"真值" labels make the line self-explanatory.
+    assert ">预测<" in text
+    assert ">真值<" in text
 
 
 def test_ios_harness_frames_ui_filters_by_result_category(client, tmp_path):
@@ -250,14 +253,16 @@ def test_ios_harness_frames_ui_filters_by_result_category(client, tmp_path):
     assert "本类 2 帧" in all_resp.text
 
     # risk_miss: only f1 qualifies (blocked GT predicted candidateOpen).
+    # Match the frame-card heading precisely — a loose "f2" substring collides with
+    # color hex like #bf5af2 in the legend.
     rm = client.get("/diagnostics/datasets/ios-harness/frames/ui", params={**base, "filter": "risk_miss"})
     assert "本类 1 帧" in rm.text
-    assert "f1" in rm.text and "f2" not in rm.text
+    assert "<h2>f1</h2>" in rm.text and "<h2>f2</h2>" not in rm.text
 
     # no_prediction: only f2 (no harness row).
     npf = client.get("/diagnostics/datasets/ios-harness/frames/ui", params={**base, "filter": "no_prediction"})
     assert "本类 1 帧" in npf.text
-    assert "f2" in npf.text
+    assert "<h2>f2</h2>" in npf.text and "<h2>f1</h2>" not in npf.text
 
     # Unknown filter value falls back to all (never 500 / never silently empty).
     bogus = client.get("/diagnostics/datasets/ios-harness/frames/ui", params={**base, "filter": "bogus"})

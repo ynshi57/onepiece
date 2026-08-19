@@ -24,6 +24,8 @@ from app.diagnostic_capture import capture_root, get_session_dir, list_sessions
 from app.diagnostic_report import generate_report_from_session_dir
 from app.eval_baseline import list_baselines, load_baseline, save_baseline
 from app.open_dataset_adapters import create_bdd100k_drivable_manifest, create_camvid_manifest
+from app.guidance_path import GuidancePath, GuidancePathError
+from app.guidance_path_eval import evaluate_guidance_paths
 from app.path_dataset_eval import evaluate_path_guidance, load_jsonl
 from app.path_dataset_import import create_manifest_from_folders
 from app.path_manifest_export import export_session_path_manifest, manifest_to_jsonl
@@ -1333,7 +1335,15 @@ async function runHarness(force) {{
         )
         return _html_page("iPhone 真身评估", header + err + steps)
 
-    report = evaluate_path_guidance(load_jsonl(manifest_path), load_jsonl(pred_path))
+    manifest_rows = load_jsonl(manifest_path)
+    prediction_rows = load_jsonl(pred_path)
+    report = evaluate_path_guidance(manifest_rows, prediction_rows)
+
+    # Line-level guidance report — this is what the centerline algorithm actually
+    # moves. The region metrics below are three-zone status and are INDEPENDENT of
+    # the guidance line, so surfacing only region metrics hid every line improvement.
+    guidance_pairs, guidance_skipped = _guidance_pairs(manifest_rows, prediction_rows)
+    guidance_report = evaluate_guidance_paths(guidance_pairs) if guidance_pairs else None
 
     def card(title: str, value: object, hint: str = "") -> str:
         return (
@@ -1342,7 +1352,42 @@ async function runHarness(force) {{
             f"<p class='muted'>{html.escape(hint)}</p></div>"
         )
 
-    cards = "<div class='grid'>" + "".join([
+    def num(value: object, digits: int = 3) -> str:
+        if isinstance(value, bool) or value is None:
+            return str(value)
+        if isinstance(value, (int,)):
+            return str(value)
+        if isinstance(value, float):
+            return f"{value:.{digits}f}"
+        return str(value)
+
+    if guidance_report is not None:
+        g = guidance_report
+        guidance_cards = (
+            "<div class='callout'><h2>引导线指标（中心线算法影响的就是这一组）</h2>"
+            "<p class='hint'>这一组衡量「可通行引导线」本身：能不能画出线、画得准不准、"
+            "会不会在真值无路处硬画。下面的三区状态指标与引导线无关，所以中心线改动不会动它们。</p>"
+            "<div class='grid'>"
+            + "".join([
+                card("有线可比帧 both_ok", g.get("both_ok"), f"真值与预测都成线的帧（共 {g.get('frames')} 帧）"),
+                card("漏线 missed_path", g.get("missed_path_frames"), "真值有路、预测却没画出线（越低越好）"),
+                card("虚报路 false_go", g.get("false_go_frames"), "真值无路、预测却宣称有路（安全红线，须为 0）"),
+                card("落廊率 hit_rate", num(g.get("hit_rate")), "预测线落在真值走廊内的比例（越高越好）"),
+                card("横向偏差 mean_deviation", num(g.get("mean_deviation")), "与真值线的平均横向误差（越低越好）"),
+                card("越界 over_extension", num(g.get("over_extension")), "预测线尾越过真值自由空间的比例（越低越安全）"),
+            ])
+            + "</div>"
+            + (f"<p class='muted'>另有 {guidance_skipped} 帧因线数据不合法未计入（明确暴露，非静默丢弃）。</p>" if guidance_skipped else "")
+            + "</div>"
+        )
+    else:
+        guidance_cards = (
+            "<div class='callout'><h2>引导线指标</h2>"
+            "<p class='muted'>此 manifest 缺少 ground_truth_path，或预测缺少 guidance_path，"
+            "无法做线级评估。重生成带真值线的 manifest 并重跑真身感知后即可显示。</p></div>"
+        )
+
+    cards = guidance_cards + "<h2 style='margin-top:1.5rem'>三区状态指标（region，与引导线独立）</h2><div class='grid'>" + "".join([
         card("有标注帧", report.get("labeled_frames"), "参与打分的帧数"),
         card("状态准确率", report.get("status_accuracy"), "近处/左/右三区域状态匹配率"),
         card("方向准确率", report.get("focus_direction_accuracy"), "关注方向是否匹配"),
@@ -1376,8 +1421,14 @@ async function runParity() {{
 </script>"""
     parity_card = """
 <div class='card'>
-  <h2>一致性对比（iPhone 真身 vs 服务器代理）</h2>
-  <p class='hint'>两套是独立的预测器（iPhone 用 YOLO+启发式，服务器用分割 ONNX）。这是“对比找分歧”，不是要求二者数值对齐。</p>
+  <h2>一致性对比（可选）：iPhone 真身 vs 服务器代理</h2>
+  <p class='hint'><b>作用</b>：拿一套<b>独立</b>的服务器端预测器（分割 ONNX）复算同样的帧，
+  和 iPhone 真身（YOLO+启发式）逐帧比对，用来<b>发现两套预测器何时分歧变大（漂移）</b>——
+  一种「用第二个裁判交叉验证」的手段。它<b>不参与</b>上面的准确率/引导线打分，
+  也<b>不是评估通过的前提</b>。</p>
+  <p class='hint'>没装 ONNX 依赖时它会明确报 <code>unsupported</code>（而非静默跳过）；
+  你现在能看到上面的指标，说明真身评估本身是好的。要启用交叉验证：
+  <code>pip install onnxruntime</code> + 提供分割模型。</p>
   <button class='secondary' onclick='runParity()'>运行一致性对比</button>
   <div id='parityStatus' class='status' style='display:none'></div>
 </div>
@@ -1415,6 +1466,31 @@ def _repo_root() -> Path:
 
 def _harness_bin() -> Path:
     return _repo_root() / "ios-vqa-app" / "perception-harness" / ".build" / "debug" / "PerceptionHarness"
+
+
+def _guidance_pairs(manifest_rows: list[dict], prediction_rows: list[dict]):
+    """Build (frame_id, gt_path, pred_path) triples for line-level scoring.
+
+    Malformed entries are counted as skipped (surfaced in the UI), never silently
+    dropped — a frame missing GT or a well-formed prediction just doesn't score."""
+    preds: dict = {}
+    for row in prediction_rows:
+        fid = row.get("frame_id")
+        if fid is not None and isinstance(row.get("guidance_path"), dict):
+            preds[fid] = row["guidance_path"]
+    pairs = []
+    skipped = 0
+    for row in manifest_rows:
+        fid = row.get("frame_id")
+        gt_raw = row.get("ground_truth_path")
+        pred_raw = preds.get(fid)
+        if fid is None or not isinstance(gt_raw, dict) or pred_raw is None:
+            continue
+        try:
+            pairs.append((fid, GuidancePath.from_dict(gt_raw), GuidancePath.from_dict(pred_raw)))
+        except GuidancePathError:
+            skipped += 1
+    return pairs, skipped
 
 
 def _harness_out_path(manifest_path: Path) -> Path:
@@ -1736,12 +1812,15 @@ _STATUS_LABEL = {
 IOS_FRAMES_PAGE_SIZE = 12
 
 
-def _guidance_line_svg(path: dict, *, color: str, dashed: bool, corridor: bool) -> str:
+def _guidance_line_svg(
+    path: dict, *, color: str, dashed: bool, corridor: bool, label: str = "", width: float = 1.4
+) -> str:
     """Render one guidance line as an SVG polyline (+ optional corridor band).
 
     Points are Vision-normalized (origin lower-left, y up); flip y for screen.
     Returns "" when the path is missing/insufficient so a degrade shows as an
-    absent line rather than a fabricated straight one."""
+    absent line rather than a fabricated straight one. ``label`` (预测/真值) is
+    drawn at the forward end so the line is self-explanatory even without legend."""
     if not isinstance(path, dict) or path.get("status") != "ok":
         return ""
     lines = path.get("lines") or []
@@ -1768,12 +1847,24 @@ def _guidance_line_svg(path: dict, *, color: str, dashed: bool, corridor: bool) 
         )
     pts = " ".join(f"{sx(p):.2f},{sy(p):.2f}" for p in points)
     dash = " stroke-dasharray='2.2 1.6'" if dashed else ""
+    # A faint dark halo under the line keeps it legible over bright/pale scenery.
     parts.append(
-        f"<polyline points='{pts}' fill='none' stroke='{color}' stroke-width='1.4' "
+        f"<polyline points='{pts}' fill='none' stroke='#000' stroke-opacity='0.35' "
+        f"stroke-width='{width + 1.0:.2f}' stroke-linejoin='round' stroke-linecap='round'/>"
+    )
+    parts.append(
+        f"<polyline points='{pts}' fill='none' stroke='{color}' stroke-width='{width:.2f}' "
         f"stroke-linejoin='round' stroke-linecap='round'{dash}/>"
     )
     # Mark the start (feet) with a small dot.
-    parts.append(f"<circle cx='{sx(points[0]):.2f}' cy='{sy(points[0]):.2f}' r='1.1' fill='{color}'/>")
+    parts.append(f"<circle cx='{sx(points[0]):.2f}' cy='{sy(points[0]):.2f}' r='1.2' fill='{color}'/>")
+    if label:
+        fx = min(88.0, sx(points[-1]) + 1.2)
+        fy = max(4.0, sy(points[-1]))
+        parts.append(
+            f"<text x='{fx:.2f}' y='{fy:.2f}' fill='{color}' stroke='#000' stroke-width='0.25' "
+            f"paint-order='stroke' font-size='3.4' font-weight='800'>{html.escape(label)}</text>"
+        )
     return "".join(parts)
 
 
@@ -1813,15 +1904,18 @@ def _overlay_svg(
             continue
         x, y, w, h = to_screen(rect)
         color = _STATUS_COLOR.get(str(status), "#8e8e93")
+        # ROI status is now the SECONDARY (legacy coarse) signal — draw it faint so
+        # it reads as background context and does not fight the guidance line.
         parts.append(
             f"<rect x='{x:.2f}' y='{y:.2f}' width='{w:.2f}' height='{h:.2f}' "
-            f"fill='{color}' fill-opacity='0.14' stroke='{color}' stroke-width='0.9'/>"
+            f"fill='{color}' fill-opacity='0.06' stroke='{color}' stroke-opacity='0.55' "
+            f"stroke-width='0.5' stroke-dasharray='1.2 1.0'/>"
         )
         label = f"{short} {_STATUS_LABEL.get(str(status), status)}"
-        ty = max(3.2, y + 3.2)
+        ty = max(3.0, y + 3.0)
         parts.append(
-            f"<text x='{x + 0.8:.2f}' y='{ty:.2f}' fill='{color}' "
-            f"font-size='3.4' font-weight='700'>{html.escape(label)}</text>"
+            f"<text x='{x + 0.8:.2f}' y='{ty:.2f}' fill='{color}' fill-opacity='0.8' "
+            f"font-size='2.8' font-weight='600'>{html.escape(label)}</text>"
         )
 
     for obj in objects or []:
@@ -1845,12 +1939,13 @@ def _overlay_svg(
             f"font-size='3.0' font-weight='700'>{html.escape(label)}</text>"
         )
 
-    # Ground-truth traversable line (green dashed) vs predicted line (purple
-    # solid, with a faint corridor band). Draw GT first so prediction sits on top.
+    # The guidance LINE is the primary signal. Ground-truth line (green dashed,
+    # thinner) vs predicted line (purple solid, thicker, with a faint corridor
+    # band). Draw GT first so the prediction sits on top, and label both ends.
     if gt_path:
-        parts.append(_guidance_line_svg(gt_path, color="#30d158", dashed=True, corridor=False))
+        parts.append(_guidance_line_svg(gt_path, color="#30d158", dashed=True, corridor=False, label="真值", width=1.4))
     if guidance_path:
-        parts.append(_guidance_line_svg(guidance_path, color="#bf5af2", dashed=False, corridor=True))
+        parts.append(_guidance_line_svg(guidance_path, color="#bf5af2", dashed=False, corridor=True, label="预测", width=2.4))
 
     parts.append("</svg>")
     return "".join(parts)
@@ -2009,7 +2104,7 @@ def dataset_ios_harness_frames_ui(
             f"""<div class='card'><h2>{html.escape(frame_id)}</h2>
 <div class='row'>
   <div>{image_block}
-    <p class='explain'>紫实线=iPhone 预测引导线（含走廊宽度）；绿虚线=真值可通行引导线；蓝虚线框=检测到的物体；绿/黄/红框=近/左/右区域状态。</p>
+    <p class='explain'><b style='color:#bf5af2'>紫实线=预测路径</b> · <b style='color:#30d158'>绿虚线=真值路径</b>（主信号，越贴合越准）；蓝虚框=检测物体；淡色绿/黄/红方块=近/左/右三区状态（背景参考）。</p>
   </div>
   <div>
     <table>
@@ -2080,12 +2175,14 @@ def dataset_ios_harness_frames_ui(
         f"&predictions={encoded_pred}'>← 返回 iPhone 真身评估</a> · "
         f"<a href='/diagnostics/datasets/manifest/ui?manifest={encoded_manifest}'>浏览 manifest</a></p>"
         f"<h1>逐帧识别效果：{html.escape(manifest_path.name)}</h1>"
-        f"<div class='callout'><p class='hint'>每张图上叠加的是 iPhone 上一模一样的感知代码（YOLO11n Core ML + 通行区域引擎）真实跑出的结果。"
-        f"图例：<span style='color:#64d2ff'>蓝虚线</span>=检测物体，"
-        f"<span style='color:#30d158'>绿</span>可走候选 / "
-        f"<span style='color:#ffd60a'>黄</span>注意 / "
-        f"<span style='color:#ff453a'>红</span>疑似占用 / "
-        f"<span style='color:#8e8e93'>灰</span>信息不足。</p></div>"
+        f"<div class='callout'><p class='hint'>每张图上叠加的是 iPhone 上一模一样的感知代码（YOLO11n Core ML + 通行区域引擎）真实跑出的结果。</p>"
+        f"<p class='hint' style='margin-top:6px'><b>主信号 · 引导线</b>（我们要评的就是它）："
+        f"<span style='color:#bf5af2;font-weight:800'>▬ 紫实线=iPhone 预测路径</span>（带浅色走廊=可走宽度）， "
+        f"<span style='color:#30d158;font-weight:800'>┄ 绿虚线=真值路径</span>（你 CamVid 标注推出的答案）。两条越贴合越准。</p>"
+        f"<p class='hint' style='margin-top:6px'><b>辅助 · 背景</b>："
+        f"<span style='color:#64d2ff'>蓝虚框</span>=YOLO 检测物体； "
+        f"淡色<span style='color:#30d158'>绿</span>/<span style='color:#ffd60a'>黄</span>/"
+        f"<span style='color:#ff453a'>红</span>方块=近/左/右三区状态（旧的粗粒度分区，已弱化为背景，右表仍按它对比）。</p></div>"
     )
 
     body = header + filter_bar + nav + ("".join(cards) or empty_msg) + (nav if cards else "")

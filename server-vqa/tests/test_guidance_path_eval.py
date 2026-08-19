@@ -68,6 +68,29 @@ def test_gate_passes_when_not_worse():
     assert ok, reasons
 
 
+def test_saved_guidance_baseline_actually_gates(tmp_path, monkeypatch):
+    """Regression guard: a persisted guidance baseline (payload form) must still
+    fire the gate. Previously the guidance metric keys were dropped on save AND
+    read at the wrong nesting level, so the gate silently no-oped."""
+    from app.eval_baseline import load_baseline, save_baseline
+    from app.guidance_path_eval import GUIDANCE_BASELINE_KEYS
+
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(tmp_path))
+    report = {
+        "frames": 10, "both_ok": 8, "false_go_frames": 0, "missed_path_frames": 2,
+        "mean_deviation": 0.05, "hit_rate": 0.8, "pred_coverage": 0.7,
+        "over_extension": 0.1, "direction_error": 0.2,
+    }
+    save_baseline("g", report, source="test", metric_keys=GUIDANCE_BASELINE_KEYS)
+    payload = load_baseline("g")
+    assert payload["metrics"]["false_go_frames"] == 0  # key survived the save
+
+    worse = {**report, "false_go_frames": 4}
+    ok, reasons = gate_guidance(worse, payload)  # payload form, not flat
+    assert not ok
+    assert any("false_go" in r for r in reasons)
+
+
 def test_evaluate_aggregate():
     gt = _line([(0.5, 0.0, 0.1), (0.5, 0.6, 0.1)])
     pred = _line([(0.5, 0.0, 0.1), (0.5, 0.6, 0.1)])

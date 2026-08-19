@@ -49,6 +49,33 @@ def test_no_free_space_is_insufficient_not_fabricated():
     assert path.lines == []
 
 
+def test_skips_blocked_bottom_rows_like_a_car_hood():
+    """A blocked immediate foreground (driving-frame hood) at the bottom must NOT
+    kill an otherwise clear path above it: skip leading blocked rows, then trace."""
+    h, w = 64, 64
+    mask = np.zeros((h, w), dtype=bool)
+    mask[0:43, 26:38] = True  # road in the upper part; rows 43..63 (bottom) blocked
+    path = centerline_from_mask(mask)
+    assert path.status == PATH_STATUS_OK
+    ys = [p.y for p in path.primary.points]
+    # Bottom (hood) rows were skipped, so the nearest traced point sits above it.
+    assert min(ys) > 0.3
+
+
+def test_interior_gap_stops_line_and_is_never_bridged():
+    """An obstacle ahead (interior gap) must break the line — we must NOT bridge
+    across it to the road beyond, which would draw a path through the obstacle."""
+    h, w = 64, 64
+    mask = np.zeros((h, w), dtype=bool)
+    mask[44:64, 26:38] = True  # near road (bottom)
+    mask[10:34, 26:38] = True  # far road (top), separated by a blocked gap rows 34..43
+    path = centerline_from_mask(mask)
+    assert path.status == PATH_STATUS_OK
+    ys = [p.y for p in path.primary.points]
+    # Every traced point stays in the NEAR band; none jumped over the gap.
+    assert all(y < 0.45 for y in ys)
+
+
 def test_roundtrip_serialization():
     path = centerline_from_mask(_corridor_mask(), source="rt")
     restored = GuidancePath.from_dict(path.to_dict())

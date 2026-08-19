@@ -197,6 +197,11 @@ def centerline_from_mask(
     Returns a `GuidancePath` in bottom-left-origin normalized coordinates. If the
     free space is too broken to form a line, returns status=insufficient (an
     explicit degrade, never a fabricated straight line).
+
+    Tracing rule (safety-aware): leading blocked rows at the BOTTOM are skipped to
+    find the start anchor (a driving frame's hood / immediate foreground must not
+    kill an otherwise clear path), but an interior gap once tracing has started
+    breaks the line — we never bridge across an obstacle ahead.
     """
     if mask.ndim != 2:
         raise GuidancePathError(f"mask must be 2D, got shape {mask.shape}")
@@ -212,15 +217,18 @@ def centerline_from_mask(
     points: list[GuidancePoint] = []
     prev_center: float | None = None
     for img_row in row_indices:
-        runs = _runs(mask[img_row])
-        if not runs:
-            # Free space ended: stop tracing forward (truncate the line).
+        row_runs = _runs(mask[img_row])
+        if not row_runs:
+            if prev_center is None:
+                # Skip leading blocked rows at the bottom (e.g. a car hood or the
+                # immediate foreground in a driving frame) until the first
+                # traversable row anchors the line.
+                continue
+            # Interior gap = a real obstacle ahead. Stop here and NEVER bridge
+            # across it, or we would draw a path straight through the obstacle.
             break
-        if prev_center is None:
-            target = width * 0.5  # user starts centered at their feet
-        else:
-            target = prev_center
-        best = min(runs, key=lambda r: abs(((r[0] + r[1]) / 2.0) - target))
+        target = width * 0.5 if prev_center is None else prev_center
+        best = min(row_runs, key=lambda r: abs(((r[0] + r[1]) / 2.0) - target))
         center = (best[0] + best[1]) / 2.0
         half_w = (best[1] - best[0]) / 2.0
         prev_center = center

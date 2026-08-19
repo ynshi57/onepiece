@@ -85,28 +85,22 @@ extension GuidancePath {
 // MARK: - Centerline generation (mirrors centerline_from_mask in guidance_path.py)
 
 enum GuidancePathBuilder {
-    /// Contiguous "traversable" runs in a grid row as (start, endExclusive).
-    private static func runs(rowTraversable: [Bool]) -> [(Int, Int)] {
-        var result: [(Int, Int)] = []
-        var start: Int?
-        for (i, val) in rowTraversable.enumerated() {
-            if val, start == nil {
-                start = i
-            } else if !val, let s = start {
-                result.append((s, i))
-                start = nil
-            }
-        }
-        if let s = start { result.append((s, rowTraversable.count)) }
-        return result
-    }
-
     /// Trace a free-space centerline through a traversability grid.
     ///
     /// - `sample(x,y)`: traversability at grid cell (top-left origin), nil if invalid.
     /// - `threshold`: values >= threshold are traversable.
     /// Returns a `GuidancePath` in bottom-left-origin normalized coordinates, or
     /// status=insufficient when the free space is too broken (explicit degrade).
+    ///
+    /// Tracing rule (mirrors `centerline_from_mask` in guidance_path.py): leading
+    /// blocked rows at the BOTTOM are skipped to find the start anchor (a driving
+    /// frame's hood / immediate foreground must not kill an otherwise clear path),
+    /// but an interior gap once tracing has started breaks the line — we never
+    /// bridge across an obstacle ahead.
+    ///
+    /// Performance: this runs on-device per frame. Each sampled row is scanned in a
+    /// single O(width) pass that finds the run nearest to the running center
+    /// inline — no per-row array allocation, O(1) extra space.
     static func centerline(
         width: Int,
         height: Int,
@@ -124,28 +118,44 @@ enum GuidancePathBuilder {
         topRow = max(0, min(topRow, height - 2))
 
         let count = max(2, samples)
-        var rowIndices: [Int] = []
+        var points: [GuidancePoint] = []
+        points.reserveCapacity(count)
+        var prevCenter: Double? = nil
+
         for i in 0..<count {
             let t = Double(i) / Double(count - 1)
-            let value = Double(height - 1) + t * (Double(topRow) - Double(height - 1))
-            rowIndices.append(Int(value.rounded()))
-        }
-
-        var points: [GuidancePoint] = []
-        var prevCenter: Double? = nil
-        for imgRow in rowIndices {
-            var rowMask = [Bool](repeating: false, count: width)
-            for x in 0..<width {
-                if let v = sample(x, imgRow), v >= threshold { rowMask[x] = true }
-            }
-            let rowRuns = runs(rowTraversable: rowMask)
-            if rowRuns.isEmpty { break }
+            let imgRow = Int((Double(height - 1) + t * (Double(topRow) - Double(height - 1))).rounded())
             let target = prevCenter ?? (Double(width) * 0.5)
-            let best = rowRuns.min(by: { a, b in
-                abs((Double(a.0 + a.1) / 2.0) - target) < abs((Double(b.0 + b.1) / 2.0) - target)
-            })!
-            let center = Double(best.0 + best.1) / 2.0
-            let halfW = Double(best.1 - best.0) / 2.0
+
+            // Single pass: find the traversable run whose center is nearest target.
+            var bestStart = -1
+            var bestEnd = -1
+            var bestDist = Double.greatestFiniteMagnitude
+            var runStart = -1
+            var x = 0
+            while x <= width {
+                let traversable = x < width && ((sample(x, imgRow).map { $0 >= threshold }) ?? false)
+                if traversable {
+                    if runStart < 0 { runStart = x }
+                } else if runStart >= 0 {
+                    let center = Double(runStart + x) / 2.0
+                    let dist = abs(center - target)
+                    if dist < bestDist {
+                        bestDist = dist
+                        bestStart = runStart
+                        bestEnd = x
+                    }
+                    runStart = -1
+                }
+                x += 1
+            }
+
+            if bestStart < 0 {
+                if prevCenter == nil { continue }  // skip leading blocked bottom rows
+                break                              // interior gap: stop, never bridge
+            }
+            let center = Double(bestStart + bestEnd) / 2.0
+            let halfW = Double(bestEnd - bestStart) / 2.0
             prevCenter = center
             points.append(
                 GuidancePoint(
@@ -156,7 +166,7 @@ enum GuidancePathBuilder {
             )
         }
 
-        let coverage = Double(points.count) / Double(rowIndices.count)
+        let coverage = Double(points.count) / Double(count)
         if points.count < GuidancePath.minPoints || coverage < GuidancePath.minCoverage {
             return GuidancePath(status: .insufficient, coverage: coverage, source: source)
         }

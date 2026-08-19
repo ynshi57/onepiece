@@ -53,16 +53,32 @@ def metrics_from_report(report: dict[str, Any]) -> dict[str, Any]:
     return {key: report.get(key) for key in TRACKED_METRICS}
 
 
-def save_baseline(name: str, report: dict[str, Any], *, source: str) -> Path:
+def save_baseline(
+    name: str,
+    report: dict[str, Any],
+    *,
+    source: str,
+    metric_keys: tuple[str, ...] | None = None,
+) -> Path:
+    """Persist a named regression baseline.
+
+    By default the region-level metrics (``TRACKED_METRICS``) are stored. Pass
+    ``metric_keys`` to snapshot a different metric set — e.g. the guidance-line
+    report, whose keys are NOT region keys. Without this the guidance gate silently
+    stored all-None metrics and never actually gated (a real closed-loop bug)."""
     safe_name = safe_baseline_name(name)
     root = baseline_root()
     root.mkdir(parents=True, exist_ok=True)
+    if metric_keys is None:
+        metrics = metrics_from_report(report)
+    else:
+        metrics = {key: report.get(key) for key in metric_keys}
     payload = {
         "name": safe_name,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source": source,
-        "sample_count": int(report.get("labeled_frames") or 0),
-        "metrics": metrics_from_report(report),
+        "sample_count": int(report.get("labeled_frames") or report.get("frames") or 0),
+        "metrics": metrics,
     }
     path = root / f"{safe_name}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

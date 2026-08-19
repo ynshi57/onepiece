@@ -1,16 +1,17 @@
 {
-  "created_at": "2026-08-19T04:13:25.617293+00:00",
+  "created_at": "2026-08-19T07:17:12.388066+00:00",
   "metrics": {
-    "false_block_count": null,
-    "focus_direction_accuracy": null,
-    "frame_count": null,
-    "labeled_frames": null,
-    "missing_prediction_count": null,
-    "risk_miss_count": null,
-    "status_accuracy": null,
-    "unknown_prediction_rate": null
+    "both_ok": 583,
+    "direction_error": 0.29373152658662083,
+    "false_go_frames": 0,
+    "frames": 701,
+    "hit_rate": 0.8729383395335375,
+    "mean_deviation": 0.10603889796308126,
+    "missed_path_frames": 114,
+    "over_extension": 0.025825103998345797,
+    "pred_coverage": 0.8306444484617731
   },
   "name": "camvid-walk-v1-guidance",
-  "sample_count": 0,
+  "sample_count": 701,
   "source": "ios_coreml_offline_harness_guidance"
 }

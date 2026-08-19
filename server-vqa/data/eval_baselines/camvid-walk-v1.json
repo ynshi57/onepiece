@@ -1,13 +1,13 @@
 {
-  "created_at": "2026-08-19T04:13:25.616683+00:00",
+  "created_at": "2026-08-19T07:17:12.387296+00:00",
   "metrics": {
-    "false_block_count": 747,
+    "false_block_count": 806,
     "focus_direction_accuracy": 0.2011,
     "frame_count": 701,
     "labeled_frames": 701,
     "missing_prediction_count": 0,
-    "risk_miss_count": 190,
-    "status_accuracy": 0.379,
+    "risk_miss_count": 2,
+    "status_accuracy": 0.4398,
     "unknown_prediction_rate": 0.0014
   },
   "name": "camvid-walk-v1",

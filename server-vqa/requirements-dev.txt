@@ -1,3 +1,6 @@
 -r requirements.txt
 pytest
 httpx
+# Enables uvicorn --reload (auto-restart on code edits) used by
+# start_diagnostics_platform.sh. Dev-only.
+watchfiles

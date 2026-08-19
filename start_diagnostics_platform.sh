@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PORT:-9000}"
 HOST="${HOST:-127.0.0.1}"
 OPEN_DIAGNOSTICS="${OPEN_DIAGNOSTICS:-1}"
+# Auto-reload on source edits so you don't have to restart this script after every
+# code change. Dev-only convenience; set RELOAD=0 to disable (e.g. for production).
+RELOAD="${RELOAD:-1}"
 DIAGNOSTICS_URL="http://${HOST}:${PORT}/diagnostics/ui"
 
 cd "${ROOT_DIR}"
@@ -37,5 +40,17 @@ open_when_ready() {
 echo "Starting VQASee diagnostics/evolution platform only."
 echo "Qwen warmup disabled; this script does NOT start local Qwen."
 echo "URL: ${DIAGNOSTICS_URL}"
+
+reload_args=()
+if [ "${RELOAD}" = "1" ]; then
+  # Watch only the backend source dir; auto-restart the worker on .py edits so a
+  # browser refresh reflects code changes without re-running this script.
+  reload_args=(--reload --reload-dir "${ROOT_DIR}/server-vqa/app")
+  echo "Auto-reload: ON (watching server-vqa/app). Set RELOAD=0 to disable."
+else
+  echo "Auto-reload: OFF (set RELOAD=1 to enable)."
+fi
+
 open_when_ready
-QWEN_WARMUP_ON_STARTUP=0 PORT="${PORT}" uvicorn --app-dir server-vqa app.main:app --host "${HOST}" --port "${PORT}"
+QWEN_WARMUP_ON_STARTUP=0 PORT="${PORT}" uvicorn --app-dir server-vqa app.main:app \
+  --host "${HOST}" --port "${PORT}" ${reload_args[@]+"${reload_args[@]}"}

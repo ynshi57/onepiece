@@ -159,12 +159,33 @@ def evaluate_guidance_paths(pairs: list[tuple[str, GuidancePath, GuidancePath]])
 _EPS_DEVIATION = 0.01
 _EPS_RATE = 0.02
 
+# The metric keys a guidance baseline must snapshot for the gate to work. If these
+# are dropped on save, the gate silently no-ops — so persist exactly this set.
+GUIDANCE_BASELINE_KEYS: tuple[str, ...] = (
+    "frames",
+    "both_ok",
+    "false_go_frames",
+    "missed_path_frames",
+    "mean_deviation",
+    "hit_rate",
+    "pred_coverage",
+    "over_extension",
+    "direction_error",
+)
+
 
 def gate_guidance(current: dict[str, Any], baseline: dict[str, Any]) -> tuple[bool, list[str]]:
     """Return (passed, reasons). A regression in any safety-relevant metric fails.
 
     Safety-critical first: false_go and over_extension must NOT increase.
+
+    Accepts either a flat metrics dict or a saved baseline payload of the form
+    ``{"metrics": {...}}`` — it unwraps the latter so a real baseline actually gates
+    instead of comparing against absent (None) values.
     """
+    metrics = baseline.get("metrics")
+    if isinstance(metrics, dict):
+        baseline = metrics
     reasons: list[str] = []
 
     def worse_up(key: str, eps: float) -> None:
