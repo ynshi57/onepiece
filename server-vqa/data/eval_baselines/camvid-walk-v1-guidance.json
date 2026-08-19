@@ -1,0 +1,16 @@
+{
+  "created_at": "2026-08-19T04:13:25.617293+00:00",
+  "metrics": {
+    "false_block_count": null,
+    "focus_direction_accuracy": null,
+    "frame_count": null,
+    "labeled_frames": null,
+    "missing_prediction_count": null,
+    "risk_miss_count": null,
+    "status_accuracy": null,
+    "unknown_prediction_rate": null
+  },
+  "name": "camvid-walk-v1-guidance",
+  "sample_count": 0,
+  "source": "ios_coreml_offline_harness_guidance"
+}

@@ -8,17 +8,44 @@ from typing import Any, Iterable
 import numpy as np
 from PIL import Image, ImageDraw
 
+from app.guidance_path import centerline_from_mask
 from app.path_dataset_import import LEFT_ROI, NEAR_ROI, RIGHT_ROI, focus_direction, roi_coverage, status_from_coverage
 
 
 BDD_SCENE_TAGS = ["road", "driving", "drivable", "bdd100k"]
 CAMVID_SCENE_TAGS = ["road", "outdoor", "driving", "camvid"]
-CAMVID_TRAVERSABLE_COLORS = {
-    (128, 64, 128),  # Road in common CamVid/Cityscapes-style palettes.
-    (128, 0, 192),
-    (192, 0, 64),
-    (244, 35, 232),  # Sidewalk in Cityscapes-style palettes.
+# Authoritative CamVid class -> color mapping comes from the dataset's own
+# camvid_data.py (32-class palette). Earlier we used a Cityscapes sidewalk color
+# (244,35,232) that DOES NOT EXIST in CamVid, so sidewalk pixels were silently
+# dropped from "traversable" and the ground truth was systematically over-blocked.
+# These sets match the real CamVid palette.
+CAMVID_ROAD_COLORS = {
+    (128, 64, 128),  # Road
+    (128, 0, 192),   # LaneMkgsDriv (drivable lane markings)
+    (192, 0, 64),    # LaneMkgsNonDriv (kept as road surface)
 }
+CAMVID_SIDEWALK_COLORS = {
+    (0, 0, 192),      # Sidewalk
+    (64, 192, 128),   # ParkingBlock (walkable)
+    (128, 128, 192),  # RoadShoulder (walkable)
+}
+
+# Default "walk" = road + sidewalk are traversable for a pedestrian.
+CAMVID_TRAVERSABLE_COLORS = CAMVID_ROAD_COLORS | CAMVID_SIDEWALK_COLORS
+
+
+def camvid_traversable_colors(traversable_classes: str) -> set[tuple[int, int, int]]:
+    """Resolve which CamVid palette colors count as traversable for a scene.
+
+    "walk"  -> road + sidewalk (pedestrian / default)
+    "drive" -> road only (vehicle: sidewalk is NOT drivable)
+    """
+    mode = (traversable_classes or "walk").lower()
+    if mode == "drive":
+        return set(CAMVID_ROAD_COLORS)
+    if mode == "walk":
+        return set(CAMVID_TRAVERSABLE_COLORS)
+    raise ValueError(f"unknown traversable_classes: {traversable_classes!r} (use 'walk' or 'drive')")
 
 
 def _load_json(path: Path) -> Any:
@@ -112,6 +139,9 @@ def _row_from_mask(*, image_path: Path, images_dir: Path, mask: np.ndarray, spli
     left_status = status_from_coverage(left_cov)
     right_status = status_from_coverage(right_cov)
     rel = image_path.relative_to(images_dir).as_posix()
+    # Ground-truth traversable guidance line, derived from the same mask. Region
+    # statuses are kept as a compatible summary; the line is the richer target.
+    gt_path = centerline_from_mask(mask, source="dataset_mask")
     return {
         "frame_id": f"{split}/{image_path.stem}",
         "image": rel,
@@ -126,6 +156,7 @@ def _row_from_mask(*, image_path: Path, images_dir: Path, mask: np.ndarray, spli
             "right_front_status": right_status,
             "focus_direction": focus_direction(near_status, left_status, right_status),
         },
+        "ground_truth_path": gt_path.to_dict(),
         "mask_coverage": {"near_path": near_cov, "left_front": left_cov, "right_front": right_cov},
     }
 
@@ -190,10 +221,12 @@ def _find_camvid_label(labels_dir: Path, image_path: Path) -> Path | None:
     return None
 
 
-def _camvid_traversability_mask(label_path: Path) -> np.ndarray:
+def _camvid_traversability_mask(
+    label_path: Path, colors: set[tuple[int, int, int]] | None = None
+) -> np.ndarray:
     arr = np.asarray(Image.open(label_path).convert("RGB"), dtype=np.uint8)
     mask = np.zeros(arr.shape[:2], dtype=bool)
-    for color in CAMVID_TRAVERSABLE_COLORS:
+    for color in colors if colors is not None else CAMVID_TRAVERSABLE_COLORS:
         rgb = np.asarray(color, dtype=np.uint8)
         mask |= np.all(arr == rgb, axis=-1)
     return mask
@@ -207,6 +240,7 @@ def create_camvid_manifest(
     split: str = "road",
     scene_tags: list[str] | None = None,
     limit: int = 0,
+    traversable_classes: str = "walk",
 ) -> list[dict[str, Any]]:
     """Create a path-guidance manifest from CamVid-style RGB semantic labels.
 
@@ -214,22 +248,26 @@ def create_camvid_manifest(
     - `images_dir`: RGB images.
     - `labels_dir`: RGB semantic labels with matching filenames or `_L` suffix.
 
-    Road/sidewalk palette colors are treated as traversable for path guidance.
+    `traversable_classes` selects which CamVid classes count as walkable ground
+    truth: "walk" (road + sidewalk, default) or "drive" (road only). This is a
+    deliberate, recorded choice — not a silent palette guess.
     """
     if not images_dir.is_dir():
         raise FileNotFoundError(f"images dir not found: {images_dir}")
     if not labels_dir.is_dir():
         raise FileNotFoundError(f"CamVid labels dir not found: {labels_dir}")
     tags = scene_tags or CAMVID_SCENE_TAGS
+    colors = camvid_traversable_colors(traversable_classes)
     rows: list[dict[str, Any]] = []
     for image_path in _iter_images(images_dir):
         label_path = _find_camvid_label(labels_dir, image_path)
         if label_path is None:
             continue
-        mask = _camvid_traversability_mask(label_path)
+        mask = _camvid_traversability_mask(label_path, colors)
         row = _row_from_mask(image_path=image_path, images_dir=images_dir, mask=mask, split=split, scene_tags=tags)
         row["dataset_source"] = "camvid_github"
         row["ground_truth_source"] = "camvid_rgb_semantic_label"
+        row["traversable_classes"] = traversable_classes
         row["label_path"] = str(label_path.resolve())
         rows.append(row)
         if limit and len(rows) >= limit:

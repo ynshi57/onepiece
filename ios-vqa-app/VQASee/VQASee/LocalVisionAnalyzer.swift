@@ -213,8 +213,11 @@ final class LocalVisionAnalyzer {
         var perception = perceptionRunner
             .analyze(pixelBuffer: pixelBuffer, orientation: orientation)
             .merging(visionHuman: human)
-        if let segmentationCue = segmentationRunner.analyze(pixelBuffer: pixelBuffer, orientation: orientation, config: config) {
-            perception.segmentationCues = segmentationCue
+        if let segmentation = segmentationRunner.analyzeDetailed(pixelBuffer: pixelBuffer, orientation: orientation, config: config) {
+            if let segmentationCue = segmentation.cue {
+                perception.segmentationCues = segmentationCue
+            }
+            perception.guidancePath = segmentation.guidancePath
         }
         var resolvedDepthCues = depthCues
         var resolvedDepthCapability = depthCapability

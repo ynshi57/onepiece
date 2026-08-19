@@ -1736,11 +1736,59 @@ _STATUS_LABEL = {
 IOS_FRAMES_PAGE_SIZE = 12
 
 
-def _overlay_svg(roi: dict, objects: list, prediction: dict) -> str:
+def _guidance_line_svg(path: dict, *, color: str, dashed: bool, corridor: bool) -> str:
+    """Render one guidance line as an SVG polyline (+ optional corridor band).
+
+    Points are Vision-normalized (origin lower-left, y up); flip y for screen.
+    Returns "" when the path is missing/insufficient so a degrade shows as an
+    absent line rather than a fabricated straight one."""
+    if not isinstance(path, dict) or path.get("status") != "ok":
+        return ""
+    lines = path.get("lines") or []
+    if not lines:
+        return ""
+    primary = lines[0]
+    points = primary.get("points") or []
+    if len(points) < 2:
+        return ""
+
+    def sx(p):
+        return float(p.get("x", 0.0)) * 100.0
+
+    def sy(p):
+        return (1.0 - float(p.get("y", 0.0))) * 100.0
+
+    parts: list[str] = []
+    if corridor:
+        left = [f"{max(0.0, sx(p) - float(p.get('half_width', 0.0)) * 100.0):.2f},{sy(p):.2f}" for p in points]
+        right = [f"{min(100.0, sx(p) + float(p.get('half_width', 0.0)) * 100.0):.2f},{sy(p):.2f}" for p in reversed(points)]
+        poly = " ".join(left + right)
+        parts.append(
+            f"<polygon points='{poly}' fill='{color}' fill-opacity='0.12' stroke='none'/>"
+        )
+    pts = " ".join(f"{sx(p):.2f},{sy(p):.2f}" for p in points)
+    dash = " stroke-dasharray='2.2 1.6'" if dashed else ""
+    parts.append(
+        f"<polyline points='{pts}' fill='none' stroke='{color}' stroke-width='1.4' "
+        f"stroke-linejoin='round' stroke-linecap='round'{dash}/>"
+    )
+    # Mark the start (feet) with a small dot.
+    parts.append(f"<circle cx='{sx(points[0]):.2f}' cy='{sy(points[0]):.2f}' r='1.1' fill='{color}'/>")
+    return "".join(parts)
+
+
+def _overlay_svg(
+    roi: dict,
+    objects: list,
+    prediction: dict,
+    guidance_path: dict | None = None,
+    gt_path: dict | None = None,
+) -> str:
     """Build an SVG overlay (viewBox 0..100, stretched to the image) drawing the
     three decision ROIs colored by predicted status plus the detected object
-    boxes. Vision-normalized coords have origin lower-left, so y is flipped for
-    the top-left screen space of an <img>."""
+    boxes, and (when present) the predicted vs ground-truth guidance lines.
+    Vision-normalized coords have origin lower-left, so y is flipped for the
+    top-left screen space of an <img>."""
 
     def to_screen(box: dict) -> tuple:
         x = float(box.get("x", 0.0)) * 100.0
@@ -1796,6 +1844,13 @@ def _overlay_svg(roi: dict, objects: list, prediction: dict) -> str:
             f"<text x='{x + 0.5:.2f}' y='{ty:.2f}' fill='#64d2ff' "
             f"font-size='3.0' font-weight='700'>{html.escape(label)}</text>"
         )
+
+    # Ground-truth traversable line (green dashed) vs predicted line (purple
+    # solid, with a faint corridor band). Draw GT first so prediction sits on top.
+    if gt_path:
+        parts.append(_guidance_line_svg(gt_path, color="#30d158", dashed=True, corridor=False))
+    if guidance_path:
+        parts.append(_guidance_line_svg(guidance_path, color="#bf5af2", dashed=False, corridor=True))
 
     parts.append("</svg>")
     return "".join(parts)
@@ -1911,6 +1966,8 @@ def dataset_ios_harness_frames_ui(
         prediction = pred_row.get("prediction", {}) or {}
         objects = pred_row.get("objects", []) or []
         roi = pred_row.get("roi", {}) or {}
+        pred_guidance = pred_row.get("guidance_path") if isinstance(pred_row.get("guidance_path"), dict) else None
+        gt_guidance = row.get("ground_truth_path") if isinstance(row.get("ground_truth_path"), dict) else None
 
         if not image_path:
             image_block = "<p class='muted'>无图片路径</p>"
@@ -1924,7 +1981,7 @@ def dataset_ios_harness_frames_ui(
         else:
             thumb = f"/diagnostics/local-file?path={html.escape(image_path)}&w=560"
             full = f"/diagnostics/local-file?path={html.escape(image_path)}"
-            overlay = _overlay_svg(roi, objects, prediction)
+            overlay = _overlay_svg(roi, objects, prediction, pred_guidance, gt_guidance)
             image_block = (
                 f"<a href='{full}' target='_blank'><div class='frame-overlay'>"
                 f"<img loading='lazy' decoding='async' src='{thumb}' alt='{html.escape(frame_id)}'>"
@@ -1952,7 +2009,7 @@ def dataset_ios_harness_frames_ui(
             f"""<div class='card'><h2>{html.escape(frame_id)}</h2>
 <div class='row'>
   <div>{image_block}
-    <p class='explain'>蓝虚线框 = iPhone 检测到的物体；绿/黄/红框 = 近/左/右区域预测状态。</p>
+    <p class='explain'>紫实线=iPhone 预测引导线（含走廊宽度）；绿虚线=真值可通行引导线；蓝虚线框=检测到的物体；绿/黄/红框=近/左/右区域状态。</p>
   </div>
   <div>
     <table>

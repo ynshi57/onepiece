@@ -262,9 +262,14 @@ for row in rows {
     func roiDict(_ rect: CGRect) -> [String: Any] {
         ["x": Double(rect.origin.x), "y": Double(rect.origin.y), "w": Double(rect.size.width), "h": Double(rect.size.height)]
     }
+    // Predicted traversable guidance line from on-device segmentation. Emit even
+    // when insufficient so the platform can see the degrade (never silently drop).
+    let guidancePathOut: [String: Any] = (signal.perception.guidancePath ?? GuidancePath.insufficient).toWire()
+
     let outRow: [String: Any] = [
         "frame_id": id,
         "prediction": prediction,
+        "guidance_path": guidancePathOut,
         "objects": objectsOut,
         "roi": [
             "near": roiDict(config.nearROI),

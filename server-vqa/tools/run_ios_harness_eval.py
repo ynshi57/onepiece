@@ -39,10 +39,39 @@ if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
 from app.eval_baseline import load_baseline, save_baseline  # noqa: E402
+from app.guidance_path import GuidancePath, GuidancePathError  # noqa: E402
+from app.guidance_path_eval import evaluate_guidance_paths, gate_guidance  # noqa: E402
 from app.path_dataset_eval import evaluate_path_guidance, load_jsonl  # noqa: E402
 from app.path_parity import compute_parity  # noqa: E402
 from app.regression_gate import check_regression  # noqa: E402
 from app.traversability_predictor import TraversabilityPredictor, predict_manifest  # noqa: E402
+
+
+def _guidance_pairs(manifest_rows: list[dict], prediction_rows: list[dict]):
+    """Build (frame_id, gt_path, pred_path) triples where BOTH sides carry a
+    guidance line. Malformed entries are surfaced as skips, never silently
+    coerced into a fake straight line."""
+    preds: dict[str, dict] = {}
+    for row in prediction_rows:
+        fid = row.get("frame_id")
+        if fid is not None and isinstance(row.get("guidance_path"), dict):
+            preds[fid] = row["guidance_path"]
+    pairs = []
+    skipped = 0
+    for row in manifest_rows:
+        fid = row.get("frame_id")
+        gt_raw = row.get("ground_truth_path")
+        pred_raw = preds.get(fid)
+        if fid is None or not isinstance(gt_raw, dict) or pred_raw is None:
+            continue
+        try:
+            gt = GuidancePath.from_dict(gt_raw)
+            pred = GuidancePath.from_dict(pred_raw)
+        except GuidancePathError:
+            skipped += 1
+            continue
+        pairs.append((fid, gt, pred))
+    return pairs, skipped
 
 EXIT_OK = 0
 EXIT_NO_PREDICTIONS = 3
@@ -81,6 +110,22 @@ def main() -> int:
         "evaluation": report,
     }
 
+    # Line-level guidance evaluation (predicted vs GT traversable line).
+    guidance_pairs, guidance_skipped = _guidance_pairs(manifest_rows, prediction_rows)
+    guidance_report = None
+    if guidance_pairs:
+        guidance_report = evaluate_guidance_paths(guidance_pairs)
+        guidance_report["skipped_malformed"] = guidance_skipped
+        # Keep the top-level output compact; per-frame detail stays available but
+        # is not needed for gating.
+        compact = {k: v for k, v in guidance_report.items() if k != "per_frame"}
+        output["guidance_line"] = compact
+    else:
+        output["guidance_line"] = {
+            "status": "unavailable",
+            "reason": "manifest lacks ground_truth_path or predictions lack guidance_path.",
+        }
+
     if args.parity:
         predictor = TraversabilityPredictor(model_path=args.parity_model)
         server_result = predict_manifest(manifest_rows, predictor)
@@ -102,6 +147,13 @@ def main() -> int:
     if args.baseline:
         saved = save_baseline(args.baseline, report, source="ios_coreml_offline_harness")
         output["baseline"] = str(saved)
+        if guidance_report is not None:
+            g_saved = save_baseline(
+                f"{args.baseline}-guidance",
+                {k: v for k, v in guidance_report.items() if k != "per_frame"},
+                source="ios_coreml_offline_harness_guidance",
+            )
+            output["guidance_baseline"] = str(g_saved)
 
     gate_regressed = False
     if args.gate:
@@ -112,6 +164,13 @@ def main() -> int:
         gate = check_regression(report, baseline)
         output["gate"] = gate.as_dict()
         gate_regressed = not gate.passed
+
+        # Also gate the guidance line against its own baseline, if present.
+        g_baseline = load_baseline(f"{args.gate}-guidance")
+        if g_baseline is not None and guidance_report is not None:
+            passed, reasons = gate_guidance(guidance_report, g_baseline)
+            output["guidance_gate"] = {"passed": passed, "reasons": reasons}
+            gate_regressed = gate_regressed or not passed
 
     text = json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True)
     if args.out:

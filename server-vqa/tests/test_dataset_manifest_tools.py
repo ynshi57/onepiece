@@ -95,3 +95,50 @@ def test_camvid_adapter_creates_path_manifest_from_rgb_labels(tmp_path):
     assert row["dataset_source"] == "camvid_github"
     assert row["ground_truth_source"] == "camvid_rgb_semantic_label"
     assert row["ground_truth"]["near_path_status"] == "candidateOpen"
+    assert row["traversable_classes"] == "walk"
+    # Every row now carries a ground-truth guidance line derived from the mask.
+    from app.guidance_path import GuidancePath
+    gt_path = GuidancePath.from_dict(row["ground_truth_path"])
+    assert gt_path.status in {"ok", "insufficient"}
+
+
+def test_camvid_sidewalk_is_traversable_in_walk_but_not_drive(tmp_path):
+    """Regression guard for the palette bug: real CamVid Sidewalk color (0,0,192)
+    must count as traversable for a pedestrian (walk) and must NOT for a vehicle
+    (drive). The old code used a Cityscapes color that never matched CamVid, so
+    sidewalks were silently dropped and ground truth was over-blocked."""
+    from app.open_dataset_adapters import create_camvid_manifest
+
+    images = tmp_path / "CamVid_RGB"
+    labels = tmp_path / "CamVid_Label"
+    images.mkdir()
+    labels.mkdir()
+    Image.new("RGB", (40, 40), "black").save(images / "frame.png")
+    label = np.zeros((40, 40, 3), dtype=np.uint8)
+    # Fill the near ROI region with CamVid Sidewalk color (not road).
+    label[:, :] = np.array([0, 0, 192], dtype=np.uint8)
+    Image.fromarray(label).save(labels / "frame.png")
+
+    walk = create_camvid_manifest(
+        images_dir=images, labels_dir=labels, output_path=tmp_path / "walk.jsonl",
+        traversable_classes="walk",
+    )[0]
+    drive = create_camvid_manifest(
+        images_dir=images, labels_dir=labels, output_path=tmp_path / "drive.jsonl",
+        traversable_classes="drive",
+    )[0]
+
+    # Sidewalk everywhere -> walkable (candidateOpen) for pedestrians.
+    assert walk["ground_truth"]["near_path_status"] == "candidateOpen"
+    assert walk["mask_coverage"]["near_path"] >= 0.6
+    # Sidewalk is not drivable -> blocked for the vehicle scene.
+    assert drive["ground_truth"]["near_path_status"] == "blocked"
+
+
+def test_camvid_traversable_colors_rejects_unknown_mode():
+    from app.open_dataset_adapters import camvid_traversable_colors
+
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        camvid_traversable_colors("fly")

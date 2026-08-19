@@ -281,6 +281,13 @@ struct LocalSegmentationCueSignal: Sendable, Equatable {
     }
 }
 
+/// Combined output of one segmentation inference: the coarse ROI cue and the
+/// traversable guidance line, derived from the same per-pixel map.
+struct LocalSegmentationResult: Sendable, Equatable {
+    var cue: LocalSegmentationCueSignal?
+    var guidancePath: GuidancePath?
+}
+
 struct LocalPathGuidanceSignal: Sendable, Equatable {
     var nearPathStatus: LocalPathStatus = .unknown
     var leftFrontStatus: LocalPathStatus = .unknown
@@ -485,6 +492,10 @@ struct LocalPerceptionSignal: Sendable, Equatable {
     var modelStatus: LocalPerceptionModelStatus = .unavailable
     var segmentationCues = LocalSegmentationCueSignal()
     var pathGuidance = LocalPathGuidanceSignal.empty
+    /// Predicted traversable guidance line(s) from on-device segmentation. nil
+    /// when no segmentation model is available; status=insufficient when free
+    /// space is too broken to trace a line (explicit degrade, never fabricated).
+    var guidancePath: GuidancePath? = nil
 
     static let empty = LocalPerceptionSignal()
 

@@ -1,252 +1,366 @@
-# iPhone Realtime VQA (Phase 1)
+<!-- Language switch -->
+[English](README.en.md) · **简体中文**
 
-This repository hosts the first phase implementation for a visual-assistance VQA
-app:
+# VQASee — 面向 iPhone 的视觉优先风险与通行路径辅助
 
-- iOS app workspace and release automation under `ios-vqa-app` and `deploy/ios`
-- Local Mac VQA backend under `server-vqa`
-- Public WSS/WebSocket relay MVP under `relay-server` for cross-network use
+> 拿起手机就能*看见*周围的通行路径、障碍、边界和风险——语音用于确认，而不是
+> 替代你自己的观察。
 
-## Quick Start
+VQASee 是一款面向 iPhone 的视觉优先风险辅助与通行路径提示应用。它服务行走、
+骑行、驾驶、通勤、看路、读标志或注意力可能分散、需要额外视觉提醒的人。目标是
+做到**能用、好用、实用、可信**——提醒风险、边界和不确定性，但绝不承诺"可以走"，
+也绝不替代用户自己的判断。
 
-1. Install dependencies:
-   - `bash deploy/ios/install_deps.sh`
-   - If fastlane step fails, upgrade Ruby to >= 3.2 first.
-2. Run backend tests:
-   - `source .venv/bin/activate && pytest server-vqa/tests`
-3. Start backend service:
-   - `bash ./start_backend.sh`
-   - Optional: `HOST=127.0.0.1 PORT=9000 bash ./start_backend.sh`
-   - Optional local Qwen config (16GB friendly): `QWEN_API_BASE_URL=http://127.0.0.1:11435 QWEN_MODEL=qwen2.5vl:3b bash ./start_backend.sh` (the local runtime listens on `:11435`; see "Local Qwen Setup" below)
-   - WebSocket signaling endpoint: `ws://localhost:9000/ws/signaling`
+本仓库不只是 App：它还包含一个**闭环进化平台**，把真实使用、模型评测、延迟数据和
+代码验证，转化为产品的下一轮迭代。
 
-## Cross-network Relay MVP
+---
 
-Use this when the iPhone is on 4G/5G and the local Mac VQA worker is on Wi-Fi.
-Both sides make outbound WebSocket connections to a public relay, so no router
-port forwarding or shared LAN is required.
+## 目录
 
-1. Start relay on a public host (or locally for testing):
-   - `export RELAY_PAIRING_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"`
-   - `bash ./start_relay.sh`
-2. Start local worker on the Mac that runs inference:
-   - `export RELAY_WORKER_URL=ws://<relay-host>:9100/ws/worker`
-   - `export RELAY_PAIRING_TOKEN=<same-token>`
-   - `export WORKER_ID=local-mac-worker`
-   - `bash ./start_worker.sh`
-3. In iOS app:
-   - Server URL: `ws://<relay-host>:9100/ws/client` or `wss://.../ws/client`
-   - Pairing token: same `RELAY_PAIRING_TOKEN`
-   - Worker ID: same `WORKER_ID`
-   - Client ID: any stable name such as `bayes-iphone`
+- [仓库包含什么](#仓库包含什么)
+- [系统架构](#系统架构)
+- [两条运行链路（nearby 与 relay）](#两条运行链路nearby-与-relay)
+- [闭环进化平台](#闭环进化平台)
+- [可通行引导线](#可通行引导线)
+- [端侧实时体验](#端侧实时体验)
+- [目录结构](#目录结构)
+- [快速开始](#快速开始)
+- [本地 Qwen 运行时](#本地-qwen-运行时)
+- [测试](#测试)
+- [知识库](#知识库)
+- [原则](#原则)
 
-MVP relay limits:
+---
 
-- Max frame Base64 bytes: `900000`
-- Max frames per minute per client: `30`
-- Max in-flight requests per client: `1`
-- iOS default frame interval: `2s`
-- iOS frame quality is mode-aware: 行走 448px/120KB, 周围 640px/220KB, 详细 768px/320KB, 读文字 1024px/520KB
+## 仓库包含什么
 
-## Local Qwen Setup (free/local)
+| 层 | 作用 | 位置 |
+|---|---|---|
+| **iOS App** | SwiftUI 摄像头应用、语音优先 UI、端侧感知（YOLO11n + 分割 + 深度线索）、引导线、模式栏 | `ios-vqa-app/VQASee` |
+| **VQA 后端** | FastAPI 服务：WebSocket 信令、prompt/schema、场景记忆、经 `llama-server` 的 Qwen 3B/7B、fusion 兜底 | `server-vqa/app` |
+| **闭环平台** | 诊断采集、数据集导入、标注、评测、对拍、回归门禁、感知配置 OTA | `server-vqa/app/diagnostic_*` |
+| **离线 harness** | macOS SwiftPM CLI，用**真身** App 感知源码跑基准数据集 | `ios-vqa-app/perception-harness` |
+| **Relay** | 公共 WSS relay，让走蜂窝网的 iPhone 也能连到 Wi-Fi 上的 Mac worker | `relay-server` |
+| **iOS 自动化** | 构建 / 测试 / 归档 / TestFlight 脚本 | `deploy/ios` |
 
-1. One-step prepare local Qwen model + runtime:
-   - `bash ./start_qwen_local.sh` (starts on `http://127.0.0.1:11435`)
-   - Sub-commands: `start` (default) · `stop` · `status` · `supervise`
-     (foreground, restart-on-crash).
-2. Start backend with Qwen enabled:
-   - `QWEN_API_BASE_URL=http://127.0.0.1:11435 QWEN_MODEL=qwen2.5vl:3b bash ./start_backend.sh`
-3. Or run full stack in one command:
-   - `bash ./start_local_vqa.sh`
+当前产品能力：nearby 自动发现、跨网络 relay、四种模式（`周围` / `行走` /
+`读文字` / `详细`）、语音优先交互与按住说话提问、场景记忆与变化播报、端侧 OCR，
+以及输出**可通行引导线**、由闭环平台验证的端侧感知层。
 
-### Runtime: direct `llama-server` (not Ollama)
+## 系统架构
 
-By default `start_qwen_local.sh` launches **`llama-server` directly** (the binary
-bundled inside `Ollama.app`) instead of letting Ollama manage it. The reason is
-latency: Ollama derives `--image-min-tokens` from the model's baked vision config
-(**1024** for `qwen2.5vl`) and exposes no env var or Modelfile `PARAMETER` to
-lower it. That visual-token floor is the dominant prefill cost. Running
-`llama-server` ourselves lets us pass `--image-min-tokens 256 --image-max-tokens
-512`.
+```mermaid
+flowchart TB
+  subgraph Device["iPhone · VQASee (SwiftUI)"]
+    CAM["摄像头帧"]
+    LP["端侧感知<br/>YOLO11n · 分割 · 深度线索"]
+    GL["LocalPathGuidanceEngine<br/>→ 可通行引导线"]
+    UI["语音优先 UI<br/>SpeechGate · AVSpeech · 叠加层"]
+    CAM --> LP --> GL --> UI
+  end
 
-Measured on the same 448px frame (M4 Air, 16GB):
+  subgraph Backend["Mac · server-vqa (FastAPI)"]
+    SIG["WebSocket 信令"]
+    VQA["VQA 服务<br/>prompt · JSON schema · 场景记忆 · fusion"]
+    QWEN["本地 Qwen 3B/7B<br/>llama-server"]
+    SIG --> VQA --> QWEN
+  end
+
+  subgraph Relay["relay-server (公共 WSS)"]
+    R["client ⇄ worker 中转"]
+  end
+
+  subgraph Platform["闭环平台 (/diagnostics)"]
+    CAP["采集 · 数据集导入 · 标注"]
+    EVAL["评测 · 对拍 · 回归门禁"]
+    CFG["感知配置 OTA"]
+  end
+
+  Device -- "nearby Wi-Fi / 热点" --> Backend
+  Device -- "蜂窝网" --> Relay --> Backend
+  Device -- "诊断帧" --> Platform
+  Platform -- "OTA 感知配置" --> Device
+  Backend -. "同一 FastAPI app" .- Platform
+```
+
+## 两条运行链路（nearby 与 relay）
+
+iPhone 连到推理的两种方式，**都不需要路由器端口转发**。
+
+```mermaid
+flowchart LR
+  subgraph Nearby["nearby（同 Wi-Fi / iPhone 热点）"]
+    P1["iPhone"] -- "ws://mac-lan-ip:9000" --> M1["Mac 后端"]
+  end
+  subgraph Xnet["跨网络（蜂窝 ↔ 另一网络）"]
+    P2["iPhone"] -- "wss client" --> RL["公共 relay :9100"]
+    W["Mac worker"] -- "wss worker（主动外连）" --> RL
+  end
+```
+
+- **nearby**：Bonjour `_vqasee._tcp` 自动发现（优先数字 IPv4），自动填地址；仍需
+  你点 **开始视觉辅助**——摄像头绝不自动推流。切换网络（热点 ↔ Wi-Fi）会清掉过期
+  IP 并重新发现，而不是钉死在失效地址。
+- **relay**：两端都主动外连到带同一配对 token 的公共 relay，于是 4G/5G 上的手机
+  也能连到 Wi-Fi 上的 Mac。
+
+<details>
+<summary>Relay MVP 限制与配置</summary>
+
+- 单帧 Base64 上限 `900000` · 每客户端每分钟 `30` 帧 · 每客户端在途 `1` 个
+- iOS 默认帧间隔 `2s`；帧质量随模式：
+  行走 448px/120KB · 周围 640px/220KB · 详细 768px/320KB · 读文字 1024px/520KB
+
+```bash
+# 1) 公共主机（或本地测试）
+export RELAY_PAIRING_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+bash ./start_relay.sh
+# 2) 跑推理的 Mac worker
+export RELAY_WORKER_URL=ws://<relay-host>:9100/ws/worker
+export RELAY_PAIRING_TOKEN=<同一 token>
+export WORKER_ID=local-mac-worker
+bash ./start_worker.sh
+# 3) iOS App：Server URL 填 ws(s)://<relay-host>:9100/ws/client，同 token + worker id
+```
+</details>
+
+## 闭环进化平台
+
+每个功能都必须**形成闭环**，而不是"做完一个页面"。平台把这个闭环变得具体、可检查，
+入口在 `http://127.0.0.1:9000/diagnostics/ui`。
+
+```mermaid
+flowchart LR
+  U["用户反馈 / 现场问题"] --> A["归因"]
+  A --> PC["产品判断"]
+  PC --> T["技术拆解"]
+  T --> E["最小实验"]
+  E --> MG["指标门禁"]
+  MG --> S["发布 / 回滚"]
+  S --> DT["文档 + 测试"]
+  DT --> NX["下一轮评测样例"]
+  NX --> U
+```
+
+感知子闭环让平台能在开源数据集上测试 iPhone 的**端侧**感知（YOLO + 分割 +
+引导引擎），并把调好的配置推回设备——且**不需要**完整 Xcode：
+
+```mermaid
+flowchart LR
+  DS["开源数据集<br/>(CamVid 语义标注)"] --> GT["真值<br/>可通行引导线"]
+  subgraph Harness["macOS 离线 harness"]
+    H["真身 App 源码<br/>YOLO + 分割 → 预测引导线"]
+  end
+  DS --> H
+  GT --> EV["线级评测<br/>deviation · hit_rate · false_go"]
+  H --> EV
+  EV --> G{"回归门禁"}
+  G -- 通过 --> CFG["PerceptionConfig 版本 +1"]
+  CFG -- "OTA /runtime/perception-config" --> APP["iPhone 引擎"]
+  APP -. "共享源码（符号链接）" .- H
+```
+
+- 可调 ROI + 阈值的**单一真源**：`server-vqa/app/perception_config.py`（Python），
+  由 `PerceptionConfig.swift` 镜像，契约测试防漂移。
+- **诚实能力探针**：predictor 会以原因上报 `unsupported`，而不是静默失败
+  （例如缺 `onnxruntime`）。
+- **回归门禁**：安全关键指标（如 `risk_miss`、`false_go`）相对基线不得变差，
+  否则拦截候选。
+
+## 可通行引导线
+
+感知引擎输出**一条或多条可通行引导线**（带走廊半宽、置信度和风险段的折线），
+而不是框。当自由空间破碎到无法成线时，显式降级为 `insufficient`，**绝不伪造**
+一条直线。
+
+```text
+ 图像帧（底边 = 你的脚下）
+ ┌─────────────────────────────────────┐
+ │                 · · · 地平线          │
+ │                 ╱                    │
+ │                ╱   ← 预测引导线       │
+ │              ┆╱┆      （含走廊）      │
+ │              ┆ ┆                     │
+ │             ╱   ╲   ← 真值线          │
+ │            ●  你                     │
+ └─────────────────────────────────────┘
+   紫色实线 = 设备预测（含走廊带）
+   绿色虚线 = 真值可通行引导线（来自语义 mask）
+```
+
+预测线与真值线共用同一 schema（`app/guidance_path.py` ↔ `GuidancePath.swift`），
+闭环才能公平打分。逐帧叠加对照见
+`/diagnostics/datasets/ios-harness/frames/ui`。
+
+## 端侧实时体验
+
+用户真正看到的画面——安静的状态栏、叠在实时相机上的引导线、附近风险的提示条，
+以及一句简短语音。语音只做确认，绝不承诺"可以走"。
+
+```text
+        ┌─────────────────────────────┐
+        │  ● 已连接    行走模式   ⏱1.2s │   ← 状态：连接 · 模式 · 延迟
+        │                             │
+        │         (实时相机)           │
+        │             ╱               │
+        │            ╱  ← 引导线        │
+        │          ┆╱┆     +走廊        │
+        │          ┆ ┆                 │
+        │         ╱   ╲               │
+        │   ⚠ 右前 行人                │   ← 风险提示条（附近危险）
+        │        ●  你                 │
+        │                             │
+        │  “前方可走，注意右前行人”      │   ← spoken_text / 摘要
+        │        [  按住说话  ]         │   ← 按住说话提问
+        └─────────────────────────────┘
+```
+
+- **状态明确**：发现中 / 已连接 / 推流中 / 处理中 / 超时 / 已断开 / 重连中——
+  绝不静默卡住。
+- **语音门控，但帧不丢**：每帧都会刷新屏幕；`SpeechGate` 只决定要不要*出声*，
+  所以画面永不发呆，同时避免重复播报。
+- **按住说话**：单轮提问，随下一帧作答。
+
+## 目录结构
+
+```text
+onepiece/
+├── ios-vqa-app/
+│   ├── VQASee/VQASee/            # SwiftUI App + 端侧感知
+│   │   ├── LocalPerception.swift LocalSegmentation.swift LocalVisionAnalyzer.swift
+│   │   ├── GuidancePath.swift    PerceptionConfig.swift   CameraCapture.swift
+│   │   └── StreamingViewModel.swift SettingsView.swift ...
+│   └── perception-harness/       # 用真身 App 源码的 macOS SwiftPM CLI
+├── server-vqa/
+│   ├── app/                      # FastAPI 后端 + 闭环平台
+│   │   ├── main.py signaling.py vqa_service.py prompts.py scene_context.py
+│   │   ├── diagnostic_api.py diagnostic_capture.py     # 平台 UI/API
+│   │   ├── perception_config.py guidance_path.py guidance_path_eval.py
+│   │   ├── open_dataset_adapters.py path_* traversability_predictor.py
+│   │   └── eval_baseline.py regression_gate.py
+│   ├── tools/                    # run_ios_harness_eval.py, ...
+│   └── tests/
+├── relay-server/                 # 公共 WSS relay MVP
+├── deploy/ios/                   # 构建 / 测试 / 归档 / TestFlight
+├── docs/                         # decisions · evolution · model-lab · ui-lab · ...
+├── AGENTS.md                     # 团队角色与工作协议
+└── start_*.sh                    # backend / diagnostics / qwen / relay / worker
+```
+
+## 快速开始
+
+```bash
+# 0) 一次性创建虚拟环境
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r server-vqa/requirements-dev.txt
+
+# 1) 后端（推理/信令）
+bash ./start_backend.sh                       # ws://localhost:9000/ws/signaling
+# 或：HOST=127.0.0.1 PORT=9000 bash ./start_backend.sh
+
+# 2) 只启动闭环平台（不做 Qwen 预热）
+bash ./start_diagnostics_platform.sh          # 自动打开 /diagnostics/ui
+
+# 3) 完整本地栈（后端 + 本地 Qwen）
+bash ./start_local_vqa.sh
+
+# 4) 离线感知 harness（macOS）
+cd ios-vqa-app/perception-harness && swift build
+./.build/debug/PerceptionHarness \
+  --manifest ../../docs/datasets/camvid-manifest.jsonl \
+  --model-dir ../VQASee/VQASee --out /tmp/camvid-ios-harness.jsonl
+```
+
+<details>
+<summary>iOS 构建与发布</summary>
+
+1. 在 `ios-vqa-app/VQASee` 用 Xcode 创建 `VQASee.xcodeproj`（签名/team/bundle id；
+   相机/定位/本地网络权限；安装 iOS 平台运行时）。
+2. `cp deploy/ios/ExportOptions.plist.template deploy/ios/ExportOptions.plist`
+3. 自动化：
+   ```bash
+   bash deploy/ios/preflight.sh
+   bash deploy/ios/build.sh                 # 设备/发布
+   SDK=iphonesimulator CONFIGURATION=Debug bash deploy/ios/build.sh
+   bash deploy/ios/test.sh
+   bash deploy/ios/install_on_device.sh     # DEVICE_ID=<udid> 指定设备
+   bash deploy/ios/archive.sh
+   bash deploy/ios/release_testflight.sh
+   ```
+</details>
+
+## 本地 Qwen 运行时
+
+`start_qwen_local.sh` **直接启动 `llama-server`**（`Ollama.app` 内置的二进制），
+而不是让 Ollama 托管——因为 Ollama 把 `qwen2.5vl` 的 `--image-min-tokens` 锁死在
+**1024**，这主导了 prefill 成本。自己跑 server 就能传 `--image-min-tokens 256`。
+
+同一张 448px 帧上实测（M4 Air, 16GB）：
 
 | `image-min-tokens` | prompt tokens | **prefill** | decode |
 |---|---|---|---|
-| 1024 (Ollama default) | 1048 | **~5.0 s** | ~1.4 s |
-| 256 (this runtime) | 280 | **~1.3 s** | ~1.2 s |
+| 1024（Ollama 默认） | 1048 | **~5.0 s** | ~1.4 s |
+| 256（本运行时） | 280 | **~1.3 s** | ~1.2 s |
 
-Prefill drops ~4× with no measurable quality loss for scene description. Ollama
-is still used purely as the **model downloader** (`ollama pull` writes the blob
-store the runtime reads).
+```bash
+bash ./start_qwen_local.sh                    # http://127.0.0.1:11435 (start|stop|status|supervise)
+QWEN_API_BASE_URL=http://127.0.0.1:11435 QWEN_MODEL=qwen2.5vl:3b bash ./start_backend.sh
+MODEL=qwen2.5vl:7b bash ./start_qwen_local.sh # 选 7B 前先在 Mac 上拉一次
+```
 
-- **Config** (env overrides): `LLAMA_PORT` (11435), `IMAGE_MIN_TOKENS` (256),
-  `IMAGE_MAX_TOKENS` (512), `LLAMA_SERVER_BIN`, `OLLAMA_MODELS_DIR`,
-  `MODEL` (`qwen2.5vl:3b`).
-- **Fallback to Ollama**: set `USE_OLLAMA=1` to use the old Ollama-managed
-  runtime (image-min-tokens locked at 1024, API on `:11434`). Everything
-  downstream is unchanged; only the API base differs.
-- **Crash recovery**: `bash ./start_qwen_local.sh supervise` runs a foreground
-  supervisor that restarts `llama-server` if it exits, logging each restart
-  (No Silent Failures). Logs at `/tmp/qwen-llama-server.log`, pid at
-  `/tmp/qwen-llama-server.pid`.
-- **Warmup**: after the server is healthy, `start_qwen_local.sh` fires one tiny
-  32×32 JPEG inference so the vision path is hot before the first camera frame.
-  Best-effort and bounded by `--max-time` — failures are logged, not fatal.
-- **Decode length**: walking / surroundings frames without an explicit question use
-  a compact safety schema and `QWEN_MAX_TOKENS_FAST` (default 260); full
-  descriptions use `QWEN_MAX_TOKENS_FULL` (default 520).
-- **Continuity cost**: incremental frames default to current image + text scene
-  context only. Previous-image comparison is opt-in via
-  `QWEN_SEND_PREVIOUS_IMAGE_IN_INCREMENTAL=1` because sending two images roughly
-  doubles vision prefill pressure on Qwen 3B.
+<details>
+<summary>运行时参数与诚实的延迟预期</summary>
 
-> Honest expectation: the direct runtime brings a single 3B frame to ~2.5 s on a
-> 16GB Mac (prefill ~1.3 s + decode ~1.2 s) — it does **not** reach 1s for a
-> full-frame inference. The sub-second *feel* comes from the scene-memory gating
-> below: most stationary frames are never re-inferred or re-spoken.
+- 环境变量：`LLAMA_PORT` (11435) · `IMAGE_MIN_TOKENS` (256) · `IMAGE_MAX_TOKENS`
+  (512) · `LLAMA_SERVER_BIN` · `OLLAMA_MODELS_DIR` · `MODEL` (`qwen2.5vl:3b`)。
+- `USE_OLLAMA=1` 回退到 Ollama 托管（锁死 1024，API `:11434`）。
+- `supervise` 在崩溃时重启 `llama-server` 并记录每次重启（不静默失败）。
+- decode 长度：快速安全 schema `QWEN_MAX_TOKENS_FAST`（260）；完整描述
+  `QWEN_MAX_TOKENS_FULL`（520）。
+- 连续帧默认只带当前图 + 文本场景上下文；
+  `QWEN_SEND_PREVIOUS_IMAGE_IN_INCREMENTAL=1` 才启用双图对比。
 
-## Real Device Networking Notes
+> 单张 3B 帧在 16GB Mac 上约 2.5 s（prefill ~1.3 s + decode ~1.2 s）——完整帧推理
+> **达不到** 1s。亚秒级的*体感*来自场景记忆门控：静止帧既不重复推理也不重复播报。
+</details>
 
-- On physical iPhone, `localhost` points to the iPhone itself, not your Mac backend.
-- Use one of:
-  - recommended nearby mode: turn on iPhone Personal Hotspot, connect Mac to that hotspot, start backend, then tap "开始视觉辅助" in the app
-  - same Wi-Fi LAN URL: `ws://<mac-lan-ip>:9000/ws/signaling`
-  - Mac connected to iPhone hotspot URL
-  - public tunnel URL (e.g. `wss://...`) when phone uses cellular and Mac uses different network
+## 测试
 
-## Nearby Auto-connect Mode
+```bash
+source .venv/bin/activate
+pytest server-vqa/tests            # 后端 + 闭环平台
+pytest relay-server/tests          # relay
+cd ios-vqa-app/perception-harness && swift build   # 编译真身 App 感知源码
+bash deploy/ios/test.sh            # iOS（需完整 Xcode）
+```
 
-For the simplest local setup:
+测试底线（见 `AGENTS.md`）：mock 要接近真实输入/错误/schema；断言必须覆盖安全、
+失败恢复、超时、不确定性和用户可见状态；绝不为掩盖 bug 删测试。
 
-1. Start backend on the Mac: `bash ./start_backend.sh`.
-2. Put the iPhone and Mac on the same network — **either** works:
-   - iPhone Personal Hotspot with the Mac joined to it, **or**
-   - both on the same Wi-Fi LAN.
-3. Open VQASee on iPhone. It auto-discovers the backend and shows
-   `已发现 Mac 后端…`.
-4. Tap `开始视觉辅助` to connect (discovery only fills the address; you still tap
-   start — the camera never auto-streams).
+## 知识库
 
-How discovery behaves:
+产品在 `docs/` 下自我沉淀：
 
-- The backend advertises `_vqasee._tcp` via Bonjour; the app browses continuously
-  (not just on first launch). Resolution **prefers the numeric IPv4 address** over
-  the `.local` hostname, which is more reliable across routers where mDNS name
-  resolution is flaky.
-- **One backend found** → its address is auto-filled.
-- **Two or more found** → the app shows a selection list so you can pick which Mac
-  to use; your pick is remembered and no longer overridden by discovery.
-- **Connection drops / you switch networks** (hotspot ↔ Wi-Fi) → the app clears the
-  stale address, re-runs discovery, and reconnects to whatever it finds, instead of
-  pinning the old IP.
-- If Bonjour finds nothing, the app also probes common iPhone-hotspot addresses
-  such as `172.20.10.x`.
-- Manual entry still exists under **高级设置** as a fallback; typing an address
-  there pins it (discovery won't overwrite it).
+- `docs/decisions/` — 产品/架构决策记录
+- `docs/evolution/` — 迭代/闭环记录
+- `docs/model-lab/` — 模型与评测经验（如 CamVid 调色板修正、引导线基线）
+- `docs/ui-lab/` — UI 打磨经验
+- `docs/performance/` — 延迟与系统经验
+- `docs/tech-radar/` — 外部 SOTA 技术情报
+- `docs/roadmap.md` — 北极星与阶段
 
-No server URL, relay URL, or token needs to be entered for this nearby/hotspot
-mode.
+## 原则
 
-## Visual-assistance UI
+1. **安全第一** — 不隐藏、不静默丢弃影响安全的视觉变化。
+2. **视觉引导优先，语音辅助确认** — 用户应能*看见*路径、障碍和风险；语音用于补充
+   和免手操作。
+3. **延迟就是体验** — 编码 / 网络 / 模型耗时都是产品指标。
+4. **不允许静默失败** — 失败要在 UI、语音、日志或测试中可见，并有清晰恢复路径。
+5. **默认保护隐私** — 尽量少持久化图片/音频；任何远程路径都要说明。
+6. **辅助而非接管** — VQASee 提醒风险、边界和不确定性；绝不承诺"可以走"，也绝不
+   替代用户在行走、骑行、驾驶时的主动观察。
 
-The iOS app is now voice-first:
+---
 
-- Main screen shows a natural-language summary, risk message, and suggested action.
-- End-to-end latency is shown as a dedicated row (⏱) in the result card, broken
-  down into encode / network+queue / model. The **previous** latency value stays
-  on screen while the next frame is in flight (a small "更新中…" spinner marks the
-  refresh) instead of blanking to "处理中…". The camera-preview overlay now shows
-  only status + connection (smaller font); latency lives in the result card.
-- If a frame gets no result within ~50s (model too slow, or the connection
-  dropped), the app stops waiting, shows a red timeout message, and releases the
-  in-flight lock so the next frame can be sent — it no longer hangs on "处理中…".
-  In relay mode the relay also actively tells the client when its request expired
-  (`request_timeout`) instead of dropping it silently.
-- If the backend goes away mid-session (server stopped, network lost), the socket
-  drop is surfaced as `连接已断开`, the status/connection text updates immediately,
-  and after ~2s the app re-runs Bonjour discovery and reconnects to whatever it
-  finds (so a hotspot ↔ Wi-Fi switch recovers instead of pinning the dead IP) — it
-  no longer sits silently on "连接中".
-- `scene / objects / latency` are kept in Advanced Settings as debug details.
-- Voice output uses iOS `AVSpeechSynthesizer`; no third-party speech library is
-  required.
-- Frame encoding is mode-aware: `行走` uses 448px/120KB for latency, `周围` uses 640px/220KB, `详细` uses 768px/320KB, and `读文字` uses 1024px/520KB for OCR/detail.
-- The app can switch between `自动`, `qwen2.5vl:3b` and `qwen2.5vl:7b`.
-  - `自动`: 行走 uses 3B; 周围/详细/读文字 use 7B.
-  - `3B`: faster, good for continuous walking mode.
-  - `7B`: usually better scene/spatial understanding, but slower and needs more RAM.
-  - Before selecting `7B`, pull it once on the Mac:
-    `MODEL=qwen2.5vl:7b bash ./start_qwen_local.sh`
-- Modes:
-  - `周围`: low-frequency scene awareness with left/center/right spatial layout
-  - `行走`: risk-first walking hints with direction-aware next action
-  - `读文字`: single-shot text reading prompt
-  - `详细`: single-shot detailed description
-- **Scene memory & change-only reporting** (continuous modes): when you stay in
-  one place, VQASee should not keep repeating the same description — it speaks the
-  first frame fully, then only announces *important changes*.
-  - The backend stays **stateless**. Each frame, the iOS app echoes back a small
-    `context` object (its own previous summary/scene/objects, a GPS-derived
-    `place_label`, and elapsed time). A stateless prompt-assembly step
-    (`scene_context.build_contextual_prompt`) appends a 连续观察上下文 block so
-    the model reports deltas and returns `change_significance` (`none`/`minor`/
-    `major`) plus a short `changes` string. This context travels over both the
-    direct and relay inference paths.
-  - The app only speaks when the change is `major`, when risk **rises**, or when a
-    max-silence heartbeat (~25s) elapses — otherwise it silently refreshes the
-    screen. A voice question always forces a spoken answer.
-  - **GPS reverse-geocoding** (physical anchor): on-device `CLGeocoder` turns the
-    coordinate into a place label (e.g. `中关村南路附近`), re-queried only after
-    moving ~30m (throttled, cached, off the inference critical path). Geocoding
-    failures are surfaced to debug text, never silently swallowed.
-  - **Suppression is speech-only, never frame-dropping.** Every frame past the
-    `minFrameInterval` throttle is sent and the on-screen summary/spatial/risk
-    always reflects the latest frame. We do **not** try to guess "the scene didn't
-    change" and drop frames on-device — for a vision-assistance app that would
-    hide real changes (e.g. panning the camera to new content) from the user,
-    which is unsafe. Avoiding repetition happens at the *speech* layer via
-    `SpeechGate` so the screen never goes stale.
-- Ask a specific question (single-turn, **voice only** — there is no text input;
-  the app is designed for hands-free / low-vision use):
-  - Hold the `按住说话` button and speak (press-to-talk). Speech is transcribed
-    on-device where supported (`zh-CN`), falling back to Apple's server
-    recognition otherwise.
-  - The recognized text is sent with the next frame; the model is told to answer
-    it directly (mode template still provides the base prompt).
-  - A voice question is **single-turn**: it is answered once and then cleared, so
-    it does not stick to every subsequent frame. Multi-turn voice conversation is
-    planned for a later phase.
-  - Holding to talk mutes any ongoing spoken output and temporarily switches the
-    audio session to record; it is restored to playback afterwards.
-  - Requires the microphone and speech-recognition permissions (prompted on first
-    use / on `开始视觉辅助`).
-- Model output is now visual-assistance structured, not a thin scene label: the
-  backend requests `summary`, `spatial_description`, `risk_level`,
-  `risk_message`, `suggested_action`, `spoken_text`, OCR text, and continuity
-  fields directly from the VLM via JSON Schema. `fusion.py` remains the safety
-  fallback, not the primary source of direction/risk intelligence.
-- When a previous frame exists, the client sends it along with the current frame
-  so the model can compare visual changes directly, not only through text
-  context. The prompt explicitly says the current frame is the source of truth.
-- `读文字`/detail/question flows run Apple Vision OCR on-device and attach the
-  OCR text to the frame request as a model hint.
-
-## iOS Workflow
-
-1. Initialize iOS project once in Xcode (required):
-   - Create `VQASee.xcodeproj` in `ios-vqa-app/VQASee`
-   - Configure signing/team/bundle ID
-   - Enable capabilities/permissions (camera/location/local-network)
-   - Install iOS platform runtime in `Xcode > Settings > Components` (or run `xcodebuild -downloadPlatform iOS`)
-2. Copy export template:
-   - `cp deploy/ios/ExportOptions.plist.template deploy/ios/ExportOptions.plist`
-3. Run automation:
-   - Preflight: `bash deploy/ios/preflight.sh`
-   - Build (device/release signing required): `bash deploy/ios/build.sh`
-   - Build (simulator, no signing): `SDK=iphonesimulator CONFIGURATION=Debug bash deploy/ios/build.sh`
-   - Test: `bash deploy/ios/test.sh`
-   - Install to connected iPhone (Debug): `bash deploy/ios/install_on_device.sh`
-   - Install to specific iPhone: `DEVICE_ID=<iphone_udid> bash deploy/ios/install_on_device.sh`
-   - Archive + export: `bash deploy/ios/archive.sh`
-   - Upload TestFlight: `bash deploy/ios/release_testflight.sh`
+<sub>团队角色、工作协议和 skill 调度见 [`AGENTS.md`](AGENTS.md)。</sub>

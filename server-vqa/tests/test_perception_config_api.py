@@ -193,6 +193,48 @@ def test_ios_harness_frames_ui_draws_overlay_and_gt_comparison(client, tmp_path)
     assert "该帧没有对应预测" in text
 
 
+def test_ios_harness_frames_ui_draws_guidance_lines(client, tmp_path):
+    manifest = tmp_path / "m.jsonl"
+    preds = tmp_path / "preds.jsonl"
+    line = {
+        "status": "ok", "coverage": 1.0, "source": "t",
+        "lines": [{"kind": "primary", "confidence": 1.0, "risk_segments": [], "points": [
+            {"x": 0.5, "y": 0.0, "half_width": 0.1},
+            {"x": 0.52, "y": 0.3, "half_width": 0.1},
+            {"x": 0.55, "y": 0.6, "half_width": 0.1},
+        ]}],
+    }
+    # Manifest frame carries a GT guidance line; image_path under an allowed root.
+    manifest.write_text(json.dumps({
+        "frame_id": "f1",
+        "image_path": "/tmp/vqasee-nonexistent.png",
+        "ground_truth": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen",
+                          "right_front_status": "candidateOpen", "focus_direction": "center"},
+        "ground_truth_path": line,
+    }) + "\n", encoding="utf-8")
+    preds.write_text(json.dumps({
+        "frame_id": "f1",
+        "prediction": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen",
+                       "right_front_status": "candidateOpen", "focus_direction": "center",
+                       "prediction_source": "ios_coreml_offline_harness"},
+        "roi": {"near": {"x": 0.3, "y": 0.0, "w": 0.4, "h": 0.35}},
+        "guidance_path": line,
+    }) + "\n", encoding="utf-8")
+
+    resp = client.get(
+        "/diagnostics/datasets/ios-harness/frames/ui",
+        params={"manifest": str(manifest), "predictions": str(preds)},
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    # Both the predicted line (polyline) and its corridor band (polygon) render,
+    # plus the legend explaining the two lines.
+    assert "<polyline" in text
+    assert "<polygon" in text
+    assert "预测引导线" in text
+    assert "真值可通行引导线" in text
+
+
 def test_ios_harness_frames_ui_filters_by_result_category(client, tmp_path):
     manifest = tmp_path / "m.jsonl"
     _write_manifest(manifest)  # f1 GT near=blocked, f2 GT all candidateOpen
