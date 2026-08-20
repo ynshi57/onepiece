@@ -25,4 +25,5 @@
 
 | 日期 | 主题 | 等级 | 相关角色 | 状态 | 文档 |
 | --- | --- | --- | --- | --- | --- |
-|  |  |  |  |  |  |
+| 2026-08-18 | BDD100K open dataset adapter MVP | L2 | 乔/罗/全/思 | 已落地 | [卡片](2026-08-18-bdd100k-open-dataset-adapter.md) |
+| 2026-08-20 | DCL 数据闭环架构 + 产品手册 V1.0 → VQASee 参考 | L1（case 层 MVP 已落地，余 L3 候选） | 乔/罗/思/全 | case 层已实现；事件触发/上传协议待实现 | [卡片](2026-08-20-dcl-data-closed-loop-architecture.md) |

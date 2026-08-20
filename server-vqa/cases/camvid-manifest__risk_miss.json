@@ -1,0 +1,59 @@
+{
+  "case_id": "camvid-manifest:risk_miss",
+  "created_at": "2026-08-19T07:00:00+00:00",
+  "dataset_key": "camvid-manifest",
+  "failure_type": "risk_miss",
+  "first_seen": {
+    "at": "2026-08-19T07:00:00+00:00",
+    "frame_count": 190,
+    "source": "修复前实测（701帧 CamVid walk · iPhone 真身 Core ML harness）· 数值见 model-lab 采样bug文档；修复前逐帧预测未留存"
+  },
+  "frame_count": 2,
+  "frame_ids": [
+    "road/0001TP_007230",
+    "road/0001TP_010020"
+  ],
+  "hint": "真实 注意/占用，却预测 可走候选（最危险）",
+  "history": [
+    {
+      "at": "2026-08-19T07:00:00+00:00",
+      "event": "opened",
+      "frame_count": 190,
+      "note": "首次聚类：修复前 190 帧漏报（701帧 CamVid walk · iPhone 真身 Core ML harness）"
+    },
+    {
+      "at": "2026-08-19T07:10:00+00:00",
+      "event": "annotate",
+      "fields": [
+        "suspected_cause"
+      ],
+      "note": "全麦归因：2 通道 logits 采样错误（读错通道 + logit 当概率）"
+    },
+    {
+      "at": "2026-08-19T07:15:00+00:00",
+      "event": "status",
+      "from": "triaged",
+      "note": "改 sampler：softmax 取可通行类 sigmoid(l1-l0)，仅动共享源码 LocalSegmentation.swift",
+      "to": "fixing"
+    },
+    {
+      "at": "2026-08-19T07:20:00+00:00",
+      "event": "recluster",
+      "frame_count": 2,
+      "note": "修复后重跑：漏报 190 → 2（hit_rate 0.39→0.87，over_extension 0.279→0.026，false_go 恒 0）"
+    },
+    {
+      "at": "2026-08-19T07:30:00+00:00",
+      "event": "status",
+      "from": "fixing",
+      "note": "guidance 基线前移到 hit_rate=0.873/dev=0.106/over=0.026，门禁兜底防回退；残留 2 帧为可接受后修复态",
+      "to": "verified"
+    }
+  ],
+  "linked_fix": "docs/model-lab/2026-08-19-segmentation-2channel-sampler-fix.md · ios-vqa-app/.../LocalSegmentation.swift::sampler(fromMultiArray:)",
+  "resolved_frame_count": 2,
+  "status": "verified",
+  "suspected_cause": "LocalSegmentation.swift sampler(fromMultiArray:) 把 2 通道分割 logits [1,2,512,512] 读成 channel0 原始 logit 并与 0.5 阈值比：既读错通道（ch0=非通行），又把无界 logit 当概率。喂给中心线/ROI 的可通行图基本是噪声。修复为 prob=sigmoid(logit1-logit0)。",
+  "title": "漏报风险簇 · camvid-manifest",
+  "updated_at": "2026-08-19T07:30:00+00:00"
+}

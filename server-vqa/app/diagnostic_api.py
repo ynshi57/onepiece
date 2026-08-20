@@ -14,12 +14,26 @@ import urllib.request
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
+from app.case_store import (
+    annotate as case_annotate,
+    cluster_failures,
+    dataset_key_from_manifest,
+    failure_label as case_failure_label,
+    frame_failure_types,
+    list_cases,
+    load_case,
+    set_status as case_set_status,
+    status_label as case_status_label,
+    upsert_clusters,
+    CASE_STATUSES,
+)
 from app.diagnostic_capture import capture_root, get_session_dir, list_sessions
 from app.diagnostic_report import generate_report_from_session_dir
 from app.eval_baseline import list_baselines, load_baseline, save_baseline
@@ -246,6 +260,7 @@ async function deleteSession(sessionId) {
   <div class='card'><h2>2. 引导层可视化</h2><p class='muted'>把 LocalPathGuidanceSignal 叠加到图片上，检查通行候选区、风险区和不确定区是否合理。</p></div>
   <div class='card'><h2>3. 评估报告</h2><p class='muted'>自动发现 in-flight、误报、漏报、缺 Qwen raw output、depth/segmentation 能力缺口。</p></div>
   <div class='card'><h2>4. 开源数据集评估</h2><p class='muted'>CLI：<code>python server-vqa/tools/evaluate_path_guidance_dataset.py docs/datasets/path-guidance-manifest-example.jsonl</code></p><p><a href='/diagnostics/datasets/ui'>打开数据集评估</a></p></div>
+  <div class='card'><h2>5. 闭环 case</h2><p class='muted'>评估里的失败帧自动聚类成可跟踪、能重开的 case（借鉴 DCL 统一载体 + 生命周期）。同一问题发生两次会自动重开。</p><p><a href='/diagnostics/cases/ui'>打开 case 列表</a></p></div>
 </div>
 """
     body = hero + modules + "<h2>Sessions</h2>" + script + ("".join(cards) or "<p>暂无 session。</p>")
@@ -1445,11 +1460,39 @@ async function runParity() {{
         f"近/左/右三个判断区域及其状态，让你直接看清“为什么漏报/误阻挡”。</p>"
         f"<p><a href='{frames_url}'>→ 打开逐帧识别效果</a></p></div>"
     )
+    case_script = f"""<script>
+async function clusterCases() {{
+  const status = document.getElementById('caseStatus');
+  status.style.display = 'block'; status.className = 'status';
+  status.textContent = '正在把失败帧聚类成 case…';
+  try {{
+    const url = '/diagnostics/cases/cluster?manifest={encoded_manifest}&predictions=' + encodeURIComponent('{encoded_pred}');
+    const resp = await fetch(url, {{method: 'POST'}});
+    const payload = await resp.json();
+    if (!resp.ok) {{ status.className = 'status error'; status.textContent = '聚类失败：' + (payload.detail || resp.statusText); return; }}
+    const parts = (payload.cases || []).map(c => c.title + '（' + c.frame_count + ' 帧，' + c.status_label + '）');
+    status.className = 'status ok';
+    status.innerHTML = '已生成/更新 ' + (payload.cases || []).length + ' 个 case：' + (parts.join('，') || '无失败帧')
+      + " · <a href='/diagnostics/cases/ui'>查看 case 列表 →</a>";
+  }} catch (error) {{ status.className = 'status error'; status.textContent = '请求失败：' + error; }}
+}}
+</script>"""
+    case_callout = (
+        "<div class='callout'><h2>闭环 case：把失败帧变成能跟踪、能重开的问题</h2>"
+        "<p class='hint'>点一下，平台会把这次评估里的<b>漏报</b>和<b>误阻挡</b>帧按类型自动聚类成 case，"
+        "每个 case 有确定性 id 和生命周期（新建→分诊→修复→验证）。"
+        "同一问题下次再出现会<b>自动重开</b>——这就是「一个问题发生两次，就是系统没学会」的落地。</p>"
+        "<button class='secondary' onclick='clusterCases()'>把失败帧聚成 case</button> "
+        "<a href='/diagnostics/cases/ui' class='pill' style='text-decoration:none;border:1px solid #555;color:#d1d1d6'>查看 case 列表</a>"
+        "<div id='caseStatus' class='status' style='display:none'></div></div>"
+    )
     body = (
         header
         + parity_script
+        + case_script
         + f"<div class='status ok'>已用 {html.escape(str(pred_path.name))} 对 iPhone 真身打分（prediction_source=ios_coreml_offline_harness）。</div>"
         + frames_callout
+        + case_callout
         + cards
         + parity_card
         + f"<div class='card'><h2>建议</h2><ul>{recs}</ul></div>"
@@ -1967,10 +2010,14 @@ _FRAME_FILTERS = {
 def _frame_flags(gt: dict, prediction: dict) -> set:
     """Classify one frame into filter buckets from GT vs prediction. Empty
     prediction -> {"no_prediction"}; otherwise a frame may carry several tags
-    (e.g. both risk_miss and false_block across different regions)."""
+    (e.g. both risk_miss and false_block across different regions).
+
+    The safety-relevant buckets (risk_miss / false_block) come from
+    ``case_store.frame_failure_types`` so the UI filters and the case clusters
+    are guaranteed to agree on what counts as a failure."""
     if not prediction:
         return {"no_prediction"}
-    flags = set()
+    flags = set(frame_failure_types(gt, prediction))
     all_present_equal = True
     for key in _FRAME_REGION_KEYS:
         g = gt.get(key)
@@ -1981,10 +2028,6 @@ def _frame_flags(gt: dict, prediction: dict) -> set:
         if g != p:
             all_present_equal = False
             flags.add("mismatch")
-            if g in ("caution", "blocked") and p == "candidateOpen":
-                flags.add("risk_miss")
-            elif g == "candidateOpen" and p in ("caution", "blocked"):
-                flags.add("false_block")
     if all_present_equal:
         flags.add("correct")
     return flags
@@ -2187,6 +2230,227 @@ def dataset_ios_harness_frames_ui(
 
     body = header + filter_bar + nav + ("".join(cards) or empty_msg) + (nav if cards else "")
     return _html_page("逐帧识别效果", body)
+
+
+@router.post("/cases/cluster")
+def cases_cluster(manifest: str, predictions: str) -> dict:
+    """Cluster this eval run's failing frames into cases (create or update).
+
+    This is the AutoTriage-lite entry: read the manifest + harness predictions,
+    bucket risk_miss / false_block frames, and upsert a case per bucket with a
+    deterministic id so re-runs update instead of duplicate."""
+    manifest_path = Path(manifest).expanduser()
+    if not manifest_path.is_file():
+        raise HTTPException(status_code=404, detail="manifest_not_found")
+    pred_path = Path(predictions).expanduser()
+    if not pred_path.is_file():
+        raise HTTPException(status_code=404, detail="predictions_not_found")
+
+    manifest_rows = load_jsonl(manifest_path)
+    pred_index: dict = {}
+    for row in load_jsonl(pred_path):
+        fid = row.get("frame_id")
+        if fid is not None:
+            pred_index[str(fid)] = row
+
+    dataset_key = dataset_key_from_manifest(manifest_path)
+    clusters = cluster_failures(manifest_rows, pred_index, dataset_key=dataset_key)
+    source = f"cluster:{pred_path.name}"
+    cases = upsert_clusters(clusters, source=source)
+    return {
+        "status": "ok",
+        "dataset_key": dataset_key,
+        "cases": [
+            {
+                "case_id": c["case_id"],
+                "title": c["title"],
+                "failure_type": c["failure_type"],
+                "frame_count": c["frame_count"],
+                "status": c["status"],
+                "status_label": case_status_label(c["status"]),
+            }
+            for c in cases
+        ],
+    }
+
+
+@router.get("/cases")
+def cases_list() -> dict:
+    return {"cases": list_cases()}
+
+
+@router.post("/cases/status")
+def cases_set_status(id: str, status: str, note: str = "") -> dict:
+    try:
+        case = case_set_status(id, status, note=note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok", "case": case}
+
+
+@router.post("/cases/annotate")
+def cases_annotate(id: str, suspected_cause: Optional[str] = Body(default=None), linked_fix: Optional[str] = Body(default=None)) -> dict:
+    try:
+        case = case_annotate(id, suspected_cause=suspected_cause, linked_fix=linked_fix)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "ok", "case": case}
+
+
+_CASE_STATUS_COLOR = {
+    "new": "#0a84ff",
+    "triaged": "#5e5ce6",
+    "fixing": "#ff9f0a",
+    "verified": "#30d158",
+    "released": "#64d2ff",
+    "reopened": "#ff453a",
+    "closed": "#8e8e93",
+}
+
+
+def _case_status_pill(status: str) -> str:
+    color = _CASE_STATUS_COLOR.get(status, "#8e8e93")
+    return (
+        f"<span class='pill' style='border:1px solid {color};color:{color}'>"
+        f"{html.escape(case_status_label(status))}</span>"
+    )
+
+
+@router.get("/cases/ui", response_class=HTMLResponse)
+def cases_ui():
+    """Case list: the closed-loop backlog. Open/reopened cases float to the top."""
+    cases = list_cases()
+    if not cases:
+        body = (
+            "<h1>闭环 case 列表</h1>"
+            "<div class='callout'><p>还没有 case。</p>"
+            "<p class='hint'>去「iPhone 真身评估」页跑一次评估，点<b>把失败帧聚成 case</b>，"
+            "平台会把漏报/误阻挡帧自动聚类成可跟踪的 case。</p></div>"
+        )
+        return _html_page("闭环 case 列表", body)
+
+    rows = []
+    for c in cases:
+        cid = html.escape(str(c.get("case_id", "")))
+        detail = f"/diagnostics/cases/detail/ui?id={cid}"
+        fix = html.escape(str(c.get("linked_fix") or ""))
+        fix_cell = f"<span class='muted'>{fix}</span>" if fix else "<span class='muted'>—</span>"
+        rows.append(
+            f"<tr>"
+            f"<td><a href='{detail}'>{html.escape(str(c.get('title', c.get('case_id'))))}</a></td>"
+            f"<td>{_case_status_pill(str(c.get('status', 'new')))}</td>"
+            f"<td style='text-align:right'>{int(c.get('frame_count') or 0)}</td>"
+            f"<td>{html.escape(case_failure_label(str(c.get('failure_type', ''))))}</td>"
+            f"<td>{fix_cell}</td>"
+            f"<td class='muted'>{html.escape(str(c.get('updated_at', ''))[:19])}</td>"
+            f"</tr>"
+        )
+
+    open_count = sum(1 for c in cases if c.get("status") not in {"verified", "released", "closed"})
+    body = (
+        "<h1>闭环 case 列表</h1>"
+        f"<p class='hint'>共 {len(cases)} 个 case，其中 <b>{open_count}</b> 个未收敛。"
+        "借鉴 DCL 的「统一载体 + 生命周期」，把「失败帧」变成能跟踪到关闭的问题。</p>"
+        "<table><tr><th>Case</th><th>状态</th><th style='text-align:right'>帧数</th>"
+        "<th>类型</th><th>关联修复</th><th>更新时间</th></tr>"
+        + "".join(rows)
+        + "</table>"
+    )
+    return _html_page("闭环 case 列表", body)
+
+
+@router.get("/cases/detail/ui", response_class=HTMLResponse)
+def cases_detail_ui(id: str):
+    case = load_case(id)
+    if case is None:
+        raise HTTPException(status_code=404, detail="case_not_found")
+
+    cid = html.escape(str(case.get("case_id", "")))
+    status = str(case.get("status", "new"))
+
+    # Lifecycle buttons: offer the sensible next states plus close/reopen.
+    status_buttons = "".join(
+        f"<button class='secondary' onclick=\"setStatus('{s}')\">{html.escape(case_status_label(s))}</button> "
+        for s in CASE_STATUSES
+        if s != status
+    )
+
+    frame_ids = case.get("frame_ids", []) or []
+    shown = frame_ids[:60]
+    frame_list = ", ".join(html.escape(str(f)) for f in shown) or "（无）"
+    more = f"…… 等共 {len(frame_ids)} 帧" if len(frame_ids) > len(shown) else ""
+
+    hist_rows = []
+    for h in reversed(case.get("history", []) or []):
+        at = html.escape(str(h.get("at", ""))[:19])
+        event = html.escape(str(h.get("event", "")))
+        detail_bits = []
+        if "from" in h or "to" in h:
+            detail_bits.append(f"{html.escape(str(h.get('from', '')))}→{html.escape(str(h.get('to', '')))}")
+        if h.get("frame_count") is not None:
+            detail_bits.append(f"{h.get('frame_count')} 帧")
+        if h.get("note"):
+            detail_bits.append(html.escape(str(h.get("note"))))
+        if h.get("fields"):
+            detail_bits.append("改：" + html.escape(", ".join(h.get("fields", []))))
+        hist_rows.append(f"<tr><td class='muted'>{at}</td><td>{event}</td><td>{' · '.join(detail_bits)}</td></tr>")
+
+    first_seen = case.get("first_seen", {}) or {}
+    suspected = html.escape(str(case.get("suspected_cause") or ""))
+    linked_fix = html.escape(str(case.get("linked_fix") or ""))
+
+    script = f"""<script>
+async function setStatus(s) {{
+  const st = document.getElementById('opStatus');
+  st.style.display='block'; st.className='status'; st.textContent='更新状态中…';
+  const note = document.getElementById('statusNote').value || '';
+  try {{
+    const url = '/diagnostics/cases/status?id={cid}&status=' + encodeURIComponent(s) + '&note=' + encodeURIComponent(note);
+    const resp = await fetch(url, {{method:'POST'}});
+    const p = await resp.json();
+    if(!resp.ok){{ st.className='status error'; st.textContent='失败：'+(p.detail||resp.statusText); return; }}
+    location.reload();
+  }} catch(e) {{ st.className='status error'; st.textContent='请求失败：'+e; }}
+}}
+async function saveNotes() {{
+  const st = document.getElementById('opStatus');
+  st.style.display='block'; st.className='status'; st.textContent='保存中…';
+  const body = {{
+    suspected_cause: document.getElementById('suspected').value,
+    linked_fix: document.getElementById('linkedfix').value
+  }};
+  try {{
+    const resp = await fetch('/diagnostics/cases/annotate?id={cid}', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
+    const p = await resp.json();
+    if(!resp.ok){{ st.className='status error'; st.textContent='失败：'+(p.detail||resp.statusText); return; }}
+    st.className='status ok'; st.textContent='已保存。';
+  }} catch(e) {{ st.className='status error'; st.textContent='请求失败：'+e; }}
+}}
+</script>"""
+
+    body = (
+        script
+        + "<p><a href='/diagnostics/cases/ui'>← 返回 case 列表</a></p>"
+        + f"<h1>{html.escape(str(case.get('title', case.get('case_id'))))}</h1>"
+        + f"<p>{_case_status_pill(status)} <span class='muted'>id: {cid}</span> · "
+        + f"类型 {html.escape(case_failure_label(str(case.get('failure_type', ''))))} · "
+        + f"当前 {int(case.get('frame_count') or 0)} 帧</p>"
+        + f"<p class='hint'>首次出现：{html.escape(str(first_seen.get('at', ''))[:19])}"
+        + f"（{first_seen.get('frame_count', '?')} 帧，来源 {html.escape(str(first_seen.get('source', '')))}）</p>"
+        + "<div class='card'><h2>推进生命周期</h2>"
+        + "<input type='text' id='statusNote' placeholder='本次状态变更备注（可选）' style='width:100%;margin-bottom:8px'>"
+        + status_buttons
+        + "<div id='opStatus' class='status' style='display:none'></div></div>"
+        + "<div class='card'><h2>分诊笔记 / 关联修复</h2>"
+        + f"<label class='num'>疑似根因<textarea id='suspected' rows='2' style='width:100%'>{suspected}</textarea></label>"
+        + f"<label class='num'>关联修复（commit / 文档路径）<input type='text' id='linkedfix' value='{linked_fix}' style='width:100%'></label>"
+        + "<button class='secondary' onclick='saveNotes()'>保存笔记</button></div>"
+        + f"<div class='card'><h2>失败帧（{len(frame_ids)}）</h2><p class='muted'>{frame_list} {more}</p></div>"
+        + "<div class='card'><h2>历史</h2><table><tr><th>时间</th><th>事件</th><th>说明</th></tr>"
+        + ("".join(hist_rows) or "<tr><td colspan='3' class='muted'>无</td></tr>")
+        + "</table></div>"
+    )
+    return _html_page(f"Case {case.get('case_id')}", body)
 
 
 @router.get("/perception-config")
