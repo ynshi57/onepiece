@@ -1,0 +1,13 @@
+{
+  "created_at": "2026-08-29T00:18:01.670437+00:00",
+  "metrics": {
+    "mean_box_precision": 0.61067629637174,
+    "mean_coverage_recall": 0.40200018636653395,
+    "obstacle_frames": 701,
+    "obstacle_miss_frames": 319,
+    "scored": 701
+  },
+  "name": "camvid-ios-mc5-drive-obstacle",
+  "sample_count": 0,
+  "source": "ios_coreml_offline_harness_obstacle"
+}

@@ -1,0 +1,21 @@
+{
+  "created_at": "2026-08-27T15:25:52.416133+00:00",
+  "metrics": {
+    "both_ok": 693,
+    "direction_error": 0.1136784992784994,
+    "false_go_frames": 0,
+    "frames": 701,
+    "gt_flip_pair_rate": 0.043041606886657105,
+    "gt_lateral_jump_p95": 0.13342776507936488,
+    "hit_rate": 0.9303818275679746,
+    "mean_deviation": 0.07794817403436653,
+    "missed_path_frames": 8,
+    "over_extension": 0.023533489117904663,
+    "pred_coverage": 0.9024874396086502,
+    "pred_flip_pair_rate": 0.08625730994152046,
+    "pred_lateral_jump_p95": 0.19901855952380948
+  },
+  "name": "camvid-ios-guidance",
+  "sample_count": 701,
+  "source": "ios_coreml_offline_harness_guidance"
+}

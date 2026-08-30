@@ -1,0 +1,14 @@
+{
+  "created_at": "2026-08-28T16:44:48.949633+00:00",
+  "metrics": {
+    "mean_iou": 0.1943258816892566,
+    "mean_precision": 0.9264316408293067,
+    "mean_recall": 0.19689453486293088,
+    "region_false_go_frames": 5,
+    "region_miss_frames": 701,
+    "scored": 701
+  },
+  "name": "camvid-ios-mc5-walk-region",
+  "sample_count": 0,
+  "source": "ios_coreml_offline_harness_region"
+}

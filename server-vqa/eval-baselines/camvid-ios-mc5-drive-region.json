@@ -1,0 +1,14 @@
+{
+  "created_at": "2026-08-29T00:18:01.670198+00:00",
+  "metrics": {
+    "mean_iou": 0.7813143873573509,
+    "mean_precision": 0.9934651592215511,
+    "mean_recall": 0.7852693659814968,
+    "region_false_go_frames": 0,
+    "region_miss_frames": 0,
+    "scored": 701
+  },
+  "name": "camvid-ios-mc5-drive-region",
+  "sample_count": 0,
+  "source": "ios_coreml_offline_harness_region"
+}

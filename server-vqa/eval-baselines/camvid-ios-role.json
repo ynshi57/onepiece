@@ -1,0 +1,15 @@
+{
+  "created_at": "2026-08-27T15:25:52.418415+00:00",
+  "metrics": {
+    "mean_lane_coverage": 0.7179687949791657,
+    "mean_obstacle_overlap_rate": 0.0043576702833138,
+    "mean_primary_recall": 0.63873482040373,
+    "mean_road_as_primary_rate": 0.8074615787193111,
+    "obstacle_overlap_frames": 5,
+    "road_as_primary_frames": 700,
+    "scored": 701
+  },
+  "name": "camvid-ios-role",
+  "sample_count": 0,
+  "source": "ios_coreml_offline_harness_role"
+}

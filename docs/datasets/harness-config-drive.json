@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "role": "vehicle",
+  "roi": {
+    "near": {"x": 0.25, "y": 0.00, "w": 0.50, "h": 0.58},
+    "left": {"x": 0.00, "y": 0.05, "w": 0.42, "h": 0.62},
+    "right": {"x": 0.58, "y": 0.05, "w": 0.42, "h": 0.62}
+  },
+  "thresholds": {
+    "near_blocked_area": 0.82,
+    "side_blocked_area": 0.86,
+    "seg_near_caution_ratio": 0.35,
+    "seg_side_caution_ratio": 0.30,
+    "seg_traversable_pixel": 0.55
+  }
+}

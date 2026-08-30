@@ -1,0 +1,26 @@
+{
+  "metrics": {
+    "scored": 60,
+    "lane_frames": 60,
+    "lane_miss_frames": 0,
+    "mean_iou": 0.3308860348748549,
+    "mean_recall": 0.9652290054970255,
+    "mean_precision": 0.3356266054743204,
+    "mean_recall_tol": 0.9824558266980199,
+    "mean_precision_tol": 0.8513208375125251,
+    "tol": 3
+  },
+  "generated_at": "2026-08-27T12:24:30Z",
+  "checkpoint": "~/.cache/vqasee/models/lane_seg_camvid.pth",
+  "mlpackage": "~/.cache/vqasee/models/VQASeeLaneSegmentation.mlpackage",
+  "dataset": "docs/datasets/camvid-manifest.jsonl",
+  "test_seq": "Seq05V",
+  "test_tail_frac": 0.35,
+  "gap_frac": 0.05,
+  "eval_tol": 3,
+  "eval_thr": 0.5,
+  "train_dilate": 2,
+  "lane_weight": 6.0,
+  "best_epoch": 10,
+  "note": "Dedicated binary lane-marking segmenter (Fast-SCNN warm-started from Cityscapes). Leakage-safe held-out Seq05V tail. Strict pixel IoU is low by nature for a thin class; read the tolerance band (tol=3 px @512). Lane GEOMETRY/polylines are NOT modeled here (Phase D). Device wiring is T4."
+}

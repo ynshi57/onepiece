@@ -1,0 +1,15 @@
+{
+  "created_at": "2026-08-27T15:25:52.418810+00:00",
+  "metrics": {
+    "lane_miss_frames": 2,
+    "mean_iou": 0.6644238293900009,
+    "mean_precision": 0.7103725212736618,
+    "mean_precision_tol": 0.9323630367023009,
+    "mean_recall": 0.9079626394303024,
+    "mean_recall_tol": 0.9852310867132569,
+    "scored": 701
+  },
+  "name": "camvid-ios-lane-loop",
+  "sample_count": 0,
+  "source": "ios_coreml_offline_harness_lane_loop"
+}
