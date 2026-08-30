@@ -39,6 +39,7 @@ open_when_ready() {
 
 echo "Starting VQASee diagnostics/evolution platform only."
 echo "Qwen warmup disabled; this script does NOT start local Qwen."
+echo "Bonjour LAN advertise disabled (diagnostics-only; no live iPhone role)."
 echo "URL: ${DIAGNOSTICS_URL}"
 
 reload_args=()
@@ -52,5 +53,6 @@ else
 fi
 
 open_when_ready
-QWEN_WARMUP_ON_STARTUP=0 PORT="${PORT}" uvicorn --app-dir server-vqa app.main:app \
+QWEN_WARMUP_ON_STARTUP=0 VQASEE_DISABLE_BONJOUR=1 PORT="${PORT}" \
+  uvicorn --app-dir server-vqa app.main:app \
   --host "${HOST}" --port "${PORT}" ${reload_args[@]+"${reload_args[@]}"}

@@ -47,6 +47,38 @@
 `>预测<`/`>真值<` 标签;顺手修掉一个脆弱断言(`"f2" not in text` 与色值 `#bf5af2`
 撞子串),改为精确匹配帧卡标题 `<h2>f2</h2>`。全量 196 passed。
 
+## 第三轮：叠 CamVid 真值 mask，让绿线可溯源（2026-08-24）
+
+真实反馈:用户盯着一帧「有分歧」case 问「绿线穿过了红色『疑似占用』框,我是不是矛盾了?红框识别有问题吗?」。归因——**图上叠了三套不同来源的信号(绿线=真值 / 红框=预测 / 蓝框=检测),但图例没说清红框是「预测」**,用户误以为红框也是真值,于是把"真值 vs 预测的分歧"错读成"自相矛盾"。而且用户想**眼见为实**地确认绿线确实是从 CamVid 标注推导来的。
+
+改动(新增一层 + 澄清图例):
+
+- **叠半透明真值 mask 层**:新端点 `/diagnostics/camvid-mask?label=..&classes=walk` 用**与绿线同一套 mask 生成函数**(`_camvid_traversability_mask`)渲染出「道路+人行道」可走区域,Apple 绿 `#30d158` ~38% alpha,`NEAREST` 缩放保边不糊。叠在 base 图与 SVG 线之间(`.gt-mask` 绝对定位)。用户能肉眼看到绿线贴着标注像素走,溯源可见。
+- **开关默认开**:`#gtMaskToggle` 勾选框切 `#framesWrap` 的 `hide-gt-mask` 类,一键开关,安静可退。
+- **图例澄清**:头部 callout 增一行「绿色半透明=CamVid 真值可走区域,绿线就是从它取中心线得到」;三区色块已在上一轮标注为「预测·背景」。
+
+安全(按「变更影响面规则」自查):端点读本地 `label` 走**同一条 `_safe_local_file` 白名单**(与图片服务同源),`/etc/hosts`→403;坏 classes→400;mask 尺寸与原图逐像素对齐(960×720==960×720)。
+
+测试:`test_camvid_mask_endpoint_renders_traversable_region`(可走像素被染色、非可走透明、绿色值正确)、`test_camvid_mask_rejects_path_outside_allowlist`、`test_camvid_mask_bad_classes_is_400`、`test_ios_harness_frames_ui_overlays_camvid_gt_mask`(页面含图层+开关+端点URL+图例)。全量 **216 passed**。
+
+经验:**同一张图叠多来源信号时,每一层都要在图例里标清「来源」(真值/预测/检测)**,否则用户会把"来源间的分歧"误读成"系统自相矛盾";能让真值溯源可见(把推导中间产物画出来)会大幅提升信任标定。
+
+## 第四轮：把 iPhone「感知的可走区域」也画成绿区（2026-08-24）
+
+真实反馈:用户看到叠了 CamVid 真值绿区后说「三区方块好无意义…我的目标是 iPhone 感知出绿色可行走区域」。归因——**用户要的不是三个粗格子的状态,而是端上感知的那张可走区域图本身**;而这张图分割模型每帧都算了,只是从没画出来。
+
+改动(新增一层 + 双开关):
+
+- **iPhone 感知区域层**:harness 导出 `traversable_grid`(64×48 二值,详见 model-lab),前端 `_traversable_grid_png_datauri` 把它渲染成半透明绿 PNG,**内联 data-URI**(页面已分页、网格在内存,零额外请求),`image-rendering:pixelated` 保留「端上真实的粗分辨率」不糊。`.pred-mask` 绝对定位叠在 base 图与 SVG 之间。
+- **两块都绿、分别开关**:按用户要求两块都用 `#30d158` 绿。默认**只显示 iPhone 感知区域**(`predMaskToggle` 勾选),真值层默认关(`framesWrap` 初始带 `hide-gt-mask`),打开真值即可叠着看差距;提示「都是绿色,建议一次开一个更清楚」。
+- **图例改写**:头部 callout 说清「绿色可走区域两块:iPhone 感知(默认显示,就是你要的东西)/ CamVid 真值;两块叠着看就是差距,正是闭环要缩小的」。
+
+效果即证据:`road/0001TP_006690` 上 iPhone 绿区飘在**天空**、漏掉**路面**(IoU 0.00),真值绿区正确铺在路面——把"端上感知偏弱"从抽象指标变成一眼可见的画面。
+
+测试:`test_frames_ui_shows_iphone_perceived_region_by_default`(含 `pred-mask`/data-URI/`predMaskToggle checked`/默认 `hide-gt-mask`/GT 开关未勾)、`test_traversable_grid_png_and_mask_helpers`(坏网格返回 None 不渲染垃圾)。全量 **233 passed**。
+
+经验:当用户说某个降维输出「无意义」,往往是**中间那张更丰富的图被算了却没暴露**;把它原样画出来(哪怕粗、哪怕难看)比继续美化降维结果更有价值——难看恰恰是诚实,直接指向该改的是模型而非 UI。
+
 ## Backlog（进 roadmap）
 
 - 线级差距的每帧小标签（deviation/hit）直接标在卡片上。

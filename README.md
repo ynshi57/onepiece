@@ -250,6 +250,28 @@ onepiece/
 
 ## 快速开始
 
+### 在新 Mac 上一键安装
+
+已 clone 仓库后，用 `setup_mac.sh` 一次装好所需依赖、模型和工具（幂等，可重复跑）：
+
+```bash
+bash setup_mac.sh                    # 默认装四块：core + models + qwen + ios
+bash setup_mac.sh --skip-qwen --skip-ios   # 只装闭环平台 + harness + 模型
+bash setup_mac.sh --with-depth       # 额外装可选深度模型
+HF_ENDPOINT=https://hf-mirror.com bash setup_mac.sh --hf-mirror   # HF 走镜像
+```
+
+四个 profile（默认全开，`--skip-<name>` 单独跳过）：
+
+- `core`：Python venv + 后端/闭环平台依赖 + 离线感知 harness（`swift build`，无需 Xcode）。
+- `models`：Core ML 模型。通行分割模型从 Hugging Face 下载并转换，**需完整 Xcode.app 的 `coremlcompiler`**；缺失会明确跳过并提示（不静默失败）。
+- `qwen`：本地 Qwen 运行时（Ollama + `qwen2.5vl:3b`，数 GB）。
+- `ios`：完整 iOS 构建工具链（**需完整 Xcode + Ruby ≥ 3.2**）；签名与 TestFlight 需 Apple 账号，人工完成。
+
+脚本结尾会打印每项「已装 / 跳过 / 失败」摘要和下一步命令。仓库已自带 `YOLO11nObject.mlmodelc`；分割模型、深度模型、服务器 ONNX 预测器在 `.gitignore` 中，由上面步骤按需安装。
+
+### 手动分步
+
 ```bash
 # 0) 一次性创建虚拟环境
 python3 -m venv .venv && source .venv/bin/activate
