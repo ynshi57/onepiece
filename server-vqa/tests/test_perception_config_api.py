@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -180,14 +181,17 @@ def test_ios_harness_frames_ui_draws_overlay_and_gt_comparison(client, tmp_path)
     )
     assert resp.status_code == 200
     text = resp.text
-    # Image + SVG overlay with both object box and ROI rects present.
+    # Image + SVG overlay with the detected object box (the three legacy ROI status
+    # rectangles were removed — the guidance line + region layer are the signals).
     assert "frame-overlay" in text
     assert "<svg" in text
     assert "local-file" in text
     # Detected object label surfaces so the user sees what was recognized.
     assert "公交车" in text
-    # GT vs prediction comparison, including the honest "漏报" flag for f1.
-    assert "真实答案" in text
+    # The retired 3-region status table must be GONE, not just hidden.
+    assert "真实答案" not in text
+    assert "近/左/右三区" not in text
+    # The failure triage filter still exists (line-level honesty preserved).
     assert "漏报" in text
     # Frame without a prediction is shown honestly, not silently dropped.
     assert "该帧没有对应预测" in text
@@ -236,6 +240,114 @@ def test_ios_harness_frames_ui_draws_guidance_lines(client, tmp_path):
     # On-image "预测"/"真值" labels make the line self-explanatory.
     assert ">预测<" in text
     assert ">真值<" in text
+
+
+def test_camvid_mask_endpoint_renders_traversable_region(client, tmp_path, monkeypatch):
+    """The GT-provenance overlay tints exactly the traversable pixels and reuses
+    the same mask builder as the green line, so the two can't drift apart."""
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    from app.open_dataset_adapters import CAMVID_ROAD_COLORS
+
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    road = next(iter(CAMVID_ROAD_COLORS))
+    arr = np.zeros((10, 8, 3), dtype=np.uint8)
+    arr[5:, :] = road  # bottom half = road (traversable)
+    label = tmp_path / "0001TP_x_L.png"
+    Image.fromarray(arr).save(label)  # (H, W, 3) uint8 -> RGB inferred
+
+    resp = client.get(
+        "/diagnostics/camvid-mask",
+        params={"label": str(label), "classes": "walk", "w": 0},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+
+    pixels = np.asarray(Image.open(io.BytesIO(resp.content)).convert("RGBA"))
+    assert (pixels[5:, :, 3] > 0).all()  # road rows tinted
+    assert (pixels[:5, :, 3] == 0).all()  # non-road rows transparent
+    assert tuple(pixels[9, 0, :3]) == (48, 209, 88)  # Apple green tint
+
+
+def test_camvid_mask_rejects_path_outside_allowlist(client):
+    # /etc/hosts exists but is not under any allowed root -> refused, not read.
+    resp = client.get("/diagnostics/camvid-mask", params={"label": "/etc/hosts"})
+    assert resp.status_code == 403
+
+
+def test_camvid_mask_bad_classes_is_400(client, tmp_path, monkeypatch):
+    from PIL import Image
+
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    label = tmp_path / "x_L.png"
+    Image.new("RGB", (4, 4), (0, 0, 0)).save(label)
+    resp = client.get(
+        "/diagnostics/camvid-mask", params={"label": str(label), "classes": "fly"}
+    )
+    assert resp.status_code == 400
+
+
+def test_ios_harness_frames_ui_overlays_camvid_gt_mask(client, tmp_path, monkeypatch):
+    """Frames with a CamVid label carry a translucent GT-region layer + a toggle,
+    so users can verify the green line sits on the labeled road/sidewalk."""
+    from PIL import Image
+
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    label = tmp_path / "0001TP_x_L.png"
+    Image.new("RGB", (8, 6), (128, 64, 128)).save(label)
+    image = tmp_path / "0001TP_x.png"
+    Image.new("RGB", (8, 6), "#202020").save(image)
+
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "frame_id": "f1",
+                "image_path": str(image),
+                "label_path": str(label),
+                "traversable_classes": "walk",
+                "ground_truth": {
+                    "near_path_status": "candidateOpen",
+                    "left_front_status": "candidateOpen",
+                    "right_front_status": "candidateOpen",
+                    "focus_direction": "center",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    preds = tmp_path / "preds.jsonl"
+    preds.write_text(
+        json.dumps(
+            {
+                "frame_id": "f1",
+                "prediction": {
+                    "near_path_status": "candidateOpen",
+                    "left_front_status": "candidateOpen",
+                    "right_front_status": "candidateOpen",
+                    "focus_direction": "center",
+                    "prediction_source": "ios_coreml_offline_harness",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    resp = client.get(
+        "/diagnostics/datasets/ios-harness/frames/ui",
+        params={"manifest": str(manifest), "predictions": str(preds)},
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    assert "class='gt-mask'" in text
+    assert "/diagnostics/camvid-mask?label=" in text
+    assert "id='gtMaskToggle'" in text
+    assert "真值可走区域" in text
 
 
 def test_ios_harness_frames_ui_filters_by_result_category(client, tmp_path):
@@ -440,3 +552,253 @@ def test_ios_harness_parity_reports_unsupported_without_onnx(client, tmp_path):
     finally:
         import os
         os.remove(preds)
+
+
+# --- iPhone-perceived walkable region (traversable_grid) ---------------------
+
+def _grid_wire(rows, cols, ones):
+    cells = [0] * (rows * cols)
+    for (r, c) in ones:
+        cells[r * cols + c] = 1
+    return {"cols": cols, "rows": rows, "cells": cells}
+
+
+def test_traversable_grid_png_and_mask_helpers():
+    from app.diagnostic_api import _traversable_grid_png_datauri, _traversable_grid_to_mask
+
+    grid = _grid_wire(3, 4, [(0, 0), (0, 1)])
+    mask = _traversable_grid_to_mask(grid)
+    assert mask is not None and mask.shape == (3, 4)
+    assert mask[0, 0] and mask[0, 1] and not mask[2, 3]
+    uri = _traversable_grid_png_datauri(grid)
+    assert uri and uri.startswith("data:image/png;base64,")
+    # Malformed grids never render garbage — they return None (explicit "no region").
+    assert _traversable_grid_to_mask({"cols": 2, "rows": 2, "cells": [1, 0, 1]}) is None
+    assert _traversable_grid_png_datauri(None) is None
+
+
+def test_lane_grid_png_datauri_renders_and_rejects_garbage():
+    from app.diagnostic_api import _lane_grid_png_datauri
+
+    grid = _grid_wire(3, 4, [(0, 0), (2, 3)])
+    uri = _lane_grid_png_datauri(grid, (255, 214, 10, 210))
+    assert uri and uri.startswith("data:image/png;base64,")
+    # Same explicit "no lane" contract as the traversable grid: bad payload -> None.
+    assert _lane_grid_png_datauri(None, (255, 214, 10, 210)) is None
+    assert _lane_grid_png_datauri({"cols": 2, "rows": 2, "cells": [1]}, (0, 0, 0, 255)) is None
+
+
+def test_optional_harness_model_flags_injects_lane_model(tmp_path, monkeypatch):
+    from app.diagnostic_api import _optional_harness_model_flags
+
+    monkeypatch.setenv("VQASEE_MODELS_DIR", str(tmp_path))
+    # No compiled lane model yet -> no flag (harness falls back to no lane channel).
+    assert _optional_harness_model_flags() == []
+    # Once the old compiled pixel lane model exists, the run injects --lane-model so
+    # predictions carry the debug lane_grid.
+    lane = tmp_path / "VQASeeLaneSegmentation.mlmodelc"
+    lane.mkdir()
+    flags = _optional_harness_model_flags()
+    assert flags == ["--lane-model", str(lane)]
+    # The product lane-line path is UFLDv2 geometry. When that compiled model
+    # exists, inject it too so predictions carry lane_polylines.
+    ufld = tmp_path / "VQASeeLaneUFLDv2.mlmodelc"
+    ufld.mkdir()
+    flags = _optional_harness_model_flags()
+    assert flags == [
+        "--lane-model", str(lane),
+        "--lane-polyline-model", str(ufld),
+    ]
+
+
+def test_harness_run_lock_reports_running_and_clears_stale(tmp_path, monkeypatch):
+    from app import diagnostic_api
+
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text(json.dumps({"frame_id": "f1", "image_path": "/tmp/a.png"}) + "\n", encoding="utf-8")
+    lock = tmp_path / "m.lock.json"
+    monkeypatch.setattr(diagnostic_api, "_harness_lock_path", lambda _manifest: lock)
+
+    lock.write_text(json.dumps({
+        "pid": os.getpid(),
+        "manifest": str(manifest),
+        "started_at": "2026-08-30 10:00:00",
+    }), encoding="utf-8")
+    active = diagnostic_api._active_harness_run(manifest)
+    assert active is not None
+    assert active["pid"] == os.getpid()
+
+    lock.write_text(json.dumps({
+        "pid": 99999999,
+        "manifest": str(manifest),
+        "started_at": "2026-08-30 10:00:00",
+    }), encoding="utf-8")
+    assert diagnostic_api._active_harness_run(manifest) is None
+    assert not lock.exists()
+
+
+def test_ios_harness_frames_ui_prefers_lane_polylines_and_demotes_grid_debug(client, tmp_path):
+    """Product lane display is geometry-first: UFLDv2 polylines are the iPhone lane
+    output. The old pixel lane_grid may still render for debugging, but it must not
+    be labeled as the product lane line."""
+    manifest = tmp_path / "m.jsonl"
+    preds = tmp_path / "preds.jsonl"
+    manifest.write_text(json.dumps({
+        "frame_id": "f1",
+        "image_path": "/tmp/vqasee-nonexistent.png",
+        "ground_truth": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen",
+                          "right_front_status": "candidateOpen", "focus_direction": "center"},
+        "lane_grid_fine": {"cols": 4, "rows": 3, "cells": [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]},
+    }) + "\n", encoding="utf-8")
+    preds.write_text(json.dumps({
+        "frame_id": "f1",
+        "prediction": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen",
+                       "right_front_status": "candidateOpen", "focus_direction": "center",
+                       "prediction_source": "ios_coreml_offline_harness"},
+        "lane_polylines": [
+            {"lane_index": 1, "source": "rowAnchor",
+             "points": [{"x": 0.45, "y": 0.42}, {"x": 0.50, "y": 0.70}, {"x": 0.55, "y": 0.98}]}
+        ],
+        "lane_grid": {"cols": 4, "rows": 3, "cells": [0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0]},
+    }) + "\n", encoding="utf-8")
+
+    resp = client.get(
+        "/diagnostics/datasets/ios-harness/frames/ui",
+        params={"manifest": str(manifest), "predictions": str(preds)},
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    assert "iPhone 车道折线" in text
+    assert "旧像素车道调试层" in text
+    assert "iPhone 感知车道线" not in text
+    assert "CamVid 真值车道线" in text
+    # Legend makes the product/debug split explicit.
+    assert "黄色实线=iPhone 车道折线" in text
+    assert "黄块=旧像素车道调试层" in text
+    assert "蓝色=真值车道线" in text
+
+
+def test_region_pairs_only_when_both_grids_present():
+    from app.diagnostic_api import _region_pairs
+
+    manifest = [
+        {"frame_id": "f1", "traversable_grid": _grid_wire(2, 2, [(0, 0)])},
+        {"frame_id": "f2", "traversable_grid": _grid_wire(2, 2, [(0, 0)])},  # pred missing
+        {"frame_id": "f3"},  # GT missing
+    ]
+    preds = [
+        {"frame_id": "f1", "traversable_grid": _grid_wire(2, 2, [(0, 0)])},
+        {"frame_id": "f3", "traversable_grid": _grid_wire(2, 2, [(0, 0)])},
+    ]
+    pairs, dropped = _region_pairs(manifest, preds)
+    assert [p[0] for p in pairs] == ["f1"]
+    assert dropped == 2  # f2 (no pred grid) + f3 (no GT grid)
+
+
+def test_frames_ui_shows_iphone_perceived_region_by_default(client, tmp_path, monkeypatch):
+    """The per-frame page surfaces the iPhone-perceived walkable region as a green
+    layer (default ON), the GT layer defaults OFF, so the user sees exactly the
+    thing they asked for: what the device perceives as walkable."""
+    from PIL import Image
+
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    label = tmp_path / "0001TP_x_L.png"
+    Image.new("RGB", (8, 6), (128, 64, 128)).save(label)
+    image = tmp_path / "0001TP_x.png"
+    Image.new("RGB", (8, 6), "#202020").save(image)
+
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text(
+        json.dumps({
+            "frame_id": "f1",
+            "image_path": str(image),
+            "label_path": str(label),
+            "traversable_classes": "walk",
+            "traversable_grid": _grid_wire(3, 4, [(0, 0), (0, 1)]),
+            "ground_truth": {
+                "near_path_status": "candidateOpen",
+                "left_front_status": "candidateOpen",
+                "right_front_status": "candidateOpen",
+                "focus_direction": "center",
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+    preds = tmp_path / "preds.jsonl"
+    preds.write_text(
+        json.dumps({
+            "frame_id": "f1",
+            "prediction": {
+                "near_path_status": "candidateOpen",
+                "left_front_status": "candidateOpen",
+                "right_front_status": "candidateOpen",
+                "focus_direction": "center",
+                "prediction_source": "ios_coreml_offline_harness",
+            },
+            "traversable_grid": _grid_wire(3, 4, [(0, 0), (1, 1)]),
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    resp = client.get(
+        "/diagnostics/datasets/ios-harness/frames/ui",
+        params={"manifest": str(manifest), "predictions": str(preds)},
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    assert "class='pred-mask'" in text
+    assert "data:image/png;base64," in text
+    assert "id='predMaskToggle'" in text and "id='predMaskToggle' checked" in text
+    assert "iPhone 感知的可走区域" in text
+    # GT region defaults OFF: framesWrap starts hidden and its toggle is unchecked.
+    assert "id='framesWrap' class='hide-gt-mask'" in text
+    assert "id='gtMaskToggle' checked" not in text
+
+
+def test_ios_harness_ui_shows_region_iou_metrics(client, tmp_path):
+    """The aggregate page scores region IoU/recall/precision from the stored GT
+    grid + predicted grid — the quantitative form of "is the iPhone-perceived
+    walkable region close to truth"."""
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text(
+        "\n".join(
+            json.dumps({
+                "frame_id": fid,
+                "traversable_grid": _grid_wire(2, 2, [(0, 0), (0, 1)]),
+                "ground_truth": {
+                    "near_path_status": "candidateOpen",
+                    "left_front_status": "candidateOpen",
+                    "right_front_status": "candidateOpen",
+                    "focus_direction": "center",
+                },
+                "ground_truth_path": {"status": "insufficient", "coverage": 0.0, "lines": [], "source": "t"},
+            })
+            for fid in ("f1", "f2")
+        ) + "\n",
+        encoding="utf-8",
+    )
+    preds = tmp_path / "preds.jsonl"
+    preds.write_text(
+        "\n".join(
+            json.dumps({
+                "frame_id": fid,
+                "prediction": {"near_path_status": "candidateOpen", "focus_direction": "center"},
+                "traversable_grid": _grid_wire(2, 2, [(0, 0), (0, 1)]),
+            })
+            for fid in ("f1", "f2")
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+    resp = client.get(
+        "/diagnostics/datasets/ios-harness/ui",
+        params={"manifest": str(manifest), "predictions": str(preds)},
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    assert "可走区域指标" in text
+    assert "区域 IoU" in text
+    assert "覆盖率 recall" in text
+    assert "准确率 precision" in text
+    # Perfect overlap on both frames -> IoU 1.000 shown.
+    assert "1.000" in text

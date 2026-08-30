@@ -428,6 +428,7 @@ final class VQASeeTests: XCTestCase {
         changes: String = ""
     ) -> VqaDisplayResult {
         VqaDisplayResult(
+            frameID: "frame-test",
             scene: "hallway",
             objects: [],
             description: "正前方可通行。",
@@ -835,24 +836,39 @@ final class VQASeeTests: XCTestCase {
             millisecondsSinceLastBackendFrame: 1_000
         ) {} else { XCTFail("human should trigger backend") }
 
+        // Moderate scene change (>= threshold, < significant) is RATE-LIMITED: it is
+        // skipped within the Qwen cooldown and only sent once the interval elapses.
+        // This is the intended anti-spam contract; safety signals (human/quality/
+        // significant change) bypass it via the other cases.
         let changed = LocalVisionSignal(
             hasHuman: false, humanDirection: .unknown, brightness: 0.5,
             sceneChangeScore: WalkingFrameSendPolicy.sceneChangeThreshold,
             isTooDark: false, isLikelyCovered: false, analyzerFailed: false
         )
-        if case .send = WalkingFrameSendPolicy.decide(
+        if case .skip = WalkingFrameSendPolicy.decide(
             mode: .walking, signal: changed, hasQuestion: false, pendingSingleShot: false,
             millisecondsSinceLastBackendFrame: 1_000
-        ) {} else { XCTFail("scene change should trigger backend") }
+        ) {} else { XCTFail("moderate scene change within cooldown should be rate-limited") }
+        if case .send = WalkingFrameSendPolicy.decide(
+            mode: .walking, signal: changed, hasQuestion: false, pendingSingleShot: false,
+            millisecondsSinceLastBackendFrame: WalkingFrameSendPolicy.minimumQwenIntervalMs
+        ) {} else { XCTFail("moderate scene change should trigger backend after cooldown") }
 
+        // Quality risk (dark/covered) is ALSO rate-limited: within the cooldown it is
+        // skipped (already surfaced locally via voice/haptic — "画面质量风险已本地提示"),
+        // and rechecked at low frequency once the interval elapses.
         let dark = LocalVisionSignal(
             hasHuman: false, humanDirection: .unknown, brightness: 0.05,
             sceneChangeScore: 0.01, isTooDark: true, isLikelyCovered: false, analyzerFailed: false
         )
-        if case .send = WalkingFrameSendPolicy.decide(
+        if case .skip = WalkingFrameSendPolicy.decide(
             mode: .walking, signal: dark, hasQuestion: false, pendingSingleShot: false,
             millisecondsSinceLastBackendFrame: 1_000
-        ) {} else { XCTFail("quality risk should trigger backend") }
+        ) {} else { XCTFail("quality risk within cooldown should be rate-limited") }
+        if case .send = WalkingFrameSendPolicy.decide(
+            mode: .walking, signal: dark, hasQuestion: false, pendingSingleShot: false,
+            millisecondsSinceLastBackendFrame: WalkingFrameSendPolicy.minimumQwenIntervalMs
+        ) {} else { XCTFail("quality risk should trigger backend after cooldown") }
 
         let stable = LocalVisionSignal(
             hasHuman: false, humanDirection: .unknown, brightness: 0.5,
@@ -1048,11 +1064,15 @@ final class VQASeeTests: XCTestCase {
     }
 
     func testLocalPathGuidanceRightObjectFocusesRightFront() {
+        // Box must sit CLEARLY inside the right-front ROI and clear of the near
+        // corridor (near ROI extends to x=0.75); an object straddling the near
+        // corridor is intentionally focused .center (near dominates focus), so a
+        // right-front focus test must use a purely right-side box.
         let object = LocalPerceptionObject(
             kind: .obstacle,
             direction: .right,
             confidence: 0.88,
-            normalizedBoundingBox: CGRect(x: 0.70, y: 0.18, width: 0.18, height: 0.22)
+            normalizedBoundingBox: CGRect(x: 0.80, y: 0.18, width: 0.15, height: 0.22)
         )
         let perception = LocalPerceptionSignal(objects: [object], modelStatus: .loaded)
 
@@ -1097,6 +1117,200 @@ final class VQASeeTests: XCTestCase {
         )
 
         XCTAssertEqual(adjusted?.kind, .person)
+    }
+
+    // MARK: - G: role-conditioned N=5 multiclass traversability derivation
+
+    // logits order = [bg, road, sidewalk, lane, obstacle] (SegClass contract).
+    private static let sidewalkLogits: [Double] = [0, 0, 5, 0, 0]
+    private static let roadLogits: [Double] = [0, 5, 0, 0, 0]
+    private static let laneLogits: [Double] = [0, 0, 0, 5, 0]
+
+    func testMulticlassPedestrianTreatsSidewalkAsTraversable() {
+        // A walker's traversable surface is the sidewalk, NOT the road.
+        let onSidewalk = LocalTraversabilitySegmentationRunner.traversableProbability(
+            fromClassLogits: Self.sidewalkLogits, role: .pedestrian)
+        let onRoad = LocalTraversabilitySegmentationRunner.traversableProbability(
+            fromClassLogits: Self.roadLogits, role: .pedestrian)
+        XCTAssertNotNil(onSidewalk)
+        XCTAssertNotNil(onRoad)
+        XCTAssertGreaterThan(onSidewalk!, 0.9)
+        XCTAssertLessThan(onRoad!, 0.1)
+        // Same pixel, opposite verdict for the two roles: the core of 区分人车.
+        XCTAssertGreaterThan(onSidewalk!,
+            LocalTraversabilitySegmentationRunner.traversableProbability(
+                fromClassLogits: Self.sidewalkLogits, role: .vehicle)!)
+    }
+
+    func testMulticlassVehicleTreatsRoadAndLaneAsTraversable() {
+        // A driver's surface is the carriageway + lane markings, NOT the sidewalk.
+        let onRoad = LocalTraversabilitySegmentationRunner.traversableProbability(
+            fromClassLogits: Self.roadLogits, role: .vehicle)
+        let onLane = LocalTraversabilitySegmentationRunner.traversableProbability(
+            fromClassLogits: Self.laneLogits, role: .vehicle)
+        let onSidewalk = LocalTraversabilitySegmentationRunner.traversableProbability(
+            fromClassLogits: Self.sidewalkLogits, role: .vehicle)
+        XCTAssertGreaterThan(onRoad!, 0.9)
+        XCTAssertGreaterThan(onLane!, 0.9)
+        XCTAssertLessThan(onSidewalk!, 0.1)
+    }
+
+    func testMulticlassRejectsNonFiniteAndTooFewClasses() {
+        XCTAssertNil(LocalTraversabilitySegmentationRunner.traversableProbability(
+            fromClassLogits: [0, .nan, 5, 0, 0], role: .pedestrian))
+        // Fewer than 3 classes is the binary/single-channel path, not multiclass.
+        XCTAssertNil(LocalTraversabilitySegmentationRunner.traversableProbability(
+            fromClassLogits: [0, 5], role: .pedestrian))
+    }
+
+    func testPerceptionConfigWireParsesRoleAndDefaultsToPedestrian() {
+        func json(role: String?) -> Data {
+            let roleLine = role.map { "\"role\": \"\($0)\"," } ?? ""
+            return Data("""
+            {
+              "version": 1,
+              \(roleLine)
+              "roi": {
+                "near": {"x": 0.3, "y": 0.6, "w": 0.4, "h": 0.35},
+                "left": {"x": 0.05, "y": 0.4, "w": 0.3, "h": 0.3},
+                "right": {"x": 0.65, "y": 0.4, "w": 0.3, "h": 0.3}
+              },
+              "thresholds": {
+                "near_blocked_area": 0.82, "side_blocked_area": 0.86,
+                "seg_near_caution_ratio": 0.35, "seg_side_caution_ratio": 0.30,
+                "seg_traversable_pixel": 0.55
+              }
+            }
+            """.utf8)
+        }
+        XCTAssertEqual(PerceptionConfig.from(jsonData: json(role: "vehicle"))?.role, .vehicle)
+        XCTAssertEqual(PerceptionConfig.from(jsonData: json(role: nil))?.role, .pedestrian)
+        // An explicit unknown role is rejected (never silently coerced).
+        XCTAssertNil(PerceptionConfig.from(jsonData: json(role: "bogus")))
+        // Staged rollout defaults: without the flag the app keeps the binary model.
+        XCTAssertEqual(PerceptionConfig.default.useMulticlassSegmentation, false)
+        XCTAssertEqual(PerceptionConfig.from(jsonData: json(role: nil))?.useMulticlassSegmentation, false)
+        // Lane segmenter ships bundled → default ON (absent flag decodes to true).
+        XCTAssertEqual(PerceptionConfig.default.useLaneSegmentation, true)
+        XCTAssertEqual(PerceptionConfig.from(jsonData: json(role: nil))?.useLaneSegmentation, true)
+    }
+
+    func testPerceptionConfigWireParsesMulticlassFlag() {
+        let jsonOn = Data("""
+        {
+          "version": 2,
+          "use_multiclass_segmentation": true,
+          "roi": {
+            "near": {"x": 0.25, "y": 0.00, "w": 0.50, "h": 0.58},
+            "left": {"x": 0.00, "y": 0.05, "w": 0.42, "h": 0.62},
+            "right": {"x": 0.58, "y": 0.05, "w": 0.42, "h": 0.62}
+          },
+          "thresholds": {
+            "near_blocked_area": 0.82, "side_blocked_area": 0.86,
+            "seg_near_caution_ratio": 0.35, "seg_side_caution_ratio": 0.30,
+            "seg_traversable_pixel": 0.55
+          }
+        }
+        """.utf8)
+        XCTAssertEqual(PerceptionConfig.from(jsonData: jsonOn)?.useMulticlassSegmentation, true)
+    }
+
+    func testPerceptionConfigWireParsesLaneFlagOffOverride() {
+        let jsonOff = Data("""
+        {
+          "version": 2,
+          "use_lane_segmentation": false,
+          "roi": {
+            "near": {"x": 0.25, "y": 0.00, "w": 0.50, "h": 0.58},
+            "left": {"x": 0.00, "y": 0.05, "w": 0.42, "h": 0.62},
+            "right": {"x": 0.58, "y": 0.05, "w": 0.42, "h": 0.62}
+          },
+          "thresholds": {
+            "near_blocked_area": 0.82, "side_blocked_area": 0.86,
+            "seg_near_caution_ratio": 0.35, "seg_side_caution_ratio": 0.30,
+            "seg_traversable_pixel": 0.55
+          }
+        }
+        """.utf8)
+        XCTAssertEqual(PerceptionConfig.from(jsonData: jsonOff)?.useLaneSegmentation, false)
+    }
+
+    // MARK: - UFLDv2 lane polyline decoding
+
+    func testUFLDv2RowAnchorsDecodeIntoNormalizedLanePolyline() {
+        var loc = Array(repeating: 0.0, count: 5 * 3 * 4)
+        var exists = Array(repeating: 0.0, count: 2 * 3 * 4)
+        for row in 0..<3 {
+            loc[(3 * 3 * 4) + (row * 4) + 1] = 8.0
+            exists[(1 * 3 * 4) + (row * 4) + 1] = 8.0
+        }
+
+        let lanes = UFLDv2LaneDecoder.decodeRowAnchors(
+            locRow: loc,
+            existRow: exists,
+            numGrid: 5,
+            numRows: 3,
+            numLanes: 4,
+            rowAnchors: [0.42, 0.71, 1.0],
+            laneIndices: [1],
+            gateDivisor: 2.0
+        )
+
+        XCTAssertEqual(lanes.count, 1)
+        XCTAssertEqual(lanes[0].source, .rowAnchor)
+        XCTAssertEqual(lanes[0].laneIndex, 1)
+        XCTAssertEqual(lanes[0].points.count, 3)
+        XCTAssertEqual(lanes[0].points[0].x, 0.875, accuracy: 0.02)
+        XCTAssertEqual(lanes[0].points[0].y, 0.42, accuracy: 0.001)
+        XCTAssertEqual(lanes[0].points[2].y, 1.0, accuracy: 0.001)
+    }
+
+    func testUFLDv2ColAnchorsDecodeIntoNormalizedLanePolyline() {
+        var loc = Array(repeating: 0.0, count: 5 * 3 * 4)
+        var exists = Array(repeating: 0.0, count: 2 * 3 * 4)
+        for col in 0..<3 {
+            loc[(2 * 3 * 4) + (col * 4) + 0] = 8.0
+            exists[(1 * 3 * 4) + (col * 4) + 0] = 8.0
+        }
+
+        let lanes = UFLDv2LaneDecoder.decodeColAnchors(
+            locCol: loc,
+            existCol: exists,
+            numGrid: 5,
+            numCols: 3,
+            numLanes: 4,
+            colAnchors: [0.0, 0.5, 1.0],
+            laneIndices: [0],
+            gateDivisor: 2.0
+        )
+
+        XCTAssertEqual(lanes.count, 1)
+        XCTAssertEqual(lanes[0].source, .colAnchor)
+        XCTAssertEqual(lanes[0].laneIndex, 0)
+        XCTAssertEqual(lanes[0].points.count, 3)
+        XCTAssertEqual(lanes[0].points[0].x, 0.0, accuracy: 0.001)
+        XCTAssertEqual(lanes[0].points[1].x, 0.5, accuracy: 0.001)
+        XCTAssertEqual(lanes[0].points[0].y, 0.625, accuracy: 0.02)
+    }
+
+    func testUFLDv2DecoderDoesNotFabricateLaneWhenExistenceGateFails() {
+        var loc = Array(repeating: 0.0, count: 5 * 3 * 4)
+        var exists = Array(repeating: 0.0, count: 2 * 3 * 4)
+        loc[(3 * 3 * 4) + (0 * 4) + 1] = 8.0
+        exists[(1 * 3 * 4) + (0 * 4) + 1] = 8.0
+
+        let lanes = UFLDv2LaneDecoder.decodeRowAnchors(
+            locRow: loc,
+            existRow: exists,
+            numGrid: 5,
+            numRows: 3,
+            numLanes: 4,
+            rowAnchors: [0.42, 0.71, 1.0],
+            laneIndices: [1],
+            gateDivisor: 2.0
+        )
+
+        XCTAssertTrue(lanes.isEmpty)
     }
 
 }

@@ -4,6 +4,20 @@ import CoreVideo
 import Foundation
 import Vision
 
+/// Class-index contract of the N=5 CamVid multiclass segmentation model, matching
+/// the training/export script (`deploy/ios/finetune_fast_scnn_camvid_multiclass.py`)
+/// and the server `camvid_class_map`: 0 bg · 1 road · 2 sidewalk · 3 lane · 4
+/// obstacle. Single source of truth so the device derivation can never drift from
+/// how the model was trained.
+enum SegClass {
+    static let background = 0
+    static let road = 1
+    static let sidewalk = 2
+    static let lane = 3
+    static let obstacle = 4
+    static let count = 5
+}
+
 /// Optional RGB-only traversability/floor segmentation runner.
 ///
 /// Expected custom model contract for `VQASeeTraversabilitySegmentation`:
@@ -21,6 +35,18 @@ final class LocalTraversabilitySegmentationRunner {
             loadedModel = visionModel
         }
         self.visionModel = loadedModel
+    }
+
+    /// Load from an explicit compiled `.mlmodelc` URL (offline evaluation path): lets
+    /// the harness point at the N=5 multiclass model WITHOUT bundling it into the
+    /// shipping source tree (mirrors the lane runner). Returns nil if it won't load
+    /// so the caller can fail loud rather than silently score an empty segmenter.
+    init?(compiledModelURL: URL) {
+        guard let mlModel = try? MLModel(contentsOf: compiledModelURL),
+              let visionModel = try? VNCoreMLModel(for: mlModel) else {
+            return nil
+        }
+        self.visionModel = visionModel
     }
 
     var isAvailable: Bool {
@@ -42,7 +68,8 @@ final class LocalTraversabilitySegmentationRunner {
     func analyzeDetailed(
         pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation = .right,
-        config: PerceptionConfig = .default
+        config: PerceptionConfig = .default,
+        emitGrid: Bool = false
     ) -> LocalSegmentationResult? {
         guard let visionModel else { return nil }
         let request = VNCoreMLRequest(model: visionModel)
@@ -55,21 +82,48 @@ final class LocalTraversabilitySegmentationRunner {
         }
         for result in request.results ?? [] {
             if let pixelBufferObservation = result as? VNPixelBufferObservation,
-               let res = Self.resultFromPixelBuffer(pixelBufferObservation.pixelBuffer, config: config) {
+               let res = Self.resultFromPixelBuffer(pixelBufferObservation.pixelBuffer, config: config, emitGrid: emitGrid) {
                 return res
             }
             if let feature = result as? VNCoreMLFeatureValueObservation,
                let array = feature.featureValue.multiArrayValue,
-               let sampler = Self.sampler(fromMultiArray: array) {
-                return Self.result(width: sampler.width, height: sampler.height, sample: sampler.sample, config: config)
+               let sampler = Self.sampler(fromMultiArray: array, config: config) {
+                return Self.result(width: sampler.width, height: sampler.height, sample: sampler.sample, config: config, emitGrid: emitGrid)
             }
         }
         return nil
     }
 
-    /// Build both cue and guidance line from one traversability sampler.
-    private static func result(
+    /// Coarse traversable region raster from the SAME sampler that feeds the cue
+    /// and centerline. Binary (1 = traversable, prob >= seg threshold) so it maps
+    /// exactly to what the device treats as walkable. Row-major, row 0 = TOP of the
+    /// image, so it renders aligned with the frame image and the GT mask.
+    static let gridCols = 64
+    static let gridRows = 48
+
+    private static func traversableGrid(
         width: Int, height: Int, sample: (Int, Int) -> Double?, config: PerceptionConfig
+    ) -> TraversableGrid {
+        let threshold = config.thresholds.segTraversablePixel
+        var cells = [Int](repeating: 0, count: gridCols * gridRows)
+        for r in 0..<gridRows {
+            let yRaw = Int((Double(r) + 0.5) / Double(gridRows) * Double(height))
+            let y = min(max(yRaw, 0), height - 1)
+            for c in 0..<gridCols {
+                let xRaw = Int((Double(c) + 0.5) / Double(gridCols) * Double(width))
+                let x = min(max(xRaw, 0), width - 1)
+                if let value = sample(x, y), value >= threshold {
+                    cells[r * gridCols + c] = 1
+                }
+            }
+        }
+        return TraversableGrid(cols: gridCols, rows: gridRows, cells: cells)
+    }
+
+    /// Build cue + guidance line (and, on the harness path, the region grid) from
+    /// one traversability sampler.
+    private static func result(
+        width: Int, height: Int, sample: (Int, Int) -> Double?, config: PerceptionConfig, emitGrid: Bool
     ) -> LocalSegmentationResult {
         let cue = cueValue(width: width, height: height, sample: sample, config: config)
         let path = GuidancePathBuilder.centerline(
@@ -79,7 +133,8 @@ final class LocalTraversabilitySegmentationRunner {
             threshold: config.thresholds.segTraversablePixel,
             source: "ios_segmentation"
         )
-        return LocalSegmentationResult(cue: cue, guidancePath: path)
+        let grid = emitGrid ? traversableGrid(width: width, height: height, sample: sample, config: config) : nil
+        return LocalSegmentationResult(cue: cue, guidancePath: path, traversableGrid: grid)
     }
 
     /// Compute cue + guidance line by reading the segmentation buffer DIRECTLY
@@ -88,7 +143,7 @@ final class LocalTraversabilitySegmentationRunner {
     /// the pixels, so materializing the whole grid every frame was pure waste on
     /// the device's real-time path.
     private static func resultFromPixelBuffer(
-        _ pixelBuffer: CVPixelBuffer, config: PerceptionConfig
+        _ pixelBuffer: CVPixelBuffer, config: PerceptionConfig, emitGrid: Bool
     ) -> LocalSegmentationResult? {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
@@ -110,11 +165,11 @@ final class LocalTraversabilitySegmentationRunner {
             }
             return nil
         }
-        return result(width: width, height: height, sample: sample, config: config)
+        return result(width: width, height: height, sample: sample, config: config, emitGrid: emitGrid)
     }
 
     private static func sampler(
-        fromMultiArray array: MLMultiArray
+        fromMultiArray array: MLMultiArray, config: PerceptionConfig
     ) -> (width: Int, height: Int, sample: (Int, Int) -> Double?)? {
         let shape = array.shape.map { $0.intValue }
         guard shape.count >= 2 else { return nil }
@@ -153,12 +208,52 @@ final class LocalTraversabilitySegmentationRunner {
                 return value.isFinite ? value : nil
             }
         } else {
-            // >2 classes would need a known traversable class index; we don't have
-            // one here. Fail loudly (nil) rather than silently thresholding a
-            // wrong/raw logit and fabricating a route.
-            return nil
+            // N=5 multiclass (0 bg, 1 road, 2 sidewalk, 3 lane, 4 obstacle): the
+            // traversable region is ROLE-CONDITIONED. Return the softmax mass of the
+            // role's PRIMARY classes (walker → sidewalk; driver → road+lane) so the
+            // SAME per-frame logits yield a walker's OR a driver's walkable surface.
+            // A pixel whose primary-class softmax >= segTraversablePixel is where
+            // argmax lands on a primary class, i.e. this equals argmax-in-primary
+            // once thresholded, but stays smooth for the centerline builder.
+            guard !config.role.primaryClassIndices.filter({ $0 >= 0 && $0 < classCount }).isEmpty else {
+                // The requested role has no valid class in this model — fail loudly
+                // rather than fabricate a route from an unmapped class.
+                return nil
+            }
+            let role = config.role
+            sample = { x, y in
+                guard x >= 0, x < width, y >= 0, y < height else { return nil }
+                let base = y * hStride + x * wStride
+                var logits = [Double](repeating: 0, count: classCount)
+                for c in 0..<classCount { logits[c] = array[base + c * cStride].doubleValue }
+                return traversableProbability(fromClassLogits: logits, role: role)
+            }
         }
         return (width, height, sample)
+    }
+
+    /// Role-conditioned traversable probability from ONE pixel's per-class logits:
+    /// the softmax mass on the role's primary classes (walker → sidewalk; driver →
+    /// road+lane). Thresholding this at `segTraversablePixel` is equivalent to
+    /// "argmax lands on a primary class" when the threshold is >= 0.5, while staying
+    /// smooth for the centerline builder. Internal so it is unit-testable without a
+    /// Core ML model. Returns nil on non-finite logits or no valid primary class.
+    static func traversableProbability(
+        fromClassLogits logits: [Double], role: PerceptionRole
+    ) -> Double? {
+        guard logits.count >= 3, logits.allSatisfy({ $0.isFinite }) else { return nil }
+        let primary = role.primaryClassIndices.filter { $0 >= 0 && $0 < logits.count }
+        guard !primary.isEmpty else { return nil }
+        let maxLogit = logits.max() ?? 0
+        var total = 0.0
+        var primaryMass = 0.0
+        for (c, l) in logits.enumerated() {
+            let e = exp(l - maxLogit)
+            total += e
+            if primary.contains(c) { primaryMass += e }
+        }
+        guard total > 0 else { return nil }
+        return primaryMass / total
     }
 
     private static func cueValue(width: Int, height: Int, sample: (Int, Int) -> Double?, config: PerceptionConfig) -> LocalSegmentationCueSignal? {

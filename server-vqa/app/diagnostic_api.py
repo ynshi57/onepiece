@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import html
 import io
@@ -16,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from PIL import Image
@@ -36,10 +38,16 @@ from app.case_store import (
 )
 from app.diagnostic_capture import capture_root, get_session_dir, list_sessions
 from app.diagnostic_report import generate_report_from_session_dir
-from app.eval_baseline import list_baselines, load_baseline, save_baseline
-from app.open_dataset_adapters import create_bdd100k_drivable_manifest, create_camvid_manifest
+from app.eval_baseline import baseline_root, list_baselines, load_baseline, save_baseline
+from app.open_dataset_adapters import (
+    create_bdd100k_drivable_manifest,
+    create_camvid_manifest,
+    camvid_traversable_colors,
+    _camvid_traversability_mask,
+)
 from app.guidance_path import GuidancePath, GuidancePathError
 from app.guidance_path_eval import evaluate_guidance_paths
+from app.region_grid import evaluate_region_grids
 from app.path_dataset_eval import evaluate_path_guidance, load_jsonl
 from app.path_dataset_import import create_manifest_from_folders
 from app.path_manifest_export import export_session_path_manifest, manifest_to_jsonl
@@ -120,7 +128,11 @@ def _html_page(title: str, body: str) -> HTMLResponse:
     .field-grid textarea {{ width: 100%; box-sizing: border-box; }}
     .frame-overlay {{ position: relative; display: inline-block; max-width: 420px; }}
     .frame-overlay img {{ display: block; width: 100%; height: auto; }}
+    .frame-overlay .gt-mask {{ position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }}
+    .frame-overlay .pred-mask {{ position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; }}
     .frame-overlay svg {{ position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }}
+    .hide-gt-mask .gt-mask {{ display: none; }}
+    .hide-pred-mask .pred-mask {{ display: none; }}
     .explain {{ color: #8e8e93; font-size: 0.92rem; margin-top: 4px; }}
     details {{ background: #151518; border: 1px solid #3a3a3c; border-radius: 12px; padding: 10px; margin: 12px 0; }}
     summary {{ cursor: pointer; font-weight: 700; }}
@@ -227,6 +239,408 @@ def delete_label(session_id: str, label_index: int) -> dict:
     return {"status": "deleted", "label_index": label_index}
 
 
+# --- Capability overview (single north-star scorecard) -----------------------
+# The platform grew one evaluation page at a time; users could see many scattered
+# metrics but never a single answer to "how good is iPhone local perception right
+# now, and is it getting better or worse?". These helpers read the committed,
+# gate-protected baselines (the authoritative current level) and turn them into a
+# plain-language verdict + trend so the landing page can lead with that answer.
+CAPABILITY_REGION_BASELINE = "camvid-ios-region"
+CAPABILITY_GUIDANCE_BASELINE = "camvid-ios-guidance"
+CAPABILITY_ROLE_BASELINE = "camvid-ios-role"
+CAPABILITY_DRIVE_BASELINE = "camvid-ios-drive"
+CAPABILITY_LANE_BASELINE = "camvid-ios-lane"
+CAPABILITY_OBSTACLE_BASELINE = "camvid-ios-obstacle"
+CAPABILITY_REPORT_FILE = "camvid-ios-report.json"
+# Above this share of "walkable" cells actually being road, a walker is being
+# routed into traffic — treated as a safety red-line for the walk role.
+ROLE_ROAD_AS_PRIMARY_REDLINE = 0.20
+
+
+def _capability_report_metrics() -> Optional[dict]:
+    """Latest full eval report (live region + guidance metrics), if present.
+
+    Used only for trend vs the committed baseline. Absent report is a normal
+    state (never crash the overview), not a silent failure of the baselines.
+    """
+    path = baseline_root() / CAPABILITY_REPORT_FILE
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _capability_snapshot() -> dict:
+    """Compute the iPhone-perception capability verdict from committed baselines.
+
+    Pure/JSON-only so it is unit-testable and safe to commit. Returns
+    ``{"available": False, "reason": ...}`` when a baseline is missing rather than
+    fabricating a fake score (no silent pass).
+    """
+    region_b = load_baseline(CAPABILITY_REGION_BASELINE)
+    guidance_b = load_baseline(CAPABILITY_GUIDANCE_BASELINE)
+    missing = []
+    if not region_b:
+        missing.append("可走区域")
+    if not guidance_b:
+        missing.append("引导线")
+    if missing:
+        return {
+            "available": False,
+            "reason": "尚无「" + "/".join(missing) + "」能力基线。请先在数据集上跑一次「iPhone 真身评估」并保存基线，这里才能给出定级。",
+        }
+
+    region = region_b.get("metrics", {}) if isinstance(region_b.get("metrics"), dict) else {}
+    guidance = guidance_b.get("metrics", {}) if isinstance(guidance_b.get("metrics"), dict) else {}
+
+    def _f(d: dict, k: str) -> float:
+        try:
+            return float(d.get(k) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _i(d: dict, k: str) -> int:
+        try:
+            return int(d.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    iou = _f(region, "mean_iou")
+    precision = _f(region, "mean_precision")
+    recall = _f(region, "mean_recall")
+    region_false_go = _i(region, "region_false_go_frames")
+    region_miss = _i(region, "region_miss_frames")
+    scored = _i(region, "scored")
+    hit = _f(guidance, "hit_rate")
+    coverage = _f(guidance, "pred_coverage")
+    deviation = _f(guidance, "mean_deviation")
+    line_false_go = _i(guidance, "false_go_frames")
+    missed_line = _i(guidance, "missed_path_frames")
+    frames = _i(guidance, "frames")
+
+    # Role-conditioned (walk) baseline is optional: it measures against a DIFFERENT
+    # truth definition (sidewalk=walkable, road=caution), so we surface it as its own
+    # honest section rather than folding it into the binary-GT `safe` verdict.
+    role_b = load_baseline(CAPABILITY_ROLE_BASELINE)
+    role_section = None
+    if role_b:
+        rm = role_b.get("metrics", {}) if isinstance(role_b.get("metrics"), dict) else {}
+        role_section = {
+            "road_as_primary_rate": _f(rm, "mean_road_as_primary_rate"),
+            "primary_recall": _f(rm, "mean_primary_recall"),
+            "lane_coverage": _f(rm, "mean_lane_coverage"),
+            "obstacle_overlap_rate": _f(rm, "mean_obstacle_overlap_rate"),
+            "road_as_primary_frames": _i(rm, "road_as_primary_frames"),
+            "obstacle_overlap_frames": _i(rm, "obstacle_overlap_frames"),
+            "scored": _i(rm, "scored"),
+        }
+
+    # Driving-role baseline (SAME binary device grid, scored against the DRIVER's
+    # truth: road=primary, sidewalk=caution/obstacle). The contrast walk-vs-drive is
+    # the whole point of "区分人车": one prediction can be safe for a driver yet
+    # dangerous for a walker. Optional; absent => no drive section.
+    drive_b = load_baseline(CAPABILITY_DRIVE_BASELINE)
+    drive_section = None
+    if drive_b:
+        dm = drive_b.get("metrics", {}) if isinstance(drive_b.get("metrics"), dict) else {}
+        drive_section = {
+            "road_recall": _f(dm, "mean_primary_recall"),
+            "sidewalk_as_road_rate": _f(dm, "mean_road_as_primary_rate"),
+            "sidewalk_as_road_frames": _i(dm, "road_as_primary_frames"),
+            "obstacle_overlap_frames": _i(dm, "obstacle_overlap_frames"),
+            "scored": _i(dm, "scored"),
+        }
+
+    # Lane-marking capability (dedicated binary lane segmenter, held-out CamVid
+    # tail). Optional and honest: strict pixel IoU on a thin class is low by
+    # nature, so the card leads with the tolerance-band recall/precision and states
+    # the geometry + on-device caveats. Absent baseline => no lane card (no fake).
+    lane_b = load_baseline(CAPABILITY_LANE_BASELINE)
+    lane_section = None
+    if lane_b:
+        lm = lane_b.get("metrics", {}) if isinstance(lane_b.get("metrics"), dict) else {}
+        lane_section = {
+            "mean_recall_tol": _f(lm, "mean_recall_tol"),
+            "mean_precision_tol": _f(lm, "mean_precision_tol"),
+            "mean_iou": _f(lm, "mean_iou"),
+            "lane_miss_frames": _i(lm, "lane_miss_frames"),
+            "lane_frames": _i(lm, "lane_frames"),
+            "tol": _i(lm, "tol"),
+            "scored": _i(lm, "scored"),
+            "on_device": bool(lane_b.get("on_device", False)),
+        }
+
+    # Obstacle capability (YOLO boxes vs CamVid obstacle pixels). Optional and
+    # honest: this is a coverage PROXY (CamVid has no GT boxes), so the card says so.
+    obstacle_b = load_baseline(CAPABILITY_OBSTACLE_BASELINE)
+    obstacle_section = None
+    if obstacle_b:
+        om = obstacle_b.get("metrics", {}) if isinstance(obstacle_b.get("metrics"), dict) else {}
+        obstacle_section = {
+            "coverage_recall": _f(om, "mean_coverage_recall"),
+            "box_precision": _f(om, "mean_box_precision"),
+            "obstacle_miss_frames": _i(om, "obstacle_miss_frames"),
+            "obstacle_frames": _i(om, "obstacle_frames"),
+            "scored": _i(om, "scored"),
+        }
+
+    safe = region_false_go == 0 and line_false_go == 0
+    if iou >= 0.85:
+        level = "优"
+    elif iou >= 0.70:
+        level = "中上"
+    elif iou >= 0.50:
+        level = "中"
+    else:
+        level = "偏弱"
+    miss_ratio = (region_miss / scored) if scored else 0.0
+    conservative = recall < 0.90 or miss_ratio > 0.05
+
+    if safe and conservative:
+        summary = f"当前「{level}·偏保守但安全」：敢报的基本准，但该说能走的地方它常常没说。"
+    elif safe:
+        summary = f"当前「{level}·稳」：可走区域和引导线都准，且不冒进。"
+    else:
+        summary = f"当前「{level}·有冒进风险」：存在把不可走当可走 / 无路硬画的帧，需优先修安全侧。"
+
+    # Weakness → next step (owner is 全麦 for model recall).
+    weakness_bits = []
+    if region_miss:
+        weakness_bits.append(f"{region_miss}/{scored} 帧漏可走（召回 {recall:.0%}）")
+    if missed_line:
+        weakness_bits.append(f"{missed_line}/{frames} 帧漏引导线")
+    if not safe:
+        weakness_bits.append(f"区域误判可走 {region_false_go} 帧 / 引导线硬画 {line_false_go} 帧")
+    if weakness_bits:
+        weakness = "，".join(weakness_bits) + "。建议用真机帧微调提升召回（全麦），Phase 2 已在留出集证明可将漏报降到 0。"
+    else:
+        weakness = "无明显短板；可扩大到更多真实场景（室内、雨天、夜间）验证泛化。"
+
+    # Trend vs committed baseline (only if a live report exists).
+    report = _capability_report_metrics()
+    trend = {"status": "first", "text": "已建立门禁基线：下次「iPhone 真身评估」若退步会被门禁拦住。"}
+    if isinstance(report, dict):
+        r_live = report.get("region") if isinstance(report.get("region"), dict) else {}
+        g_live = report.get("guidance_line") if isinstance(report.get("guidance_line"), dict) else {}
+        d_iou = _f(r_live, "mean_iou") - iou
+        d_hit = _f(g_live, "hit_rate") - hit
+        eps = 1e-4
+        if abs(d_iou) < eps and abs(d_hit) < eps:
+            trend = {"status": "flat", "text": "最近一次评估与门禁基线持平：当前即基线，没有退步。"}
+        else:
+            parts = []
+            if abs(d_iou) >= eps:
+                parts.append(f"可走区域 IoU {'+' if d_iou >= 0 else ''}{d_iou:.03f}")
+            if abs(d_hit) >= eps:
+                parts.append(f"引导线命中 {'+' if d_hit >= 0 else ''}{d_hit:.03f}")
+            worse = d_iou < -eps or d_hit < -eps
+            trend = {
+                "status": "down" if worse else "up",
+                "text": ("⚠ 相比基线退步：" if worse else "↑ 相比基线变好：") + "、".join(parts),
+            }
+
+    return {
+        "available": True,
+        "level": level,
+        "safe": safe,
+        "summary": summary,
+        "weakness": weakness,
+        "trend": trend,
+        "scored": scored,
+        "source": str(region_b.get("source") or ""),
+        "region": {
+            "mean_iou": iou,
+            "mean_precision": precision,
+            "mean_recall": recall,
+            "region_false_go_frames": region_false_go,
+            "region_miss_frames": region_miss,
+            "scored": scored,
+        },
+        "guidance": {
+            "hit_rate": hit,
+            "pred_coverage": coverage,
+            "mean_deviation": deviation,
+            "false_go_frames": line_false_go,
+            "missed_path_frames": missed_line,
+            "frames": frames,
+        },
+        "role": role_section,
+        "drive": drive_section,
+        "lane": lane_section,
+        "obstacle": obstacle_section,
+    }
+
+
+def _capability_scorecard_html() -> str:
+    """Render the capability scorecard for the diagnostics landing page."""
+    snap = _capability_snapshot()
+    if not snap.get("available"):
+        return (
+            "<div class='hero'>"
+            "<h1>iPhone 本地感知能力总览</h1>"
+            "<div class='status error'><b>尚无能力基线</b>"
+            f"<p class='hint'>{html.escape(str(snap.get('reason', '')))}</p>"
+            "<p><a href='/diagnostics/datasets/ui'>去跑一次 iPhone 真身评估 →</a></p></div></div>"
+        )
+
+    region = snap["region"]
+    guidance = snap["guidance"]
+    trend = snap["trend"]
+    safe = snap["safe"]
+
+    def _pct(v: float) -> str:
+        return f"{v * 100:.0f}%"
+
+    region_card = (
+        "<div class='card'>"
+        "<h2>看得准 · 可走区域</h2>"
+        f"<p style='font-size:2rem;font-weight:800'>IoU {region['mean_iou']:.02f}</p>"
+        f"<p class='muted'>精度 {_pct(region['mean_precision'])} · 召回 {_pct(region['mean_recall'])}</p>"
+        f"<p class='muted'>误判可走 {region['region_false_go_frames']} 帧 · 漏可走 {region['region_miss_frames']}/{region['scored']} 帧</p>"
+        "<p class='explain'>iPhone 分割出的可走区域与 CamVid 真值的像素重合度。精度高=不乱说能走。</p>"
+        "</div>"
+    )
+    line_card = (
+        "<div class='card'>"
+        "<h2>画得对 · 引导线</h2>"
+        f"<p style='font-size:2rem;font-weight:800'>命中 {_pct(guidance['hit_rate'])}</p>"
+        f"<p class='muted'>横向误差 {guidance['mean_deviation']:.02f} · 覆盖 {_pct(guidance['pred_coverage'])}</p>"
+        f"<p class='muted'>无路硬画 {guidance['false_go_frames']} 帧 · 漏线 {guidance['missed_path_frames']}/{guidance['frames']} 帧</p>"
+        "<p class='explain'>由可走区域推导出的通行引导线，落在真值走廊内的比例。</p>"
+        "</div>"
+    )
+    safe_border = "#30d158" if safe else "#ff453a"
+    safe_head = "宁可保守不冒进" if safe else "存在冒进帧，需优先修"
+    safe_big = "0 冒进帧" if safe else f"{region['region_false_go_frames'] + guidance['false_go_frames']} 冒进帧"
+    safe_card = (
+        f"<div class='card' style='border-color:{safe_border}'>"
+        "<h2>安全侧 · 会不会冒进</h2>"
+        f"<p style='font-size:2rem;font-weight:800;color:{safe_border}'>{safe_big}</p>"
+        f"<p class='muted'>{html.escape(safe_head)}</p>"
+        "<p class='explain'>「冒进」=把不可走当可走、或无路硬画引导线。这是最重要的安全指标。</p>"
+        "</div>"
+    )
+
+    # Lane-marking capability card. Leads with tolerance-band recall/precision
+    # (strict pixel IoU on a thin class is harsh); states honestly that only lane
+    # PIXELS are modelled (no geometry) and whether it is on-device yet.
+    lane = snap.get("lane")
+    lane_card = ""
+    if lane:
+        lane_dev = "已上设备" if lane.get("on_device") else "尚未捆绑（仅离线）"
+        lane_card = (
+            "<div class='card'>"
+            "<h2>车道线 · 找得到吗</h2>"
+            f"<p style='font-size:2rem;font-weight:800'>召回 {_pct(lane['mean_recall_tol'])}</p>"
+            f"<p class='muted'>精度 {_pct(lane['mean_precision_tol'])}（容差 {lane['tol']}px）· "
+            f"漏车道 {lane['lane_miss_frames']}/{lane['lane_frames']} 帧</p>"
+            f"<p class='muted'>严格像素 IoU {lane['mean_iou']:.02f}（细线天然偏低，看容差带）· 留出集 {lane['scored']} 帧</p>"
+            "<p class='explain'>专用二值车道分割模型在 CamVid 留出集(Seq05V)上的表现。"
+            f"<b>只分割车道像素、不建模车道几何/自车道</b>；设备端<b>{html.escape(lane_dev)}</b>。</p>"
+            "</div>"
+        )
+
+    # Obstacle capability card. Safety framing: coverage recall = of CamVid obstacle
+    # pixels, how many the YOLO boxes cover (low = it does NOT see obstacles). Honest
+    # that this is a coverage proxy, not detection mAP (CamVid has no GT boxes).
+    obstacle = snap.get("obstacle")
+    obstacle_card = ""
+    if obstacle:
+        rec = obstacle["coverage_recall"]
+        obs_border = "#30d158" if rec >= 0.70 else ("#ff9f0a" if rec >= 0.40 else "#ff453a")
+        obstacle_card = (
+            f"<div class='card' style='border-color:{obs_border}'>"
+            "<h2>障碍物 · 看得见吗</h2>"
+            f"<p style='font-size:2rem;font-weight:800;color:{obs_border}'>覆盖召回 {_pct(rec)}</p>"
+            f"<p class='muted'>落点精度 {_pct(obstacle['box_precision'])} · "
+            f"漏障碍 {obstacle['obstacle_miss_frames']}/{obstacle['obstacle_frames']} 帧</p>"
+            "<p class='explain'>YOLO 检测框覆盖到 CamVid 障碍像素(车/人/自行车等)的比例。"
+            "<b>覆盖代理指标、非检测 mAP</b>(CamVid 无真值框);低=没看见该看见的障碍。</p>"
+            "</div>"
+        )
+
+    trend_border = {"down": "#ff453a", "up": "#30d158", "flat": "#3a3a3c", "first": "#2f6f9f"}.get(trend["status"], "#3a3a3c")
+    scored = snap["scored"]
+    hero = (
+        "<div class='hero'>"
+        "<h1>iPhone 本地感知能力总览</h1>"
+        f"<p class='hint' style='font-size:1.05rem'>{html.escape(snap['summary'])}</p>"
+        f"<p><span class='pill'>数据集 CamVid</span><span class='pill'>{scored} 帧</span>"
+        "<span class='pill'>离线 harness</span><span class='pill'>无深度 · 相机分支</span></p>"
+        "<p class='explain'>诚实边界：这是 CamVid 户外街景上的离线数值，非真机体验；室内/雨夜等其它场景不保证一样。</p>"
+        "</div>"
+    )
+    trend_card = (
+        f"<div class='card' style='border-color:{trend_border}'>"
+        "<h2>变好还是变差</h2>"
+        f"<p>{html.escape(trend['text'])}</p>"
+        "<p class='explain'>门禁受 <code>guidance</code> + <code>region</code> 两条基线保护；退役的三区状态不再参与门禁。</p>"
+        "</div>"
+    )
+    weakness_card = (
+        "<div class='card'>"
+        "<h2>下一步修哪</h2>"
+        f"<p>{html.escape(snap['weakness'])}</p>"
+        "</div>"
+    )
+
+    # Role-conditioned (walk) red-line: how often the device would route a walker
+    # onto the road. Shown only when a role baseline exists; measured against a
+    # DIFFERENT truth (sidewalk=walkable) so it carries its own honest framing.
+    role = snap.get("role")
+    role_card = ""
+    if role:
+        ras = role["road_as_primary_rate"]
+        over_redline = ras > ROLE_ROAD_AS_PRIMARY_REDLINE
+        role_border = "#ff453a" if over_redline else "#30d158"
+        role_card = (
+            f"<div class='card' style='border-color:{role_border}'>"
+            "<h2>行人角色 · 可走区谁说了算</h2>"
+            f"<p style='font-size:2rem;font-weight:800;color:{role_border}'>马路误当人行道 {_pct(ras)}</p>"
+            f"<p class='muted'>{role['road_as_primary_frames']}/{role['scored']} 帧会把行人引到马路上</p>"
+            f"<p class='muted'>人行道召回 {_pct(role['primary_recall'])} · 车道线覆盖 {_pct(role['lane_coverage'])} · 障碍重叠 {role['obstacle_overlap_frames']} 帧</p>"
+            "<p class='explain'>按行人角色真值（人行道=可走、马路=慎行）衡量：当前设备仍是二值「可走区」，"
+            "<b>没有人行道/马路边界与车道线通道</b>，所以大量把马路当人行道。修复=<b>T2 多类分割</b>"
+            "（CamVid 微调 → Core ML N 类）+ 专用车道模型。</p>"
+            "</div>"
+        )
+
+    # Driving-role card, right beside the walk card, to make the "区分人车" contrast
+    # unmistakable: the SAME device grid is near-perfect for a driver (road recall
+    # high, ~0 sidewalk-as-road frames) yet dangerous for a walker (above).
+    drive = snap.get("drive")
+    drive_card = ""
+    if drive:
+        d_over = drive["sidewalk_as_road_frames"] > 0
+        d_border = "#ff453a" if d_over else "#30d158"
+        drive_card = (
+            f"<div class='card' style='border-color:{d_border}'>"
+            "<h2>驾驶角色 · 可走区谁说了算</h2>"
+            f"<p style='font-size:2rem;font-weight:800;color:{d_border}'>人行道误当车道 {_pct(drive['sidewalk_as_road_rate'])}</p>"
+            f"<p class='muted'>{drive['sidewalk_as_road_frames']}/{drive['scored']} 帧把车引上人行道 · 道路召回 {_pct(drive['road_recall'])}</p>"
+            f"<p class='muted'>越界到人行道/行人区 {drive['obstacle_overlap_frames']} 帧</p>"
+            "<p class='explain'>同一套二值可走区，按<b>驾驶</b>真值（马路=可走、人行道=禁区）衡量：对驾驶者"
+            "<b>近乎安全</b>——正说明<b>可通行区域必须区分人车</b>，一份预测对司机安全却会把行人引上马路。</p>"
+            "</div>"
+        )
+
+    return (
+        hero
+        + "<div class='grid'>"
+        + region_card
+        + line_card
+        + lane_card
+        + obstacle_card
+        + safe_card
+        + "</div>"
+        + ("<div class='grid'>" + role_card + drive_card + "</div>" if (role_card or drive_card) else "")
+        + trend_card
+        + weakness_card
+    )
+
+
 @router.get("/ui", response_class=HTMLResponse)
 def diagnostics_ui():
     cards = []
@@ -247,24 +661,36 @@ async function deleteSession(sessionId) {
   if (resp.ok) location.reload(); else alert('删除失败');
 }
 </script>"""
-    hero = """
-<div class='hero'>
-  <h1>VQASee 闭环实验平台</h1>
-  <p class='hint'>从真机诊断帧、开源数据集、本地感知层、Mac 后端 Qwen 到评估报告的一站式实验入口。普通用户不会看到这个页面。</p>
-  <p><span class='pill'>采集数据</span><span class='pill'>结构化标注</span><span class='pill'>引导层可视化</span><span class='pill'>评估报告</span><span class='pill'>任务建议</span></p>
-</div>
-"""
-    modules = """
+    scorecard = _capability_scorecard_html()
+    # Primary drill-down: the pages that actually answer "how good / where does it
+    # fail". Kept one tap away, not spread across the landing page.
+    drilldown = """
 <div class='grid'>
-  <div class='card'><h2>1. 真机诊断 Sessions</h2><p class='muted'>查看 iPhone 上传的帧、metadata、本地模型输出和 path guidance。</p></div>
-  <div class='card'><h2>2. 引导层可视化</h2><p class='muted'>把 LocalPathGuidanceSignal 叠加到图片上，检查通行候选区、风险区和不确定区是否合理。</p></div>
-  <div class='card'><h2>3. 评估报告</h2><p class='muted'>自动发现 in-flight、误报、漏报、缺 Qwen raw output、depth/segmentation 能力缺口。</p></div>
-  <div class='card'><h2>4. 开源数据集评估</h2><p class='muted'>CLI：<code>python server-vqa/tools/evaluate_path_guidance_dataset.py docs/datasets/path-guidance-manifest-example.jsonl</code></p><p><a href='/diagnostics/datasets/ui'>打开数据集评估</a></p></div>
-  <div class='card'><h2>5. 闭环 case</h2><p class='muted'>评估里的失败帧自动聚类成可跟踪、能重开的 case（借鉴 DCL 统一载体 + 生命周期）。同一问题发生两次会自动重开。</p><p><a href='/diagnostics/cases/ui'>打开 case 列表</a></p></div>
+  <div class='card'><h2>逐帧识别效果</h2><p class='muted'>逐帧看 iPhone 感知的可走区域 / 引导线 与 CamVid 真值叠加，按漏报/误挡筛选。</p><p><a href='/diagnostics/datasets/ui'>打开数据集评估 →</a></p></div>
+  <div class='card'><h2>闭环 case</h2><p class='muted'>评估里的失败帧自动聚类成可跟踪、能重开的 case（借鉴 DCL 统一载体 + 生命周期）。</p><p><a href='/diagnostics/cases/ui'>打开 case 列表 →</a></p></div>
+  <div class='card'><h2>感知配置（OTA）</h2><p class='muted'>查看/发布下发到 iPhone 的感知参数版本。</p><p><a href='/diagnostics/perception-config/ui'>打开感知配置 →</a></p></div>
 </div>
 """
-    body = hero + modules + "<h2>Sessions</h2>" + script + ("".join(cards) or "<p>暂无 session。</p>")
-    return _html_page("VQASee 闭环实验平台", body)
+    about = """
+<details>
+  <summary>关于这个平台 · 真机诊断 Sessions</summary>
+  <p class='hint'>从真机诊断帧、开源数据集、本地感知层、Mac 后端 Qwen 到评估报告的一站式实验入口。普通用户不会看到这个页面。</p>
+  <p class='muted'>1. 真机诊断 Sessions：iPhone 上传的帧、metadata、本地模型输出和 path guidance。
+  2. 引导层可视化：把 LocalPathGuidanceSignal 叠加到图片上检查。
+  3. 评估报告：自动发现 in-flight、误报、漏报、depth/segmentation 能力缺口。</p>
+</details>
+"""
+    body = (
+        scorecard
+        + "<h2>下钻</h2>"
+        + drilldown
+        + about
+        + "<details><summary>Sessions（真机诊断记录）</summary>"
+        + script
+        + ("".join(cards) or "<p class='muted'>暂无 session。</p>")
+        + "</details>"
+    )
+    return _html_page("iPhone 本地感知能力总览", body)
 
 
 def _manifest_rows(session_dir: Path) -> list[dict]:
@@ -502,23 +928,97 @@ def _dataset_manifest_candidates() -> list[Path]:
     return candidates
 
 
+def _read_first_json_row(path: Path) -> Optional[dict]:
+    """First non-empty JSONL row as a dict, or None if empty/unparseable."""
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    row = json.loads(line)
+                    return row if isinstance(row, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def _manifest_runnable_reason(manifest_path: Path) -> Optional[str]:
+    """None if this is a ground-truth dataset manifest the harness can run (rows carry
+    image paths). Otherwise an actionable Chinese reason.
+
+    Guards the common footgun of pointing the harness at its own PREDICTIONS output
+    (``*-ios-harness.jsonl``: frame_id + prediction, no image), which would otherwise
+    report a cryptic ``missing_image=N`` for every frame instead of failing loudly.
+    """
+    row = _read_first_json_row(manifest_path)
+    if isinstance(row, dict) and ("image_path" in row or "image" in row):
+        return None
+    if row is None:
+        return f"“{manifest_path.name}”为空或无法解析为 JSONL，无法作为数据集运行。"
+    if "prediction" in row or "guidance_path" in row or "traversable_grid" in row:
+        return (
+            f"“{manifest_path.name}”是 harness 的预测结果文件（只有预测、没有图片路径），"
+            "不是数据集 manifest。请改用真值数据集，例如 docs/datasets/camvid-manifest.jsonl。"
+        )
+    return (
+        f"“{manifest_path.name}”缺少图片字段（image_path / image），"
+        "无法作为数据集 manifest 运行真身感知。"
+    )
+
+
 @router.get("/datasets/ui", response_class=HTMLResponse)
 def datasets_ui():
-    cards = []
+    # Split the flat .jsonl list into two clearly-labelled groups so the page stops
+    # dumping internal plumbing on the user:
+    #   - 真值数据集 (runnable): the answer keys the harness scores against.
+    #   - 预测结果/派生文件 (NOT runnable): harness outputs; results belong on the
+    #     scorecard, so these are collapsed under a "developer" section.
+    truth_cards: list[str] = []
+    pred_cards: list[str] = []
     for path in _dataset_manifest_candidates():
         safe_name = html.escape(path.name)
         encoded = html.escape(str(path))
-        cards.append(
-            f"<div class='card'><h2>{safe_name}</h2>"
-            f"<p class='muted'>{html.escape(str(path))}</p>"
-            f"<p><a href='/diagnostics/datasets/manifest/ui?manifest={encoded}'>浏览</a> · <a href='/diagnostics/datasets/evaluate/ui?manifest={encoded}'>服务器代理评估</a> · <a href='/diagnostics/datasets/ios-harness/ui?manifest={encoded}'>iPhone 真身评估</a></p></div>"
+        runnable = _manifest_runnable_reason(path) is None
+        if runnable:
+            links = (
+                f"<a href='/diagnostics/datasets/manifest/ui?manifest={encoded}'>浏览</a> · "
+                f"<a href='/diagnostics/datasets/evaluate/ui?manifest={encoded}'>服务器代理评估</a> · "
+                f"<a href='/diagnostics/datasets/ios-harness/ui?manifest={encoded}'>iPhone 真身评估</a>"
+            )
+            truth_cards.append(
+                f"<div class='card'><h2>{safe_name}</h2>"
+                f"<p class='muted'>{html.escape(str(path))}</p>"
+                f"<p>{links}</p></div>"
+            )
+        else:
+            pred_cards.append(
+                f"<div class='card'><h2>{safe_name}</h2>"
+                f"<p class='muted'>{html.escape(str(path))}</p>"
+                f"<p><a href='/diagnostics/datasets/manifest/ui?manifest={encoded}'>浏览原始行</a></p></div>"
+            )
+
+    truth_section = (
+        "<h2>真值数据集</h2>"
+        "<p class='hint'>评测的“标准答案”。带角色后缀的是同一批帧按行人/机动车重新判定的可通行真值。</p>"
+        + ("".join(truth_cards) or "<p class='muted'>暂无真值数据集。示例：docs/datasets/camvid-manifest.jsonl</p>")
+    )
+    pred_section = ""
+    if pred_cards:
+        pred_section = (
+            "<details><summary>预测结果 / 派生文件（开发调试用，"
+            f"{len(pred_cards)} 个）</summary>"
+            "<p class='hint'>这些是 iPhone 感知模型跑出来的<strong>答卷</strong>，不是数据集，不能再拿去评测。"
+            "想看它们的得分请回 <a href='/diagnostics/ui'>感知能力总览</a>，这里仅供开发排查原始行。</p>"
+            + "".join(pred_cards)
+            + "</details>"
         )
     body = (
-        "<p><a href='/diagnostics/ui'>← 返回平台首页</a></p>"
+        "<p><a href='/diagnostics/ui'>← 感知能力总览</a></p>"
         "<h1>开源/本地数据集评估</h1>"
         "<p><a href='/diagnostics/datasets/create-open/ui'>接入开源数据集</a> · <a href='/diagnostics/datasets/create/ui'>从图片+mask目录创建 manifest</a> · <a href='/diagnostics/perception-config/ui'>感知配置（OTA）</a></p>"
         "<p class='hint'>开源数据集先使用本地已下载数据；平台不自动下载大文件，也不绕过数据集 license。生成的 path manifest 放到 docs/datasets/ 或 VQASEE_DATASET_MANIFEST_DIR 后可在这里评估。</p>"
-        + ("".join(cards) or "<p>暂无 manifest。示例：docs/datasets/path-guidance-manifest-example.jsonl</p>")
+        + truth_section
+        + pred_section
     )
     return _html_page("数据集评估", body)
 
@@ -528,6 +1028,11 @@ def _allowed_local_roots() -> list[Path]:
     configured = os.getenv("VQASEE_DATASET_ROOT", "").strip()
     if configured:
         roots.append(Path(configured).expanduser().resolve())
+    # Always allow wherever datasets actually live (durable default is
+    # ~/.cache/vqasee, which is NOT under cwd/tmp). Deriving this from the same
+    # resolver keeps the file-serving allowlist in lockstep with the download
+    # target, so moving the root can't silently break image serving.
+    roots.append(_open_dataset_root())
     return roots
 
 
@@ -559,6 +1064,101 @@ def local_file(path: str, w: int = 0):
         return Response(content=buffer.getvalue(), media_type="image/jpeg")
     media = "image/png" if file_path.suffix.lower() == ".png" else "image/jpeg"
     return FileResponse(file_path, media_type=media)
+
+
+@router.get("/camvid-mask")
+def camvid_mask(label: str, classes: str = "walk", w: int = 560):
+    """Render the CamVid-derived traversable region as a translucent green PNG.
+
+    Lets the user visually verify the ground-truth guidance line: green = pixels
+    that count as traversable under the chosen classes, everything else fully
+    transparent. Reuses the SAME mask builder that generates the GT line, so the
+    tint you see is exactly what the green line was traced from — not a second,
+    independently-drifting drawing. The label path goes through the same
+    allowlist as every other served file (no arbitrary local read)."""
+    label_path = _safe_local_file(label)
+    try:
+        colors = camvid_traversable_colors(classes)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"bad_traversable_classes: {exc}") from exc
+    try:
+        mask = _camvid_traversability_mask(label_path, colors)
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=f"mask_render_failed: {exc}") from exc
+
+    height, width = mask.shape[:2]
+    rgba = np.zeros((height, width, 4), dtype=np.uint8)
+    # Apple green (#30d158) at ~38% alpha where traversable; transparent elsewhere.
+    rgba[mask] = (48, 209, 88, 96)
+    image = Image.fromarray(rgba)  # (H, W, 4) uint8 -> RGBA inferred
+    if w and w > 0:
+        max_width = min(w, 1600)
+        if image.width > max_width:
+            new_height = max(1, round(image.height * max_width / image.width))
+            # NEAREST keeps the mask edges faithful to the labeled pixels instead
+            # of inventing soft, misleading coverage at the boundary.
+            image = image.resize((max_width, new_height), resample=Image.NEAREST)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return Response(content=buffer.getvalue(), media_type="image/png")
+
+
+def _traversable_grid_to_mask(grid: dict) -> "np.ndarray | None":
+    """Validate a harness `traversable_grid` and return a bool (rows, cols) mask,
+    row 0 = TOP of the image. None if the payload is malformed — the caller then
+    states "no perceived region" explicitly rather than drawing garbage."""
+    if not isinstance(grid, dict):
+        return None
+    try:
+        cols = int(grid.get("cols", 0))
+        rows = int(grid.get("rows", 0))
+    except (TypeError, ValueError):
+        return None
+    cells = grid.get("cells")
+    if cols <= 0 or rows <= 0 or not isinstance(cells, list) or len(cells) != cols * rows:
+        return None
+    try:
+        arr = np.asarray(cells, dtype=np.int16).reshape(rows, cols)
+    except (TypeError, ValueError):
+        return None
+    return arr > 0
+
+
+def _traversable_grid_png_datauri(grid: dict) -> Optional[str]:
+    """Render the iPhone-perceived walkable region (harness `traversable_grid`) as
+    a translucent green PNG, inlined as a data URI so the per-frame page needs no
+    extra request. Row 0 = top, so it overlays aligned with the frame image and the
+    CamVid GT mask. Blocky by design (`image-rendering: pixelated`): the honest
+    coarse resolution of what the on-device segmentation actually perceives."""
+    mask = _traversable_grid_to_mask(grid)
+    if mask is None:
+        return None
+    rows, cols = mask.shape
+    rgba = np.zeros((rows, cols, 4), dtype=np.uint8)
+    # Apple green (#30d158) at ~43% alpha where the device perceives traversable.
+    rgba[mask] = (48, 209, 88, 110)
+    buffer = io.BytesIO()
+    Image.fromarray(rgba).save(buffer, format="PNG")
+    b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+def _lane_grid_png_datauri(grid: dict, rgba: tuple[int, int, int, int]) -> Optional[str]:
+    """Render a lane-marking grid (harness `lane_grid` prediction, or the manifest
+    `lane_grid_fine` ground truth) as a translucent overlay in the given colour.
+    Reuses the traversable-grid validator (same {cols, rows, cells} wire shape),
+    so a malformed payload yields None → caller draws nothing rather than garbage.
+    Fine lane grid (128x96, any-pixel-hit) keeps thin markings visible."""
+    mask = _traversable_grid_to_mask(grid)
+    if mask is None:
+        return None
+    rows, cols = mask.shape
+    out = np.zeros((rows, cols, 4), dtype=np.uint8)
+    out[mask] = rgba
+    buffer = io.BytesIO()
+    Image.fromarray(out).save(buffer, format="PNG")
+    b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
 
 
 def default_tags_for_dataset(dataset_type: str) -> str:
@@ -601,7 +1201,7 @@ def dataset_create_open_ui():
 
 <div class='callout'>
   <h2><span class='step'>1</span>一键下载 CamVid GitHub 数据并生成 manifest</h2>
-  <p class='hint'>推荐先点这个。平台会从 GitHub 下载公开 CamVid 镜像到 <code>/tmp/vqasee-open-datasets/camvid</code>，读取道路/人行道语义标签，生成 VQASee path-guidance manifest。</p>
+  <p class='hint'>推荐先点这个。平台会从 GitHub 下载公开 CamVid 镜像到本地缓存目录 <code>~/.cache/vqasee/open-datasets/camvid</code>（非临时目录，不会被系统清理；可用环境变量 <code>VQASEE_DATASET_ROOT</code> 覆盖），读取道路/人行道语义标签，生成 VQASee path-guidance manifest。若目录被清空会自动重新下载。</p>
   <button id='downloadCamvidButton' type='button' onclick='downloadCamvid()'>下载 CamVid 并生成 manifest</button>
   <div id='downloadStatus' class='status' style='display:none'></div>
   <p class='explain'>如果网络慢或 GitHub 不可达，页面会显示失败原因，不会只让浏览器一直转圈。也可以先用下面的“内置演示”确认流程。</p>
@@ -675,7 +1275,30 @@ def _open_dataset_root() -> Path:
     configured = os.getenv("VQASEE_DATASET_ROOT", "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
-    return Path("/tmp/vqasee-open-datasets").resolve()
+    # NOT /tmp: macOS periodically purges /private/tmp (files untouched for ~3
+    # days), which silently emptied the CamVid images and broke every harness
+    # run with misleading "decode_failed". Datasets are inputs to a repeatable
+    # closed loop, so they must live somewhere durable. Honor a legacy /tmp copy
+    # if it still has images, so existing setups keep working until re-download.
+    legacy = Path("/tmp/vqasee-open-datasets")
+    if _dir_has_images(_find_dataset_dir(legacy / "camvid", "CamVid_RGB")):
+        return legacy.resolve()
+    return (Path.home() / ".cache" / "vqasee" / "open-datasets").resolve()
+
+
+def _dir_has_images(directory: Path | None) -> bool:
+    """True only if the dir exists AND holds at least one image file.
+
+    An empty directory (e.g. after macOS purged /tmp but left the folder) must
+    NOT count as "downloaded": otherwise we silently skip re-download and then
+    fail every frame with a misleading decode error. Treat empty == absent.
+    """
+    if directory is None or not directory.is_dir():
+        return False
+    for entry in directory.iterdir():
+        if entry.is_file() and entry.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+            return True
+    return False
 
 
 def _detect_camvid_dirs() -> tuple[Path | None, Path | None]:
@@ -687,7 +1310,10 @@ def _detect_camvid_dirs() -> tuple[Path | None, Path | None]:
     root = _open_dataset_root() / "camvid"
     if not root.is_dir():
         return None, None
-    return _find_dataset_dir(root, "CamVid_RGB"), _find_dataset_dir(root, "CamVid_Label")
+    rgb = _find_dataset_dir(root, "CamVid_RGB")
+    lbl = _find_dataset_dir(root, "CamVid_Label")
+    # Empty (purged) dirs must not auto-fill Step 2 as if they were ready.
+    return (rgb if _dir_has_images(rgb) else None), (lbl if _dir_has_images(lbl) else None)
 
 
 def _resolve_camvid_subdir(path_text: str, name: str) -> Path | None:
@@ -772,7 +1398,12 @@ def dataset_download_open(dataset: str = "camvid", output: str = "", limit: int 
         "https://github.com/lih627/CamVid/archive/refs/heads/main.zip",
         "https://github.com/lih627/CamVid/archive/refs/heads/master.zip",
     ]
-    if _find_dataset_dir(root, "CamVid_RGB") is None or _find_dataset_dir(root, "CamVid_Label") is None:
+    # Re-download when the images are missing OR the dir exists but is empty
+    # (e.g. macOS purged /tmp). Checking presence-of-files, not just the folder,
+    # is what lets the platform self-heal instead of silently skipping.
+    if not _dir_has_images(_find_dataset_dir(root, "CamVid_RGB")) or not _dir_has_images(
+        _find_dataset_dir(root, "CamVid_Label")
+    ):
         last_error: Exception | None = None
         downloaded = False
         for url in urls:
@@ -789,7 +1420,7 @@ def dataset_download_open(dataset: str = "camvid", output: str = "", limit: int 
             raise HTTPException(status_code=502, detail=f"download_failed: {last_error}")
     images_dir = _find_dataset_dir(root, "CamVid_RGB")
     labels_dir = _find_dataset_dir(root, "CamVid_Label")
-    if images_dir is None or labels_dir is None:
+    if not _dir_has_images(images_dir) or not _dir_has_images(labels_dir):
         raise HTTPException(
             status_code=502,
             detail=(
@@ -1224,10 +1855,11 @@ def dataset_ios_harness_ui(manifest: str, predictions: str = ""):
     encoded_manifest = html.escape(manifest)
     default_out = str(_harness_out_path(manifest_path))
     cache = _harness_cache_info(manifest_path)
+    _lane_flag = "".join(f" \\\n  {flag}" for flag in _optional_harness_model_flags())
     run_cmd = (
         "ios-vqa-app/perception-harness/.build/debug/PerceptionHarness \\\n"
         f"  --manifest {manifest} \\\n"
-        f"  --out {default_out}"
+        f"  --out {default_out}{_lane_flag}"
     )
     run_script = f"""<script>
 async function runHarness(force) {{
@@ -1236,7 +1868,7 @@ async function runHarness(force) {{
   const btn2 = document.getElementById('rerunBtn');
   status.style.display = 'block';
   status.className = 'status';
-  status.textContent = force ? '正在强制重跑真身感知…（约 10–30 秒）' : '正在处理…（若已有结果会秒回，否则跑真身约 10–30 秒）';
+  status.textContent = force ? '正在强制重跑真身感知…（701 帧全量 + 车道模型可能需要数分钟）' : '正在处理…（若已有新鲜缓存会秒回；全量重跑可能需要数分钟）';
   if (btn) btn.disabled = true;
   if (btn2) btn2.disabled = true;
   try {{
@@ -1249,6 +1881,12 @@ async function runHarness(force) {{
       status.textContent = (payload.note || '完成') + ' 正在打开评估结果…';
       const next = '/diagnostics/datasets/ios-harness/ui?manifest={encoded_manifest}&predictions=' + encodeURIComponent(payload.predictions);
       window.location.href = next;
+      return;
+    }}
+    if (payload.status === 'already_running') {{
+      status.className = 'status';
+      status.innerHTML = '<pre style="margin:0;white-space:pre-wrap">' + (payload.reason || '真身感知已在运行中').replace(/</g,'&lt;') + '</pre>';
+      if(btn)btn.disabled=false; if(btn2)btn2.disabled=false;
       return;
     }}
     status.className = 'status error';
@@ -1360,6 +1998,13 @@ async function runHarness(force) {{
     guidance_pairs, guidance_skipped = _guidance_pairs(manifest_rows, prediction_rows)
     guidance_report = evaluate_guidance_paths(guidance_pairs) if guidance_pairs else None
 
+    # Region report — "how close is the walkable AREA the iPhone perceives to the
+    # annotated truth", scored per-cell on the shared 64x48 grid. This is the axis
+    # the user actually cares about (iPhone should perceive the green region), and
+    # it upgrades the loop past 3-box status agreement.
+    region_pairs, region_dropped = _region_pairs(manifest_rows, prediction_rows)
+    region_report = evaluate_region_grids(region_pairs) if region_pairs else None
+
     def card(title: str, value: object, hint: str = "") -> str:
         return (
             f"<div class='card'><h2>{html.escape(title)}</h2>"
@@ -1402,7 +2047,34 @@ async function runHarness(force) {{
             "无法做线级评估。重生成带真值线的 manifest 并重跑真身感知后即可显示。</p></div>"
         )
 
-    cards = guidance_cards + "<h2 style='margin-top:1.5rem'>三区状态指标（region，与引导线独立）</h2><div class='grid'>" + "".join([
+    if region_report is not None and region_report.get("scored"):
+        r = region_report
+        dropped_note = (
+            f"，另有 {region_dropped} 帧缺网格未计入" if region_dropped else ""
+        )
+        region_cards = (
+            "<div class='callout'><h2>可走区域指标（iPhone 感知 vs 真值 · 逐格）</h2>"
+            "<p class='hint'>直接衡量「iPhone 感知出的绿色可走区域」离 CamVid 真值有多近："
+            "逐帧把两张 64×48 可走网格逐格对比。这正是你要的目标——端上把可走区域看准。</p>"
+            "<div class='grid'>"
+            + "".join([
+                card("区域 IoU", num(r.get("mean_iou")), "两块绿区整体重合度（越高越好）"),
+                card("覆盖率 recall", num(r.get("mean_recall")), "真值可走被 iPhone 覆盖的比例（低=漏掉可走区）"),
+                card("准确率 precision", num(r.get("mean_precision")), "iPhone 判为可走里真的可走的比例（低=把不可走当可走）"),
+                card("区域虚报帧 false_go", r.get("region_false_go_frames"), "precision<0.5：大半「可走」判断是错的（安全红线）"),
+                card("区域漏走帧 miss", r.get("region_miss_frames"), "recall<0.5：漏掉大半真实可走区"),
+                card("参与帧 scored", r.get("scored"), f"共比对 {r.get('scored')} 帧{dropped_note}"),
+            ])
+            + "</div></div>"
+        )
+    else:
+        region_cards = (
+            "<div class='callout'><h2>可走区域指标</h2>"
+            "<p class='muted'>manifest 缺少真值可走网格 traversable_grid，或预测缺少 traversable_grid，"
+            "无法做区域评估。重生成带真值网格的 manifest 并重跑真身感知后即可显示。</p></div>"
+        )
+
+    cards = region_cards + guidance_cards + "<h2 style='margin-top:1.5rem'>三区状态指标（已退役 · 仅供参考，不再门禁）</h2><div class='grid'>" + "".join([
         card("有标注帧", report.get("labeled_frames"), "参与打分的帧数"),
         card("状态准确率", report.get("status_accuracy"), "近处/左/右三区域状态匹配率"),
         card("方向准确率", report.get("focus_direction_accuracy"), "关注方向是否匹配"),
@@ -1456,8 +2128,8 @@ async function runParity() {{
     )
     frames_callout = (
         f"<div class='callout'><h2>看图：iPhone 感知层在每张图上识别成了什么</h2>"
-        f"<p class='hint'>光看数字不够。逐帧视图会在 CamVid 原图上叠加 iPhone 真身检测到的物体框、"
-        f"近/左/右三个判断区域及其状态，让你直接看清“为什么漏报/误阻挡”。</p>"
+        f"<p class='hint'>光看数字不够。逐帧视图会在 CamVid 原图上叠加 iPhone 真身识别出的"
+        f"可通行区域（绿）、引导线与检测到的物体框，并和 CamVid 真值对比，让你直接看清“为什么漏报/误阻挡”。</p>"
         f"<p><a href='{frames_url}'>→ 打开逐帧识别效果</a></p></div>"
     )
     case_script = f"""<script>
@@ -1511,6 +2183,37 @@ def _harness_bin() -> Path:
     return _repo_root() / "ios-vqa-app" / "perception-harness" / ".build" / "debug" / "PerceptionHarness"
 
 
+def _harness_models_dir() -> Path:
+    """Where the compiled Core ML models the harness can inject live. Defaults to
+    the durable cache (~/.cache/vqasee/models); overridable via VQASEE_MODELS_DIR."""
+    configured = os.getenv("VQASEE_MODELS_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".cache" / "vqasee" / "models"
+
+
+def _optional_harness_model_flags() -> list[str]:
+    """Append optional lane models for the offline iPhone harness.
+
+    Product lane lines are UFLDv2 ``lane_polylines`` when
+    ``VQASeeLaneUFLDv2.mlmodelc`` exists. The older
+    ``VQASeeLaneSegmentation.mlmodelc`` still emits ``lane_grid`` as a debug mask
+    for regressions, but it is no longer the product lane-line surface.
+
+    Missing optional models omit their flags (harness reports no lane channel),
+    never a hard failure and never a fabricated lane.
+    """
+    flags: list[str] = []
+    models_dir = _harness_models_dir()
+    lane_mask = models_dir / "VQASeeLaneSegmentation.mlmodelc"
+    if lane_mask.is_dir():
+        flags += ["--lane-model", str(lane_mask)]
+    lane_polyline = models_dir / "VQASeeLaneUFLDv2.mlmodelc"
+    if lane_polyline.is_dir():
+        flags += ["--lane-polyline-model", str(lane_polyline)]
+    return flags
+
+
 def _guidance_pairs(manifest_rows: list[dict], prediction_rows: list[dict]):
     """Build (frame_id, gt_path, pred_path) triples for line-level scoring.
 
@@ -1536,12 +2239,144 @@ def _guidance_pairs(manifest_rows: list[dict], prediction_rows: list[dict]):
     return pairs, skipped
 
 
+def _region_pairs(manifest_rows: list[dict], prediction_rows: list[dict]):
+    """Build (frame_id, gt_grid, pred_grid) triples for region-IoU scoring.
+
+    A frame participates only when BOTH the manifest GT walkable grid and the
+    harness predicted grid are present; frames missing either are counted as
+    dropped (surfaced), never silently scored as agreement."""
+    preds: dict = {}
+    for row in prediction_rows:
+        fid = row.get("frame_id")
+        if fid is not None and isinstance(row.get("traversable_grid"), dict):
+            preds[str(fid)] = row["traversable_grid"]
+    pairs = []
+    dropped = 0
+    for row in manifest_rows:
+        fid = row.get("frame_id")
+        gt_raw = row.get("traversable_grid")
+        pred_raw = preds.get(str(fid)) if fid is not None else None
+        if fid is None or not isinstance(gt_raw, dict) or pred_raw is None:
+            dropped += 1
+            continue
+        pairs.append((str(fid), gt_raw, pred_raw))
+    return pairs, dropped
+
+
 def _harness_out_path(manifest_path: Path) -> Path:
     return Path(f"/tmp/{manifest_path.stem}-ios-harness.jsonl")
 
 
 def _harness_meta_path(manifest_path: Path) -> Path:
     return Path(f"/tmp/{manifest_path.stem}-ios-harness.meta.json")
+
+
+def _harness_lock_path(manifest_path: Path) -> Path:
+    return Path(f"/tmp/{manifest_path.stem}-ios-harness.lock.json")
+
+
+def _pid_is_running(pid: object) -> bool:
+    try:
+        value = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    try:
+        os.kill(value, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _active_harness_run(manifest_path: Path) -> dict | None:
+    """Return active harness lock info, clearing stale locks first."""
+    lock = _harness_lock_path(manifest_path)
+    try:
+        info = json.loads(lock.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _active_harness_process(manifest_path)
+    if str(info.get("manifest")) != str(manifest_path):
+        return None
+    if _pid_is_running(info.get("pid")):
+        return info
+    try:
+        lock.unlink()
+    except OSError:
+        pass
+    return _active_harness_process(manifest_path)
+
+
+def _active_harness_process(manifest_path: Path) -> dict | None:
+    """Best-effort fallback for pre-lock harnesses already running on this Mac."""
+    try:
+        proc = subprocess.run(
+            ["ps", "-axo", "pid=,etime=,command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    needle = f"--manifest {manifest_path}"
+    for line in proc.stdout.splitlines():
+        if "PerceptionHarness" not in line or needle not in line:
+            continue
+        parts = line.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        return {
+            "pid": pid,
+            "manifest": str(manifest_path),
+            "started_at": f"已运行 {parts[1]}",
+            "source": "process_scan",
+        }
+    return None
+
+
+def _write_harness_lock(manifest_path: Path, *, pid: int, cmd: list[str]) -> Path:
+    lock = _harness_lock_path(manifest_path)
+    lock.write_text(
+        json.dumps(
+            {
+                "pid": pid,
+                "manifest": str(manifest_path),
+                "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "cmd": cmd,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return lock
+
+
+def _clear_harness_lock(manifest_path: Path, *, pid: int | None = None) -> None:
+    lock = _harness_lock_path(manifest_path)
+    try:
+        info = json.loads(lock.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    try:
+        locked_pid = int(info.get("pid", -1))
+    except (TypeError, ValueError):
+        locked_pid = -1
+    if pid is not None and locked_pid != pid:
+        return
+    try:
+        lock.unlink()
+    except OSError:
+        pass
 
 
 def _sha256_file(path: Path) -> str | None:
@@ -1705,6 +2540,14 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
     if not manifest_path.is_file():
         raise HTTPException(status_code=404, detail="manifest_not_found")
 
+    # Guard BEFORE anything else: a harness run needs a ground-truth dataset manifest
+    # (rows carry image paths). Passing a predictions file (…-ios-harness.jsonl) is a
+    # common footgun that otherwise yields a cryptic missing_image=N. Fail loud +
+    # actionable (不允许静默失败).
+    wrong_manifest = _manifest_runnable_reason(manifest_path)
+    if wrong_manifest is not None:
+        return {"status": "error", "capability": "wrong_manifest", "reason": wrong_manifest}
+
     # Reuse cached predictions when nothing changed — cached results are
     # platform-independent to read, so allow this even off macOS.
     cache = _harness_cache_info(manifest_path)
@@ -1727,6 +2570,20 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
             "reason": (
                 f"当前服务器平台是 {sys.platform}，不是 macOS。iPhone 真身感知依赖 "
                 "Core ML / Vision，只能在 Mac 上跑。请在 Mac 上运行诊断台，或按手动步骤执行。"
+            ),
+        }
+
+    active_run = _active_harness_run(manifest_path)
+    if active_run is not None:
+        return {
+            "status": "already_running",
+            "pid": active_run.get("pid"),
+            "started_at": active_run.get("started_at"),
+            "reason": (
+                "真身感知已经在运行中，未启动第二个任务。"
+                f"开始时间：{active_run.get('started_at', '?')}；"
+                "701 帧全量加车道模型可能需要数分钟。请等当前任务完成后刷新，"
+                "或先点“直接查看评估（用缓存）”。"
             ),
         }
 
@@ -1772,6 +2629,9 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
     cmd = [str(harness_bin), "--manifest", str(manifest_path), "--out", out_path]
     if limit and limit > 0:
         cmd += ["--limit", str(limit)]
+    # Inject the lane model when available so the prediction carries lane_grid and
+    # the per-frame view can draw lanes (otherwise lanes silently never appear).
+    cmd += _optional_harness_model_flags()
 
     # Evaluate the CURRENTLY ACTIVE perception config so tuning it (and bumping
     # the version) is reflected in the harness result — this is what makes the
@@ -1785,26 +2645,37 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
         cmd += ["--config", str(config_file)]
     except (ConfigValidationError, OSError):
         config_file = None
+    proc: subprocess.Popen[str] | None = None
     try:
-        run = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=str(repo_root),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=900,
         )
+        _write_harness_lock(manifest_path, pid=proc.pid, cmd=cmd)
+        stdout, stderr = proc.communicate(timeout=900)
     except subprocess.TimeoutExpired:
+        if proc is not None:
+            proc.kill()
+            _stdout, stderr = proc.communicate()
+        else:
+            stderr = ""
         return {
             "status": "error",
             "reason": "真身感知运行超时（>900s）。可用 limit 参数先跑少量帧验证，或在终端手动执行。",
+            "stderr": "\n".join((stderr or "").strip().splitlines()[-8:]),
         }
+    finally:
+        _clear_harness_lock(manifest_path, pid=proc.pid if proc is not None else None)
 
-    stderr_tail = (run.stderr or "").strip().splitlines()[-8:]
-    if run.returncode != 0:
+    stderr_tail = (stderr or "").strip().splitlines()[-8:]
+    if proc.returncode != 0:
         return {
             "status": "error",
             "reason": "真身感知运行失败（非零退出）。常见原因：缺少 YOLO Core ML 模型。见下方 stderr。",
-            "returncode": run.returncode,
+            "returncode": proc.returncode,
             "stderr": "\n".join(stderr_tail),
         }
 
@@ -1813,9 +2684,18 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
     except OSError:
         predicted = 0
     if predicted == 0:
+        stderr_text = stderr or ""
+        images_missing = "image_not_found:" in stderr_text
+        reason = f"运行结束但未产出预测（{out_path} 为空）。见下方 stderr。"
+        if images_missing:
+            reason = (
+                "运行结束但未产出预测：manifest 里引用的图片文件在磁盘上不存在了"
+                "（很可能数据集被系统清理，如放在 /tmp）。请回到「接入开源数据集」"
+                "重新下载 CamVid（平台已会自动重下并重生成 manifest），再重跑真身感知。"
+            )
         return {
             "status": "error",
-            "reason": f"运行结束但未产出预测（{out_path} 为空）。见下方 stderr。",
+            "reason": reason,
             "stderr": "\n".join(stderr_tail),
         }
 
@@ -1911,16 +2791,71 @@ def _guidance_line_svg(
     return "".join(parts)
 
 
+def _lane_polylines_svg(polylines: object) -> str:
+    """Render product lane-line geometry from UFLDv2-style normalized polylines.
+
+    Lane points are image-normalized with a TOP-left origin, unlike guidance-path
+    Vision coordinates. Invalid/malformed lanes are skipped so the page does not
+    draw garbage or fabricate a lane line.
+    """
+    if not isinstance(polylines, list):
+        return ""
+    colors = ["#ffd60a", "#ff9f0a", "#64d2ff", "#bf5af2", "#30d158"]
+    parts: list[str] = []
+    for lane_index, lane in enumerate(polylines[:8]):
+        if not isinstance(lane, dict):
+            continue
+        points = lane.get("points")
+        if not isinstance(points, list) or len(points) < 2:
+            continue
+        coords: list[str] = []
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            try:
+                x = min(max(float(point.get("x", 0.0)), 0.0), 1.0) * 100.0
+                y = min(max(float(point.get("y", 0.0)), 0.0), 1.0) * 100.0
+            except (TypeError, ValueError):
+                continue
+            coords.append(f"{x:.2f},{y:.2f}")
+        if len(coords) < 2:
+            continue
+        color = colors[lane_index % len(colors)]
+        pts = " ".join(coords)
+        parts.append(
+            f"<polyline points='{pts}' fill='none' stroke='#000' stroke-opacity='0.45' "
+            "stroke-width='2.2' stroke-linejoin='round' stroke-linecap='round'/>"
+        )
+        parts.append(
+            f"<polyline points='{pts}' fill='none' stroke='{color}' stroke-width='1.25' "
+            "stroke-linejoin='round' stroke-linecap='round'/>"
+        )
+    if not parts:
+        return ""
+    return (
+        "<svg class='lane-polylines' viewBox='0 0 100 100' preserveAspectRatio='none' "
+        "xmlns='http://www.w3.org/2000/svg' aria-label='iPhone 车道折线'>"
+        + "".join(parts)
+        + "</svg>"
+    )
+
+
+def _guidance_status_ok(path: dict | None) -> bool:
+    """A guidance line "exists" (walkable path found) when it is a dict with an
+    explicit ``status == 'ok'``. Any other value (``insufficient`` / missing /
+    malformed) reads as "no line" — surfaced, never guessed."""
+    return isinstance(path, dict) and str(path.get("status")) == "ok"
+
+
 def _overlay_svg(
-    roi: dict,
     objects: list,
-    prediction: dict,
     guidance_path: dict | None = None,
     gt_path: dict | None = None,
 ) -> str:
     """Build an SVG overlay (viewBox 0..100, stretched to the image) drawing the
-    three decision ROIs colored by predicted status plus the detected object
-    boxes, and (when present) the predicted vs ground-truth guidance lines.
+    detected object boxes and (when present) the predicted vs ground-truth
+    guidance lines. The legacy three near/left/right ROI status rectangles were
+    removed — the guidance line + the walkable-region layer are the signals now.
     Vision-normalized coords have origin lower-left, so y is flipped for the
     top-left screen space of an <img>."""
 
@@ -1935,31 +2870,6 @@ def _overlay_svg(
         "<svg viewBox='0 0 100 100' preserveAspectRatio='none' "
         "xmlns='http://www.w3.org/2000/svg'>"
     ]
-
-    roi_regions = [
-        ("near", prediction.get("near_path_status", "unknown"), "近"),
-        ("left", prediction.get("left_front_status", "unknown"), "左"),
-        ("right", prediction.get("right_front_status", "unknown"), "右"),
-    ]
-    for key, status, short in roi_regions:
-        rect = (roi or {}).get(key)
-        if not isinstance(rect, dict):
-            continue
-        x, y, w, h = to_screen(rect)
-        color = _STATUS_COLOR.get(str(status), "#8e8e93")
-        # ROI status is now the SECONDARY (legacy coarse) signal — draw it faint so
-        # it reads as background context and does not fight the guidance line.
-        parts.append(
-            f"<rect x='{x:.2f}' y='{y:.2f}' width='{w:.2f}' height='{h:.2f}' "
-            f"fill='{color}' fill-opacity='0.06' stroke='{color}' stroke-opacity='0.55' "
-            f"stroke-width='0.5' stroke-dasharray='1.2 1.0'/>"
-        )
-        label = f"{short} {_STATUS_LABEL.get(str(status), status)}"
-        ty = max(3.0, y + 3.0)
-        parts.append(
-            f"<text x='{x + 0.8:.2f}' y='{ty:.2f}' fill='{color}' fill-opacity='0.8' "
-            f"font-size='2.8' font-weight='600'>{html.escape(label)}</text>"
-        )
 
     for obj in objects or []:
         box = obj.get("box") if isinstance(obj, dict) else None
@@ -2038,9 +2948,10 @@ def dataset_ios_harness_frames_ui(
     manifest: str, predictions: str, page: int = 1, filter: str = "all"
 ):
     """Per-frame visualization: draw the iPhone on-device perception output
-    (detected object boxes + near/left/right ROI status) on top of each CamVid
-    image, side by side with the ground-truth answer. This is the "看得见" view
-    that turns aggregate metrics into inspectable pictures."""
+    (detected object boxes + perceived traversable region + guidance line +
+    lane markings) on top of each CamVid image, side by side with the
+    ground-truth answer. This is the "看得见" view that turns aggregate metrics
+    into inspectable pictures."""
     manifest_path = Path(manifest).expanduser()
     if not manifest_path.is_file():
         raise HTTPException(status_code=404, detail="manifest_not_found")
@@ -2087,14 +2998,6 @@ def dataset_ios_harness_frames_ui(
     encoded_manifest = html.escape(str(manifest_path))
     encoded_pred = html.escape(str(pred_path))
 
-    def status_pill(status: str) -> str:
-        color = _STATUS_COLOR.get(str(status), "#8e8e93")
-        label = _STATUS_LABEL.get(str(status), str(status))
-        return (
-            f"<span class='pill' style='border:1px solid {color};color:{color}'>"
-            f"{html.escape(label)}</span>"
-        )
-
     cards = []
     for row in page_rows:
         frame_id = str(row.get("frame_id", ""))
@@ -2103,9 +3006,55 @@ def dataset_ios_harness_frames_ui(
         pred_row = pred_index.get(frame_id, {})
         prediction = pred_row.get("prediction", {}) or {}
         objects = pred_row.get("objects", []) or []
-        roi = pred_row.get("roi", {}) or {}
         pred_guidance = pred_row.get("guidance_path") if isinstance(pred_row.get("guidance_path"), dict) else None
         gt_guidance = row.get("ground_truth_path") if isinstance(row.get("ground_truth_path"), dict) else None
+
+        # Translucent CamVid traversable-region layer, from the SAME mask that the
+        # green GT line was traced from. Lets the user see the line's provenance.
+        label_path = str(row.get("label_path") or "")
+        tclasses = str(row.get("traversable_classes") or "walk")
+        mask_layer = ""
+        if label_path:
+            mask_src = (
+                f"/diagnostics/camvid-mask?label={html.escape(label_path)}"
+                f"&classes={html.escape(tclasses)}&w=560"
+            )
+            mask_layer = (
+                f"<img class='gt-mask' loading='lazy' decoding='async' "
+                f"src='{mask_src}' alt='CamVid 真值可走区域'>"
+            )
+
+        # iPhone-perceived walkable region: the segmentation model's own traversable
+        # raster (same signal behind the 3-region status + guidance line), surfaced
+        # whole so it can be compared pixel-for-pixel with the GT green region.
+        pred_mask_layer = ""
+        grid_uri = _traversable_grid_png_datauri(pred_row.get("traversable_grid"))
+        if grid_uri:
+            pred_mask_layer = (
+                f"<img class='pred-mask' decoding='async' "
+                f"src='{grid_uri}' alt='iPhone 感知可走区域'>"
+            )
+
+        # Lane-marking layers. Product lane output is geometry-first: UFLDv2-style
+        # `lane_polylines` render as true lines. The old pixel `lane_grid` remains
+        # visible only as a debug mask so blocky over-spray is not mistaken for the
+        # lane-line product target.
+        lane_layer = ""
+        pred_lane_debug_uri = _lane_grid_png_datauri(pred_row.get("lane_grid"), (255, 214, 10, 120))
+        if pred_lane_debug_uri:
+            lane_layer += (
+                f"<img class='pred-mask' decoding='async' "
+                f"src='{pred_lane_debug_uri}' alt='旧像素车道调试层'>"
+            )
+        gt_lane_uri = _lane_grid_png_datauri(row.get("lane_grid_fine"), (10, 132, 255, 150))
+        if gt_lane_uri:
+            lane_layer += (
+                f"<img class='pred-mask' decoding='async' "
+                f"src='{gt_lane_uri}' alt='CamVid 真值车道线'>"
+            )
+        lane_polyline_svg = _lane_polylines_svg(pred_row.get("lane_polylines"))
+        if lane_polyline_svg:
+            lane_layer += lane_polyline_svg
 
         if not image_path:
             image_block = "<p class='muted'>无图片路径</p>"
@@ -2113,31 +3062,36 @@ def dataset_ios_harness_frames_ui(
             thumb = f"/diagnostics/local-file?path={html.escape(image_path)}&w=560"
             image_block = (
                 f"<div class='frame-overlay'><img loading='lazy' decoding='async' "
-                f"src='{thumb}' alt='{html.escape(frame_id)}'></div>"
+                f"src='{thumb}' alt='{html.escape(frame_id)}'>{mask_layer}{pred_mask_layer}{lane_layer}</div>"
                 f"<p class='muted'>该帧没有对应预测（可能被 --limit 截断）。</p>"
             )
         else:
             thumb = f"/diagnostics/local-file?path={html.escape(image_path)}&w=560"
             full = f"/diagnostics/local-file?path={html.escape(image_path)}"
-            overlay = _overlay_svg(roi, objects, prediction, pred_guidance, gt_guidance)
+            overlay = _overlay_svg(objects, pred_guidance, gt_guidance)
             image_block = (
                 f"<a href='{full}' target='_blank'><div class='frame-overlay'>"
                 f"<img loading='lazy' decoding='async' src='{thumb}' alt='{html.escape(frame_id)}'>"
-                f"{overlay}</div></a>"
+                f"{mask_layer}{pred_mask_layer}{lane_layer}{overlay}</div></a>"
             )
 
-        def region_row(name: str, key: str) -> str:
-            g = gt.get(key, "—")
-            p = prediction.get(key, "—")
-            flag = ""
-            if g in ("caution", "blocked") and p == "candidateOpen":
-                flag = " <span style='color:#ff453a'>⚠ 漏报</span>"
-            elif g == "candidateOpen" and p in ("caution", "blocked"):
-                flag = " <span style='color:#ffd60a'>误阻挡</span>"
-            return (
-                f"<tr><td>{name}</td><td>{status_pill(g)}</td>"
-                f"<td>{status_pill(p) if prediction else '—'}{flag}</td></tr>"
-            )
+        # Line-level agreement summary (replaces the retired 3-region status table):
+        # is the predicted walkable line present, and does it match the truth's
+        # presence? This keeps the honest "漏报路径 / 误报路径" signal at the line
+        # level without the coarse near/left/right boxes.
+        gt_line_ok = _guidance_status_ok(gt_guidance)
+        pred_line_ok = _guidance_status_ok(pred_guidance)
+        if prediction:
+            if gt_line_ok and not pred_line_ok:
+                line_verdict = "<span style='color:#ff453a'>⚠ 漏报路径（真值有可走线，预测无）</span>"
+            elif pred_line_ok and not gt_line_ok:
+                line_verdict = "<span style='color:#ffd60a'>误报路径（真值无可走线，预测有）</span>"
+            elif pred_line_ok and gt_line_ok:
+                line_verdict = "<span style='color:#30d158'>双方均有可走线（看贴合度）</span>"
+            else:
+                line_verdict = "<span class='muted'>双方均无可走线</span>"
+        else:
+            line_verdict = "<span class='muted'>该帧无预测</span>"
 
         obj_labels = ", ".join(
             html.escape(str(o.get("label") or o.get("kind") or "物体")) for o in objects
@@ -2147,16 +3101,10 @@ def dataset_ios_harness_frames_ui(
             f"""<div class='card'><h2>{html.escape(frame_id)}</h2>
 <div class='row'>
   <div>{image_block}
-    <p class='explain'><b style='color:#bf5af2'>紫实线=预测路径</b> · <b style='color:#30d158'>绿虚线=真值路径</b>（主信号，越贴合越准）；蓝虚框=检测物体；淡色绿/黄/红方块=近/左/右三区状态（背景参考）。</p>
+    <p class='explain'><b style='color:#bf5af2'>紫实线=iPhone 预测路径</b> · <b style='color:#30d158'>绿虚线=真值路径</b>（主信号，越贴合越准）；蓝虚框=检测物体；<b style='color:#30d158'>绿色叠层=可走区域</b>；<b style='color:#ffd60a'>黄色实线=iPhone 车道折线</b> · <b style='color:#ffd60a'>黄块=旧像素车道调试层</b> · <b style='color:#0a84ff'>蓝色=真值车道线</b>。</p>
   </div>
   <div>
-    <table>
-      <tr><th>区域</th><th>真实答案</th><th>iPhone 预测</th></tr>
-      {region_row('近处', 'near_path_status')}
-      {region_row('左前', 'left_front_status')}
-      {region_row('右前', 'right_front_status')}
-    </table>
-    <p class='explain'>关注方向：真实 {html.escape(str(gt.get('focus_direction', '—')))} / 预测 {html.escape(str(prediction.get('focus_direction', '—')))}</p>
+    <p class='explain'><b>可走线对比：</b>{line_verdict}</p>
     <p class='explain'>检出物体：{obj_labels}</p>
   </div>
 </div></div>"""
@@ -2223,12 +3171,60 @@ def dataset_ios_harness_frames_ui(
         f"<span style='color:#bf5af2;font-weight:800'>▬ 紫实线=iPhone 预测路径</span>（带浅色走廊=可走宽度）， "
         f"<span style='color:#30d158;font-weight:800'>┄ 绿虚线=真值路径</span>（你 CamVid 标注推出的答案）。两条越贴合越准。</p>"
         f"<p class='hint' style='margin-top:6px'><b>辅助 · 背景</b>："
-        f"<span style='color:#64d2ff'>蓝虚框</span>=YOLO 检测物体； "
-        f"淡色<span style='color:#30d158'>绿</span>/<span style='color:#ffd60a'>黄</span>/"
-        f"<span style='color:#ff453a'>红</span>方块=近/左/右三区状态（旧的粗粒度分区，已弱化为背景，右表仍按它对比）。</p></div>"
+        f"<span style='color:#64d2ff'>蓝虚框</span>=YOLO 检测物体。"
+        f"（旧的三区状态方块已下线：粗糙、重叠、且不是端上真正消费的信号，"
+        f"通行判断以引导线 + 可走区域为准。）</p>"
+        f"<p class='hint' style='margin-top:6px'><b>绿色可走区域（两块，可分别开关）</b>："
+        f"<span style='color:#30d158'>iPhone 感知区域</span>=端上分割模型真实判定可走的粗网格（默认显示，这就是"
+        f"“iPhone 感知出的绿色可走区域”）；<span style='color:#30d158'>CamVid 真值区域</span>"
+        f"=标注推出的答案（道路+人行道，绿虚线由它取中心线得到）。两块叠着看，就是 iPhone 感知与真值的差距——"
+        f"这正是本闭环要缩小的东西。</p></div>"
     )
 
-    body = header + filter_bar + nav + ("".join(cards) or empty_msg) + (nav if cards else "")
+    has_gt_mask = any(row.get("label_path") for row in manifest_rows)
+    has_pred_mask = any(
+        _traversable_grid_to_mask(r.get("traversable_grid")) is not None
+        for r in pred_index.values()
+    )
+    # Both regions are green. To compare them cleanly we show ONE at a time by
+    # default: the iPhone-perceived region is on (that's the thing under review),
+    # the CamVid truth is one toggle away. Turn both on to see overlap/gap.
+    toggles = []
+    if has_pred_mask:
+        toggles.append(
+            "<label style='cursor:pointer;user-select:none;display:block;margin:2px 0'>"
+            "<input type='checkbox' id='predMaskToggle' checked "
+            "onchange=\"document.getElementById('framesWrap')"
+            ".classList.toggle('hide-pred-mask', !this.checked)\"> "
+            "<b style='color:#30d158'>显示 iPhone 感知的可走区域</b>"
+            "（绿色半透明方块 = 端上分割模型判定可走的区域，粗网格是它真实的分辨率）"
+            "</label>"
+        )
+    if has_gt_mask:
+        toggles.append(
+            "<label style='cursor:pointer;user-select:none;display:block;margin:2px 0'>"
+            "<input type='checkbox' id='gtMaskToggle' "
+            "onchange=\"document.getElementById('framesWrap')"
+            ".classList.toggle('hide-gt-mask', !this.checked)\"> "
+            "<b style='color:#30d158'>显示 CamVid 真值可走区域</b>"
+            "（绿色半透明 = 标注推出的答案；和上面对比就能看出 iPhone 感知差多少）"
+            "</label>"
+        )
+    mask_toggle = ""
+    if toggles:
+        mask_toggle = (
+            "<div class='card' style='padding:10px 12px'>"
+            "<p class='hint' style='margin:0 0 6px'>两块都是绿色：默认只显示 iPhone 感知，"
+            "打开真值即可叠着看差距（都是绿色，建议一次开一个更清楚）。</p>"
+            + "".join(toggles)
+            + "</div>"
+        )
+    # Default view: iPhone region ON (hide-gt-mask hides the truth layer initially).
+    wrap_classes = "hide-gt-mask" if has_gt_mask else ""
+    cards_html = (
+        f"<div id='framesWrap' class='{wrap_classes}'>{''.join(cards) or empty_msg}</div>"
+    )
+    body = header + filter_bar + mask_toggle + nav + cards_html + (nav if cards else "")
     return _html_page("逐帧识别效果", body)
 
 
@@ -2541,7 +3537,7 @@ async function saveConfig(){
 </script>"""
 
     body = (
-        "<p><a href='/diagnostics/ui'>← 返回平台首页</a></p>"
+        "<p><a href='/diagnostics/ui'>← 感知能力总览</a></p>"
         f"<h1>感知配置（当前 v{config['version']}）</h1>"
         "<p class='hint'>这些数值控制 iPhone 端“近处/左/右”通行判定的 ROI 与阈值。默认值等于 App 内置常量。"
         "先在 iPhone 真身评估里验证候选参数，再回到这里保存并升级版本，iPhone 下次连接自动生效。</p>"

@@ -40,6 +40,7 @@ struct CameraRiskOverlay: View {
                 if isActive {
                     pathGuidanceOverlay(in: proxy.size)
                     roadCueOverlay(in: proxy.size)
+                    laneMarkingOverlay(in: proxy.size)
                     riskRegionOverlay(in: proxy.size)
                     objectOverlay(in: proxy.size)
                     cueChips
@@ -67,11 +68,10 @@ struct CameraRiskOverlay: View {
     }
 
     private var cueTexts: [String] {
+        // The coarse near/left/right status chips + "关注左前方" focus label were
+        // removed: they echoed the retired three-box discrete signal. The guidance
+        // corridor + road/obstacle cues carry the on-screen guidance now.
         var texts: [String] = []
-        texts.append(signal.pathGuidance.nearPathStatus.overlayLabel)
-        if let focus = focusDirectionText {
-            texts.append(focus)
-        }
         if signal.roadCues.crosswalk == .possible {
             texts.append("疑似人行横道")
         }
@@ -101,19 +101,6 @@ struct CameraRiskOverlay: View {
         return guidance.guidanceCorridor != nil
     }
 
-    private var focusDirectionText: String? {
-        switch signal.pathGuidance.focusDirection {
-        case .left:
-            return "关注左前方"
-        case .center:
-            return "关注正前方"
-        case .right:
-            return "关注右前方"
-        case .unknown:
-            return nil
-        }
-    }
-
     private func pathGuidanceOverlay(in size: CGSize) -> some View {
         Canvas { context, _ in
             let guidance = signal.pathGuidance
@@ -139,24 +126,40 @@ struct CameraRiskOverlay: View {
                 drawSubtleNearPathReference(in: &context, size: size)
             }
 
-            drawAttentionZone(
-                in: &context,
-                size: size,
-                normalizedRect: LocalPathGuidanceEngine.leftFrontROI,
-                status: guidance.leftFrontStatus
-            )
-            drawAttentionZone(
-                in: &context,
-                size: size,
-                normalizedRect: LocalPathGuidanceEngine.rightFrontROI,
-                status: guidance.rightFrontStatus
-            )
-
+            // The left/right front ROI attention-zone rectangles were removed —
+            // they were the discrete three-box signal the platform retired. The
+            // guidance corridor + obstacle (blocked/uncertain) regions remain.
             for rect in guidance.uncertainRegions {
                 let viewRect = overlayRect(forNormalizedRect: rect, in: size)
                 let path = Path(roundedRect: viewRect, cornerRadius: 16)
                 context.fill(path, with: .color(.gray.opacity(0.20)))
                 context.stroke(path, with: .color(.gray.opacity(0.70)), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+            }
+        }
+    }
+
+    /// Draw the REAL detected lane markings from the dedicated lane segmenter's
+    /// grid (row 0 = top, matching the camera image), as translucent yellow cells.
+    /// This replaces the old hardcoded diagonal placeholder as the truthful lane
+    /// display; absent grid (model off / found nothing) simply draws nothing.
+    private func laneMarkingOverlay(in size: CGSize) -> some View {
+        Canvas { context, _ in
+            guard let lane = signal.laneGrid,
+                  lane.cols > 0, lane.rows > 0,
+                  lane.cells.count == lane.cols * lane.rows else { return }
+            let cellW = size.width / CGFloat(lane.cols)
+            let cellH = size.height / CGFloat(lane.rows)
+            let color = Color.yellow.opacity(0.55)
+            for r in 0..<lane.rows {
+                let rowBase = r * lane.cols
+                for c in 0..<lane.cols where lane.cells[rowBase + c] != 0 {
+                    // +0.5 avoids hairline gaps between adjacent lane cells.
+                    let rect = CGRect(
+                        x: CGFloat(c) * cellW, y: CGFloat(r) * cellH,
+                        width: cellW + 0.5, height: cellH + 0.5
+                    )
+                    context.fill(Path(rect), with: .color(color))
+                }
             }
         }
     }
@@ -203,29 +206,12 @@ struct CameraRiskOverlay: View {
         )
     }
 
-    private func drawAttentionZone(
-        in context: inout GraphicsContext,
-        size: CGSize,
-        normalizedRect: CGRect,
-        status: LocalPathStatus
-    ) {
-        guard status == .caution || status == .blocked else {
-            return
-        }
-        let rect = overlayRect(forNormalizedRect: normalizedRect, in: size)
-        let path = Path(roundedRect: rect, cornerRadius: 18)
-        let color = status.overlayColor
-        context.fill(path, with: .color(color.opacity(0.16)))
-        context.stroke(
-            path,
-            with: .color(color.opacity(0.76)),
-            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, dash: [8, 8])
-        )
-    }
-
     private func roadCueOverlay(in size: CGSize) -> some View {
         Canvas { context, _ in
-            if signal.roadCues.curb == .possible || signal.roadCues.laneMarking == .possible {
+            // Curb/boundary heuristic only. Lane markings are no longer drawn as the
+            // old hardcoded diagonal placeholder here — the dedicated lane segmenter's
+            // real grid renders in laneMarkingOverlay(in:) instead.
+            if signal.roadCues.curb == .possible {
                 var leftBoundary = Path()
                 leftBoundary.move(to: CGPoint(x: size.width * 0.12, y: size.height * 0.88))
                 leftBoundary.addLine(to: CGPoint(x: size.width * 0.32, y: size.height * 0.38))

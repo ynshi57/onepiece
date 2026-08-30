@@ -91,7 +91,7 @@ def test_diagnostics_annotation_ui_and_labels(monkeypatch, tmp_path):
 
     ui_response = client.get("/diagnostics/ui")
     assert ui_response.status_code == 200
-    assert "VQASee 闭环实验平台" in ui_response.text
+    assert "iPhone 本地感知能力总览" in ui_response.text
     assert "ui-session" in ui_response.text
 
     annotate_response = client.get("/diagnostics/sessions/ui-session/annotate")
@@ -379,6 +379,79 @@ def test_find_dataset_dir_locates_nested_directory(tmp_path):
     assert _find_dataset_dir(tmp_path, "DoesNotExist") is None
 
 
+def test_dir_has_images_treats_empty_dir_as_absent(tmp_path):
+    """Regression: macOS purged /tmp left empty CamVid dirs, which the old check
+    counted as 'downloaded' and so silently skipped re-download. An empty (or
+    missing) dir must read as NOT-ready; only actual image files count."""
+    from app.diagnostic_api import _dir_has_images
+
+    empty = tmp_path / "CamVid_RGB"
+    empty.mkdir()
+    assert _dir_has_images(None) is False
+    assert _dir_has_images(tmp_path / "does_not_exist") is False
+    assert _dir_has_images(empty) is False  # exists but purged -> not ready
+
+    (empty / "0001TP_006690.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert _dir_has_images(empty) is True
+
+    # A dir with only non-image files still reads as not-ready.
+    other = tmp_path / "meta"
+    other.mkdir()
+    (other / "readme.txt").write_text("x")
+    assert _dir_has_images(other) is False
+
+
+def test_allowed_local_roots_track_the_dataset_root(monkeypatch, tmp_path):
+    """Regression: after moving datasets to the durable ~/.cache/vqasee root, the
+    file-serving allowlist still only trusted cwd//tmp, so every image 403'd with
+    file_not_allowed. The allowlist must derive from _open_dataset_root()."""
+    import app.diagnostic_api as da
+
+    sentinel = (tmp_path / "cache" / "vqasee" / "open-datasets").resolve()
+    sentinel.mkdir(parents=True)
+    monkeypatch.setattr(da, "_open_dataset_root", lambda: sentinel)
+    assert sentinel in da._allowed_local_roots()
+
+
+def test_local_file_serves_image_from_durable_dataset_root(monkeypatch, tmp_path):
+    import app.diagnostic_api as da
+    from PIL import Image
+
+    root = (tmp_path / "durable-root").resolve()
+    img_dir = root / "camvid" / "CamVid_RGB"
+    img_dir.mkdir(parents=True)
+    image_path = img_dir / "0001TP_006690.png"
+    Image.new("RGB", (16, 16), "#202020").save(image_path)
+
+    # Datasets live under `root`, which is neither cwd nor /tmp.
+    monkeypatch.setattr(da, "_open_dataset_root", lambda: root)
+
+    response = client.get(f"/diagnostics/local-file?path={image_path}")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/")
+
+
+def test_detect_camvid_dirs_ignores_empty_purged_dirs(monkeypatch, tmp_path):
+    """The Step-2 auto-fill must not point at emptied dirs after a /tmp purge."""
+    from app.diagnostic_api import _detect_camvid_dirs
+
+    monkeypatch.setenv("VQASEE_DATASET_ROOT", str(tmp_path))
+    rgb = tmp_path / "camvid" / "CamVid_RGB"
+    lbl = tmp_path / "camvid" / "CamVid_Label"
+    rgb.mkdir(parents=True)
+    lbl.mkdir(parents=True)
+
+    # Empty dirs: detected as absent (None), so the UI won't claim readiness.
+    assert _detect_camvid_dirs() == (None, None)
+
+    # Once real images land, detection returns the populated dirs.
+    (rgb / "frame.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (lbl / "frame_L.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    detected_rgb, detected_lbl = _detect_camvid_dirs()
+    assert detected_rgb == rgb
+    assert detected_lbl == lbl
+
+
 def test_diagnostics_datasets_ui_and_evaluate():
     ui_response = client.get("/diagnostics/datasets/ui")
     assert ui_response.status_code == 200
@@ -387,6 +460,59 @@ def test_diagnostics_datasets_ui_and_evaluate():
     eval_response = client.get("/diagnostics/datasets/evaluate?manifest=docs/datasets/path-guidance-manifest-example.jsonl")
     assert eval_response.status_code == 200
     assert "status_accuracy" in eval_response.json()
+
+
+def test_ios_harness_run_rejects_predictions_file(tmp_path):
+    # Pointing the harness at its own PREDICTIONS output (frame_id + prediction, no
+    # image) must fail loud + actionable — not run into a cryptic missing_image=N.
+    import json as _json
+
+    pred = tmp_path / "foo-ios-harness.jsonl"
+    pred.write_text(
+        _json.dumps({"frame_id": "road/x", "prediction": {}, "guidance_path": {}}) + "\n",
+        encoding="utf-8",
+    )
+    resp = client.post(f"/diagnostics/datasets/ios-harness/run?manifest={pred}")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "error"
+    assert payload["capability"] == "wrong_manifest"
+    # The message must point the user at a real dataset manifest.
+    assert "camvid-manifest.jsonl" in payload["reason"]
+
+
+def test_manifest_runnable_reason_accepts_dataset_flags_predictions(tmp_path):
+    import json as _json
+
+    from app.diagnostic_api import _manifest_runnable_reason
+
+    ds = tmp_path / "mini-manifest.jsonl"
+    ds.write_text(
+        _json.dumps({"frame_id": "road/x", "image_path": str(tmp_path / "x.png"), "image": "x.png"}) + "\n",
+        encoding="utf-8",
+    )
+    assert _manifest_runnable_reason(ds) is None
+
+    pred = tmp_path / "p-ios-harness.jsonl"
+    pred.write_text(_json.dumps({"frame_id": "road/x", "prediction": {}}) + "\n", encoding="utf-8")
+    reason = _manifest_runnable_reason(pred)
+    assert reason is not None and "预测结果" in reason
+
+
+def test_datasets_ui_marks_predictions_file_non_evaluable():
+    # The dataset list enumerates every *.jsonl; the harness prediction output must be
+    # shown but NOT offered the evaluate/harness links that would fail on it, and it
+    # is grouped under the collapsed developer section (not mixed with truth datasets).
+    resp = client.get("/diagnostics/datasets/ui")
+    assert resp.status_code == 200
+    text = resp.text
+    assert "camvid-ios-harness.jsonl" in text
+    # Prediction files live under the "预测结果 / 派生文件" developer section.
+    assert "预测结果 / 派生文件" in text
+    # Safety-critical: the prediction output is never offered an evaluate/harness link
+    # (which would report a cryptic missing_image=N for every frame).
+    assert "datasets/evaluate/ui?manifest=docs/datasets/camvid-ios-harness.jsonl" not in text
+    assert "datasets/ios-harness/ui?manifest=docs/datasets/camvid-ios-harness.jsonl" not in text
 
 
 def test_dataset_evaluate_ui_surfaces_missing_predictions():
@@ -687,3 +813,340 @@ def test_diagnostics_create_open_camvid_missing_returns_clear_error(monkeypatch,
     assert response.status_code == 404
     assert "camvid_not_found" in response.json()["detail"]
     assert not output.exists()
+
+
+# --- Capability overview (single north-star scorecard) -----------------------
+import json as _json
+
+
+def _write_capability_baselines(
+    baseline_dir,
+    *,
+    iou=0.77,
+    recall=0.79,
+    precision=0.97,
+    region_false_go=0,
+    region_miss=83,
+    scored=701,
+    hit=0.85,
+    line_false_go=0,
+    missed_line=10,
+    frames=701,
+    include_role=False,
+    road_as_primary=0.807,
+    primary_recall=0.639,
+    lane_coverage=0.718,
+    road_as_primary_frames=700,
+    obstacle_overlap_frames=5,
+    include_lane=False,
+    lane_recall_tol=0.982,
+    lane_precision_tol=0.851,
+    lane_iou=0.331,
+    lane_miss_frames=0,
+    lane_frames=60,
+    lane_tol=3,
+    lane_on_device=False,
+    include_obstacle=False,
+    obstacle_coverage_recall=0.62,
+    obstacle_box_precision=0.44,
+    obstacle_miss_frames=180,
+    obstacle_frames=540,
+    include_drive=False,
+    drive_road_recall=0.811,
+    drive_sidewalk_as_road_rate=0.006,
+    drive_sidewalk_as_road_frames=0,
+    drive_obstacle_overlap_frames=534,
+):
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    if include_drive:
+        (baseline_dir / "camvid-ios-drive.json").write_text(
+            _json.dumps(
+                {
+                    "name": "camvid-ios-drive",
+                    "source": "ios_coreml_offline_harness_role_drive",
+                    "metrics": {
+                        "mean_primary_recall": drive_road_recall,
+                        "mean_road_as_primary_rate": drive_sidewalk_as_road_rate,
+                        "road_as_primary_frames": drive_sidewalk_as_road_frames,
+                        "obstacle_overlap_frames": drive_obstacle_overlap_frames,
+                        "mean_lane_coverage": 0.718,
+                        "mean_obstacle_overlap_rate": 0.163,
+                        "scored": scored,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    if include_obstacle:
+        (baseline_dir / "camvid-ios-obstacle.json").write_text(
+            _json.dumps(
+                {
+                    "name": "camvid-ios-obstacle",
+                    "source": "ios_coreml_offline_harness_obstacle",
+                    "metrics": {
+                        "mean_coverage_recall": obstacle_coverage_recall,
+                        "mean_box_precision": obstacle_box_precision,
+                        "obstacle_miss_frames": obstacle_miss_frames,
+                        "obstacle_frames": obstacle_frames,
+                        "scored": scored,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    if include_lane:
+        (baseline_dir / "camvid-ios-lane.json").write_text(
+            _json.dumps(
+                {
+                    "name": "camvid-ios-lane",
+                    "source": "lane_seg_camvid_heldout",
+                    "on_device": lane_on_device,
+                    "metrics": {
+                        "mean_recall_tol": lane_recall_tol,
+                        "mean_precision_tol": lane_precision_tol,
+                        "mean_iou": lane_iou,
+                        "lane_miss_frames": lane_miss_frames,
+                        "lane_frames": lane_frames,
+                        "scored": lane_frames,
+                        "tol": lane_tol,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    if include_role:
+        (baseline_dir / "camvid-ios-role.json").write_text(
+            _json.dumps(
+                {
+                    "name": "camvid-ios-role",
+                    "source": "ios_coreml_offline_harness_role",
+                    "metrics": {
+                        "mean_road_as_primary_rate": road_as_primary,
+                        "mean_primary_recall": primary_recall,
+                        "mean_lane_coverage": lane_coverage,
+                        "mean_obstacle_overlap_rate": 0.004,
+                        "road_as_primary_frames": road_as_primary_frames,
+                        "obstacle_overlap_frames": obstacle_overlap_frames,
+                        "scored": scored,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    (baseline_dir / "camvid-ios-region.json").write_text(
+        _json.dumps(
+            {
+                "name": "camvid-ios-region",
+                "source": "ios_coreml_offline_harness_region",
+                "metrics": {
+                    "mean_iou": iou,
+                    "mean_precision": precision,
+                    "mean_recall": recall,
+                    "region_false_go_frames": region_false_go,
+                    "region_miss_frames": region_miss,
+                    "scored": scored,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (baseline_dir / "camvid-ios-guidance.json").write_text(
+        _json.dumps(
+            {
+                "name": "camvid-ios-guidance",
+                "source": "ios_coreml_offline_harness_guidance",
+                "metrics": {
+                    "hit_rate": hit,
+                    "pred_coverage": 0.85,
+                    "mean_deviation": 0.09,
+                    "false_go_frames": line_false_go,
+                    "missed_path_frames": missed_line,
+                    "frames": frames,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_diagnostics_overview_shows_capability_verdict(monkeypatch, tmp_path):
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir)
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+
+    response = client.get("/diagnostics/ui")
+    assert response.status_code == 200
+    text = response.text
+    # Leads with the single capability verdict, not scattered eval cards.
+    assert "iPhone 本地感知能力总览" in text
+    assert "看得准" in text and "画得对" in text and "安全侧" in text
+    assert "IoU 0.77" in text
+    # Verdict must reflect the safe-but-conservative state and name the fix owner.
+    assert "偏保守" in text
+    assert "0 冒进帧" in text
+    assert "全麦" in text
+    # Detail pages are folded into drill-down, not spread on the landing.
+    assert "下钻" in text
+
+
+def test_diagnostics_overview_without_baseline_prompts_run(monkeypatch, tmp_path):
+    # Empty baseline dir: must say "no baseline yet" and point to running eval,
+    # never fabricate a score (no silent pass).
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(tmp_path / "empty"))
+    response = client.get("/diagnostics/ui")
+    assert response.status_code == 200
+    assert "尚无能力基线" in response.text
+    assert "/diagnostics/datasets/ui" in response.text
+
+
+def test_capability_snapshot_flags_regression_vs_baseline(monkeypatch, tmp_path):
+    from app.diagnostic_api import _capability_snapshot
+
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir)
+    # A newer eval report whose region IoU dropped below baseline → trend "down".
+    (baseline_dir / "camvid-ios-report.json").write_text(
+        _json.dumps(
+            {
+                "region": {"mean_iou": 0.70},
+                "guidance_line": {"hit_rate": 0.85},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+
+    snap = _capability_snapshot()
+    assert snap["available"] is True
+    assert snap["trend"]["status"] == "down"
+    assert "退步" in snap["trend"]["text"]
+
+
+def test_capability_snapshot_flags_unsafe_when_false_go(monkeypatch, tmp_path):
+    from app.diagnostic_api import _capability_snapshot
+
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir, region_false_go=5)
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+
+    snap = _capability_snapshot()
+    assert snap["safe"] is False
+    assert "冒进" in snap["summary"]
+
+
+def test_capability_snapshot_role_section_absent_without_role_baseline(monkeypatch, tmp_path):
+    """Role baseline is optional: when absent the snapshot stays available and just
+    omits the role section (backwards compatible, no crash)."""
+    from app.diagnostic_api import _capability_snapshot
+
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir)  # no role
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+    snap = _capability_snapshot()
+    assert snap["available"] is True
+    assert snap.get("role") is None
+
+
+def test_capability_snapshot_lane_section_absent_without_lane_baseline(monkeypatch, tmp_path):
+    """Lane baseline is optional: absent => snapshot stays available, lane is None
+    (no fabricated lane capability)."""
+    from app.diagnostic_api import _capability_snapshot
+
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir)  # no lane
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+    snap = _capability_snapshot()
+    assert snap["available"] is True
+    assert snap.get("lane") is None
+
+
+def test_overview_surfaces_lane_capability_card(monkeypatch, tmp_path):
+    """When a lane baseline exists, the overview must show lane as a first-class
+    capability card: tolerance-band recall/precision, the thin-class IoU caveat,
+    and the honest on-device status (offline-only until bundled)."""
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir, include_lane=True)
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+
+    response = client.get("/diagnostics/ui")
+    assert response.status_code == 200
+    text = response.text
+    assert "车道线 · 找得到吗" in text
+    assert "召回 98%" in text  # 0.982 tolerance-band recall
+    assert "容差 3px" in text
+    assert "尚未捆绑" in text  # honest: offline only until on-device
+
+
+def test_capability_snapshot_obstacle_section_absent_without_baseline(monkeypatch, tmp_path):
+    from app.diagnostic_api import _capability_snapshot
+
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir)  # no obstacle
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+    snap = _capability_snapshot()
+    assert snap["available"] is True
+    assert snap.get("obstacle") is None
+
+
+def test_overview_surfaces_obstacle_capability_card(monkeypatch, tmp_path):
+    """When an obstacle baseline exists, the overview must show obstacles as a
+    first-class card: coverage recall, the 'proxy not mAP' caveat, and misses."""
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir, include_obstacle=True)
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+
+    response = client.get("/diagnostics/ui")
+    assert response.status_code == 200
+    text = response.text
+    assert "障碍物 · 看得见吗" in text
+    assert "覆盖召回 62%" in text
+    assert "非检测 mAP" in text  # honest: coverage proxy, not mAP
+    assert "180/540" in text
+
+
+def test_overview_surfaces_drive_role_contrast(monkeypatch, tmp_path):
+    """The driving-role card must make the '区分人车' contrast explicit: the SAME
+    device grid is near-safe for a driver (0 sidewalk-as-road frames, high road
+    recall) — which is exactly why role-conditioning is required."""
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir, include_role=True, include_drive=True)
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+
+    response = client.get("/diagnostics/ui")
+    assert response.status_code == 200
+    text = response.text
+    # Both role cards present -> the contrast is visible on one page.
+    assert "行人角色" in text and "驾驶角色" in text
+    assert "人行道误当车道" in text
+    assert "道路召回 81%" in text
+    assert "必须区分人车" in text
+
+
+def test_capability_snapshot_drive_section_absent_without_baseline(monkeypatch, tmp_path):
+    from app.diagnostic_api import _capability_snapshot
+
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir, include_role=True)  # walk only, no drive
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+    snap = _capability_snapshot()
+    assert snap["available"] is True
+    assert snap.get("drive") is None
+
+
+def test_overview_surfaces_role_road_as_sidewalk_redline(monkeypatch, tmp_path):
+    """When a role baseline exists, the overview must loudly show the walk-role
+    safety red-line (road misread as sidewalk) and point at the T2 fix, so the
+    'lane / road-boundary not recognized' gap is visible on the landing page."""
+    baseline_dir = tmp_path / "baselines"
+    _write_capability_baselines(baseline_dir, include_role=True)
+    monkeypatch.setenv("VQASEE_EVAL_BASELINE_DIR", str(baseline_dir))
+
+    response = client.get("/diagnostics/ui")
+    assert response.status_code == 200
+    text = response.text
+    assert "行人角色" in text
+    assert "马路误当人行道" in text
+    assert "81%" in text  # 0.807 rounded
+    assert "700/701" in text
+    assert "车道线" in text
+    assert "T2" in text

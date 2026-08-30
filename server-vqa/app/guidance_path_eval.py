@@ -22,6 +22,7 @@ Metrics are named honestly and never hide the safety-critical case:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from app.guidance_path import GuidanceLine, GuidancePath, PATH_STATUS_OK
@@ -48,6 +49,31 @@ def _interp(line: GuidanceLine, y: float) -> tuple[float, float] | None:
 
 def _heading(line: GuidanceLine) -> float:
     return line.points[-1].x - line.points[0].x if len(line.points) >= 2 else 0.0
+
+
+def _mean_x(line: GuidanceLine) -> float:
+    return sum(point.x for point in line.points) / len(line.points)
+
+
+def _frame_sort_key(frame_id: str) -> tuple[str, int] | None:
+    """Group/sort CamVid-style frame ids by sequence and trailing frame number."""
+    match = re.search(r"(\d+)(?!.*\d)", frame_id)
+    if match is None:
+        return None
+    return frame_id[:match.start()], int(match.group(1))
+
+
+def _percentile(values: list[float], pct: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = (len(ordered) - 1) * pct
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = pos - lo
+    return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
 
 
 @dataclass
@@ -139,6 +165,7 @@ def evaluate_guidance_paths(pairs: list[tuple[str, GuidancePath, GuidancePath]])
     """Aggregate line-level metrics over (frame_id, gt, pred) triples."""
     frames = [score_frame(fid, gt, pred) for fid, gt, pred in pairs]
     both_ok = [f for f in frames if f.mean_deviation is not None]
+    stability = _stability_metrics(pairs)
 
     report: dict[str, Any] = {
         "frames": len(frames),
@@ -150,9 +177,47 @@ def evaluate_guidance_paths(pairs: list[tuple[str, GuidancePath, GuidancePath]])
         "pred_coverage": _mean([f.pred_coverage for f in both_ok if f.pred_coverage is not None]),
         "over_extension": _mean([f.over_extension for f in both_ok if f.over_extension is not None]),
         "direction_error": _mean([f.direction_error for f in both_ok if f.direction_error is not None]),
+        **stability,
         "per_frame": [f.to_dict() for f in frames],
     }
     return report
+
+
+def _stability_metrics(pairs: list[tuple[str, GuidancePath, GuidancePath]]) -> dict[str, Any]:
+    """Adjacent-frame lateral jump metrics for GT and PRED primary lines.
+
+    Per-frame agreement can look acceptable while the line visibly jumps between
+    adjacent frames. These metrics make that defect impossible to hide.
+    """
+    grouped: dict[str, list[tuple[int, GuidancePath, GuidancePath]]] = {}
+    for fid, gt, pred in pairs:
+        key = _frame_sort_key(fid)
+        if key is None:
+            continue
+        seq, frame_no = key
+        grouped.setdefault(seq, []).append((frame_no, gt, pred))
+
+    gt_jumps: list[float] = []
+    pred_jumps: list[float] = []
+    for rows in grouped.values():
+        rows.sort(key=lambda item: item[0])
+        for (_a_no, gt_a, pred_a), (_b_no, gt_b, pred_b) in zip(rows, rows[1:]):
+            if gt_a.status == PATH_STATUS_OK and gt_b.status == PATH_STATUS_OK and gt_a.primary and gt_b.primary:
+                gt_jumps.append(abs(_mean_x(gt_b.primary) - _mean_x(gt_a.primary)))
+            if pred_a.status == PATH_STATUS_OK and pred_b.status == PATH_STATUS_OK and pred_a.primary and pred_b.primary:
+                pred_jumps.append(abs(_mean_x(pred_b.primary) - _mean_x(pred_a.primary)))
+
+    def flip_rate(values: list[float]) -> float | None:
+        return (sum(1 for value in values if value > 0.15) / len(values)) if values else None
+
+    return {
+        "gt_lateral_jump_pairs": len(gt_jumps),
+        "pred_lateral_jump_pairs": len(pred_jumps),
+        "gt_lateral_jump_p95": _percentile(gt_jumps, 0.95),
+        "pred_lateral_jump_p95": _percentile(pred_jumps, 0.95),
+        "gt_flip_pair_rate": flip_rate(gt_jumps),
+        "pred_flip_pair_rate": flip_rate(pred_jumps),
+    }
 
 
 # Gate tolerances: a change worse than this (relative to baseline) blocks.
@@ -171,6 +236,10 @@ GUIDANCE_BASELINE_KEYS: tuple[str, ...] = (
     "pred_coverage",
     "over_extension",
     "direction_error",
+    "gt_lateral_jump_p95",
+    "pred_lateral_jump_p95",
+    "gt_flip_pair_rate",
+    "pred_flip_pair_rate",
 )
 
 
@@ -210,5 +279,7 @@ def gate_guidance(current: dict[str, Any], baseline: dict[str, Any]) -> tuple[bo
     worse_up("over_extension", _EPS_RATE)
     worse_up("mean_deviation", _EPS_DEVIATION)
     worse_down("hit_rate", _EPS_RATE)
+    worse_up("pred_lateral_jump_p95", _EPS_DEVIATION)
+    worse_up("pred_flip_pair_rate", _EPS_RATE)
 
     return (len(reasons) == 0, reasons)

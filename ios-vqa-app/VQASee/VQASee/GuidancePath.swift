@@ -85,6 +85,86 @@ extension GuidancePath {
 // MARK: - Centerline generation (mirrors centerline_from_mask in guidance_path.py)
 
 enum GuidancePathBuilder {
+    private static func largestAnchorComponent(
+        width: Int,
+        height: Int,
+        sample: (Int, Int) -> Double?,
+        threshold: Double,
+        anchorFraction: Double = 0.15
+    ) -> [Bool]? {
+        func traversable(_ x: Int, _ y: Int) -> Bool {
+            (sample(x, y).map { $0 >= threshold }) ?? false
+        }
+
+        var firstRow: Int?
+        for y in stride(from: height - 1, through: 0, by: -1) {
+            var rowHasFreeSpace = false
+            for x in 0..<width where traversable(x, y) {
+                rowHasFreeSpace = true
+                break
+            }
+            if rowHasFreeSpace {
+                firstRow = y
+                break
+            }
+        }
+        guard let anchorBottom = firstRow else { return nil }
+
+        let band = max(1, Int((Double(height) * anchorFraction).rounded()))
+        let anchorTop = max(0, anchorBottom - band + 1)
+        var visited = Array(repeating: false, count: width * height)
+        var bestPixels: [Int] = []
+        var bestArea = 0
+
+        for y in stride(from: height - 1, through: 0, by: -1) {
+            for x in 0..<width {
+                let idx = y * width + x
+                if visited[idx] || !traversable(x, y) { continue }
+
+                var stack = [idx]
+                var pixels: [Int] = []
+                pixels.reserveCapacity(64)
+                visited[idx] = true
+                var touchesAnchor = false
+
+                while let current = stack.popLast() {
+                    pixels.append(current)
+                    let cy = current / width
+                    let cx = current % width
+                    if cy >= anchorTop && cy <= anchorBottom {
+                        touchesAnchor = true
+                    }
+
+                    let neighbors = [
+                        (cx, cy - 1),
+                        (cx, cy + 1),
+                        (cx - 1, cy),
+                        (cx + 1, cy),
+                    ]
+                    for (nx, ny) in neighbors where nx >= 0 && nx < width && ny >= 0 && ny < height {
+                        let nidx = ny * width + nx
+                        if !visited[nidx] && traversable(nx, ny) {
+                            visited[nidx] = true
+                            stack.append(nidx)
+                        }
+                    }
+                }
+
+                if touchesAnchor && pixels.count > bestArea {
+                    bestArea = pixels.count
+                    bestPixels = pixels
+                }
+            }
+        }
+
+        guard !bestPixels.isEmpty else { return nil }
+        var component = Array(repeating: false, count: width * height)
+        for idx in bestPixels {
+            component[idx] = true
+        }
+        return component
+    }
+
     /// Trace a free-space centerline through a traversability grid.
     ///
     /// - `sample(x,y)`: traversability at grid cell (top-left origin), nil if invalid.
@@ -118,6 +198,15 @@ enum GuidancePathBuilder {
         topRow = max(0, min(topRow, height - 2))
 
         let count = max(2, samples)
+        guard let component = largestAnchorComponent(
+            width: width,
+            height: height,
+            sample: sample,
+            threshold: threshold
+        ) else {
+            return GuidancePath(status: .insufficient, coverage: 0, source: source)
+        }
+
         var points: [GuidancePoint] = []
         points.reserveCapacity(count)
         var prevCenter: Double? = nil
@@ -125,23 +214,32 @@ enum GuidancePathBuilder {
         for i in 0..<count {
             let t = Double(i) / Double(count - 1)
             let imgRow = Int((Double(height - 1) + t * (Double(topRow) - Double(height - 1))).rounded())
-            let target = prevCenter ?? (Double(width) * 0.5)
 
-            // Single pass: find the traversable run whose center is nearest target.
+            // Single pass over runs inside the anchor-reachable component. Cross-frame
+            // stability comes from the component selection (largest reachable free
+            // space). WITHIN a frame we keep continuity: the anchor row takes the
+            // widest run, then each row follows the run nearest the running center.
+            // Taking the widest run every row makes the line fold left-right when the
+            // component splits into comparable blocks (the GT zigzag).
             var bestStart = -1
             var bestEnd = -1
-            var bestDist = Double.greatestFiniteMagnitude
+            var bestScore = Double.greatestFiniteMagnitude
             var runStart = -1
             var x = 0
             while x <= width {
-                let traversable = x < width && ((sample(x, imgRow).map { $0 >= threshold }) ?? false)
-                if traversable {
+                let isInComponent = x < width && component[imgRow * width + x]
+                if isInComponent {
                     if runStart < 0 { runStart = x }
                 } else if runStart >= 0 {
                     let center = Double(runStart + x) / 2.0
-                    let dist = abs(center - target)
-                    if dist < bestDist {
-                        bestDist = dist
+                    let score: Double
+                    if let prev = prevCenter {
+                        score = abs(center - prev)                 // nearest to running center
+                    } else {
+                        score = -Double(x - runStart)              // widest run anchors first row
+                    }
+                    if score < bestScore {
+                        bestScore = score
                         bestStart = runStart
                         bestEnd = x
                     }

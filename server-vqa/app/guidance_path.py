@@ -181,6 +181,62 @@ def _runs(row: np.ndarray) -> list[tuple[int, int]]:
     return runs
 
 
+def _largest_anchor_component(mask: np.ndarray, *, anchor_frac: float = 0.15) -> np.ndarray | None:
+    """Return the largest traversable component reachable from the bottom anchor band.
+
+    This replaces the old "seed from image center, then greedy nearest run" behavior
+    that flips in two-corridor scenes. We still respect the product safety rule: the
+    line must start from the nearest reachable free space (bottom/feet side). If the
+    immediate bottom is blocked (car hood / cropped foreground), we scan upward until
+    the first traversable row and use a small band around it as anchors.
+    """
+    height, width = mask.shape
+    first_row = None
+    for row in range(height - 1, -1, -1):
+        if bool(mask[row].any()):
+            first_row = row
+            break
+    if first_row is None:
+        return None
+
+    band = max(1, int(round(height * anchor_frac)))
+    anchor_top = max(0, first_row - band + 1)
+    anchor_rows = set(range(anchor_top, first_row + 1))
+
+    visited = np.zeros(mask.shape, dtype=bool)
+    best_pixels: list[tuple[int, int]] = []
+    best_area = 0
+    # Deterministic scan order keeps tie behavior stable.
+    for y in range(height - 1, -1, -1):
+        for x in range(width):
+            if visited[y, x] or not mask[y, x]:
+                continue
+            stack = [(y, x)]
+            visited[y, x] = True
+            pixels: list[tuple[int, int]] = []
+            touches_anchor = False
+            while stack:
+                cy, cx = stack.pop()
+                pixels.append((cy, cx))
+                if cy in anchor_rows:
+                    touches_anchor = True
+                for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                    if 0 <= ny < height and 0 <= nx < width and not visited[ny, nx] and mask[ny, nx]:
+                        visited[ny, nx] = True
+                        stack.append((ny, nx))
+            area = len(pixels)
+            if touches_anchor and area > best_area:
+                best_area = area
+                best_pixels = pixels
+
+    if not best_pixels:
+        return None
+    component = np.zeros(mask.shape, dtype=bool)
+    ys, xs = zip(*best_pixels)
+    component[np.asarray(ys), np.asarray(xs)] = True
+    return component
+
+
 def centerline_from_mask(
     mask: np.ndarray,
     *,
@@ -214,10 +270,14 @@ def centerline_from_mask(
     # Sample image rows from the bottom (height-1) up to the horizon row.
     row_indices = np.linspace(height - 1, top_row, num=max(2, samples)).round().astype(int)
 
+    component = _largest_anchor_component(mask)
+    if component is None:
+        return GuidancePath(status=PATH_STATUS_INSUFFICIENT, coverage=0.0, source=source)
+
     points: list[GuidancePoint] = []
     prev_center: float | None = None
     for img_row in row_indices:
-        row_runs = _runs(mask[img_row])
+        row_runs = _runs(component[img_row])
         if not row_runs:
             if prev_center is None:
                 # Skip leading blocked rows at the bottom (e.g. a car hood or the
@@ -227,8 +287,16 @@ def centerline_from_mask(
             # Interior gap = a real obstacle ahead. Stop here and NEVER bridge
             # across it, or we would draw a path straight through the obstacle.
             break
-        target = width * 0.5 if prev_center is None else prev_center
-        best = min(row_runs, key=lambda r: abs(((r[0] + r[1]) / 2.0) - target))
+        # Cross-frame stability comes from the component selection above (largest
+        # anchor-reachable free space), which is robust to small perturbations.
+        # WITHIN a frame we still need continuity: the anchor row picks the widest
+        # run, then each row follows the run nearest to the running center. Picking
+        # the widest run every row makes the line fold left-right when the component
+        # splits into comparable blocks (the GT zigzag).
+        if prev_center is None:
+            best = max(row_runs, key=lambda r: (r[1] - r[0], -r[0]))
+        else:
+            best = min(row_runs, key=lambda r: abs(((r[0] + r[1]) / 2.0) - prev_center))
         center = (best[0] + best[1]) / 2.0
         half_w = (best[1] - best[0]) / 2.0
         prev_center = center

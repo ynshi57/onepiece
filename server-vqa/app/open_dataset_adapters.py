@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw
 
 from app.guidance_path import centerline_from_mask
 from app.path_dataset_import import LEFT_ROI, NEAR_ROI, RIGHT_ROI, focus_direction, roi_coverage, status_from_coverage
+from app.region_grid import downsample_mask_to_grid, grid_to_wire, lane_presence_grid
 
 
 BDD_SCENE_TAGS = ["road", "driving", "drivable", "bdd100k"]
@@ -32,6 +33,103 @@ CAMVID_SIDEWALK_COLORS = {
 
 # Default "walk" = road + sidewalk are traversable for a pedestrian.
 CAMVID_TRAVERSABLE_COLORS = CAMVID_ROAD_COLORS | CAMVID_SIDEWALK_COLORS
+
+# Lane markings as a first-class layer (previously folded into "road" and lost).
+# Colors verified against real CamVid_Label pixels (LaneMkgsDriv is only ~0.67%
+# of pixels — a thin class, which is why a dedicated lane detector is planned).
+CAMVID_LANE_COLORS = {
+    (128, 0, 192),  # LaneMkgsDriv (drivable lane markings)
+    (192, 0, 64),   # LaneMkgsNonDriv
+}
+
+# Physical / dynamic blockers a walker or driver must not be routed through.
+# Colors are the canonical CamVid 32-class palette, spot-checked against real
+# CamVid_Label pixels (Car/Pedestrian/Column_Pole/TrafficLight/SUV/Bicyclist all
+# present in sampled frames).
+CAMVID_OBSTACLE_COLORS = {
+    (64, 0, 128),     # Car
+    (64, 64, 0),      # Pedestrian
+    (0, 128, 192),    # Bicyclist
+    (64, 0, 64),      # Truck_Bus
+    (64, 128, 192),   # SUVPickupTruck
+    (192, 0, 192),    # MotorcycleScooter
+    (192, 128, 64),   # Child
+    (64, 128, 64),    # Animal
+    (64, 0, 192),     # CartLuggagePram
+    (128, 64, 64),    # OtherMoving
+    (0, 0, 64),       # TrafficCone
+    (192, 192, 128),  # Column_Pole
+    (64, 64, 128),    # Fence
+    (64, 128, 128),   # Wall
+}
+
+VALID_ROLES = ("walk", "drive")
+
+
+class RoleTraversabilityPolicy:
+    """Role-conditioned traversability semantics for one outdoor user role.
+
+    The core product fix: a *pedestrian's* traversable region must favour the
+    SIDEWALK, not the road. Merging road+sidewalk into one "traversable" (the old
+    binary semantics) tells a walker the carriageway is walkable — a trust-level
+    defect. So each role splits classes into:
+
+    - ``primary``  : the preferred, "green" traversable surface for this role.
+    - ``caution``  : usable but not preferred (e.g. a walker crossing the road);
+                     NEVER counted as primary/candidateOpen.
+    - ``obstacle`` : physical blockers to route around.
+    - ``lane``     : lane-marking geometry (a separate capability layer).
+    """
+
+    __slots__ = ("role", "primary", "caution", "obstacle", "lane")
+
+    def __init__(self, role, primary, caution, obstacle, lane):
+        self.role = role
+        self.primary = frozenset(primary)
+        self.caution = frozenset(caution)
+        self.obstacle = frozenset(obstacle)
+        self.lane = frozenset(lane)
+
+    def as_dict(self) -> dict[str, list[tuple[int, int, int]]]:
+        return {
+            "role": self.role,
+            "primary": sorted(self.primary),
+            "caution": sorted(self.caution),
+            "obstacle": sorted(self.obstacle),
+            "lane": sorted(self.lane),
+        }
+
+
+def role_traversability_policy(role: str) -> RoleTraversabilityPolicy:
+    """Resolve the class-to-semantics policy for an outdoor role.
+
+    ``role``:
+    - "walk"  (pedestrian / cyclist): primary = sidewalk; road = caution.
+    - "drive" (motor vehicle): primary = road + drivable lane; sidewalk = blocked.
+
+    Unknown roles raise (no silent guess); "bike" is an alias for "walk".
+    """
+    key = (role or "walk").strip().lower()
+    if key == "bike":
+        key = "walk"
+    if key == "walk":
+        return RoleTraversabilityPolicy(
+            role="walk",
+            primary=CAMVID_SIDEWALK_COLORS,          # sidewalk / parking block / shoulder
+            caution=CAMVID_ROAD_COLORS,              # road (crossable, not preferred)
+            obstacle=CAMVID_OBSTACLE_COLORS,
+            lane=CAMVID_LANE_COLORS,
+        )
+    if key == "drive":
+        return RoleTraversabilityPolicy(
+            role="drive",
+            primary=CAMVID_ROAD_COLORS,              # carriageway + drivable lane markings
+            caution={(128, 128, 192)},               # RoadShoulder: usable, not preferred
+            # Sidewalk is NOT drivable -> a blocker for a vehicle.
+            obstacle=CAMVID_OBSTACLE_COLORS | {(0, 0, 192), (64, 192, 128)},
+            lane=CAMVID_LANE_COLORS,
+        )
+    raise ValueError(f"unknown role: {role!r} (use one of {VALID_ROLES} or 'bike')")
 
 
 def camvid_traversable_colors(traversable_classes: str) -> set[tuple[int, int, int]]:
@@ -139,9 +237,14 @@ def _row_from_mask(*, image_path: Path, images_dir: Path, mask: np.ndarray, spli
     left_status = status_from_coverage(left_cov)
     right_status = status_from_coverage(right_cov)
     rel = image_path.relative_to(images_dir).as_posix()
-    # Ground-truth traversable guidance line, derived from the same mask. Region
-    # statuses are kept as a compatible summary; the line is the richer target.
-    gt_path = centerline_from_mask(mask, source="dataset_mask")
+    # Ground-truth walkable-region grid (same coarse raster the iPhone harness
+    # emits), so the loop can score region IoU without re-reading label images.
+    gt_cells = downsample_mask_to_grid(np.asarray(mask, dtype=bool))
+    # Derive the line from the same 64x48 grid consumed by the iPhone/evaluator,
+    # not from full-resolution labels. This keeps semantics aligned and avoids
+    # full-res connected-component work when manifests are regenerated.
+    gt_path = centerline_from_mask(gt_cells.astype(bool), source="dataset_mask")
+    gt_grid = grid_to_wire(gt_cells)
     return {
         "frame_id": f"{split}/{image_path.stem}",
         "image": rel,
@@ -157,6 +260,7 @@ def _row_from_mask(*, image_path: Path, images_dir: Path, mask: np.ndarray, spli
             "focus_direction": focus_direction(near_status, left_status, right_status),
         },
         "ground_truth_path": gt_path.to_dict(),
+        "traversable_grid": gt_grid,
         "mask_coverage": {"near_path": near_cov, "left_front": left_cov, "right_front": right_cov},
     }
 
@@ -199,6 +303,158 @@ def create_bdd100k_drivable_manifest(
             break
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows) + ("\n" if rows else ""), encoding="utf-8")
+    return rows
+
+
+def _camvid_color_mask(arr: np.ndarray, colors: Iterable[tuple[int, int, int]]) -> np.ndarray:
+    """Boolean mask of pixels whose RGB matches any color in ``colors``."""
+    mask = np.zeros(arr.shape[:2], dtype=bool)
+    for color in colors:
+        rgb = np.asarray(color, dtype=np.uint8)
+        mask |= np.all(arr == rgb, axis=-1)
+    return mask
+
+
+# T2 multi-class taxonomy (N=5). Single source of truth for the class ids the
+# on-device segmentation model outputs and everything (training, eval, on-device
+# role derivation) derives from. crosswalk deliberately NOT included this round
+# (CamVid has no crosswalk label — see docs/model-lab/2026-08-26-t2-...-plan.md).
+CAMVID_CLASS_BACKGROUND = 0
+CAMVID_CLASS_ROAD = 1
+CAMVID_CLASS_SIDEWALK = 2
+CAMVID_CLASS_LANE = 3
+CAMVID_CLASS_OBSTACLE = 4
+CAMVID_NUM_CLASSES = 5
+# "road (carriageway) only" = road colors minus the lane-marking colors, so lane
+# gets its own class rather than being swallowed by road.
+CAMVID_ROAD_ONLY_COLORS = CAMVID_ROAD_COLORS - CAMVID_LANE_COLORS
+
+
+def camvid_class_map(arr: np.ndarray) -> np.ndarray:
+    """Per-pixel int class map (H,W) for the N=5 T2 taxonomy from a CamVid RGB label.
+
+    Painted by ASCENDING priority so higher-priority classes overwrite lower ones
+    where the (rare) overlap of color sets would otherwise be ambiguous:
+    background(0) < road(1) < sidewalk(2) < lane(3) < obstacle(4).
+    A lane-marking pixel therefore stays lane (not road); an obstacle over any
+    surface stays obstacle. This mirrors the on-device argmax semantics.
+    """
+    h, w = arr.shape[:2]
+    class_map = np.full((h, w), CAMVID_CLASS_BACKGROUND, dtype=np.uint8)
+    class_map[_camvid_color_mask(arr, CAMVID_ROAD_ONLY_COLORS)] = CAMVID_CLASS_ROAD
+    class_map[_camvid_color_mask(arr, CAMVID_SIDEWALK_COLORS)] = CAMVID_CLASS_SIDEWALK
+    class_map[_camvid_color_mask(arr, CAMVID_LANE_COLORS)] = CAMVID_CLASS_LANE
+    class_map[_camvid_color_mask(arr, CAMVID_OBSTACLE_COLORS)] = CAMVID_CLASS_OBSTACLE
+    return class_map
+
+
+def _role_row_from_masks(
+    *,
+    image_path: Path,
+    images_dir: Path,
+    role: str,
+    primary: np.ndarray,
+    caution: np.ndarray,
+    lane: np.ndarray,
+    obstacle: np.ndarray,
+    split: str,
+    scene_tags: list[str],
+) -> dict[str, Any]:
+    """Build a role-conditioned manifest row.
+
+    The role's PRIMARY surface (e.g. sidewalk for a walker) is the "green" target:
+    the GT guidance line and the shared ``traversable_grid`` derive from it, so the
+    loop scores the iPhone against the surface this role should actually use — not a
+    road+sidewalk merge. ``caution`` / ``lane`` / ``obstacle`` are exposed as their
+    own coarse grids so A3 can quantify role-specific defects (e.g. routing a walker
+    onto the carriageway) without re-reading label images."""
+    rel = image_path.relative_to(images_dir).as_posix()
+    primary_cells = downsample_mask_to_grid(np.asarray(primary, dtype=bool))
+    gt_path = centerline_from_mask(primary_cells.astype(bool), source="dataset_mask")
+    primary_grid = grid_to_wire(primary_cells)
+    caution_grid = grid_to_wire(downsample_mask_to_grid(np.asarray(caution, dtype=bool)))
+    lane_grid = grid_to_wire(downsample_mask_to_grid(np.asarray(lane, dtype=bool)))
+    obstacle_grid = grid_to_wire(downsample_mask_to_grid(np.asarray(obstacle, dtype=bool)))
+    # Finer, any-pixel lane raster (128x96) so thin lanes survive for closed-loop
+    # scoring against the on-device lane grid. Separate NEW field: the coarse
+    # role_grids.lane above is unchanged so existing role consumers are untouched.
+    lane_grid_fine = grid_to_wire(lane_presence_grid(np.asarray(lane, dtype=bool)))
+    return {
+        "frame_id": f"{split}/{image_path.stem}",
+        "image": rel,
+        "image_path": str(image_path.resolve()),
+        "split": split,
+        "scene_tags": scene_tags,
+        "dataset_source": "camvid_github",
+        "ground_truth_source": "camvid_rgb_semantic_role",
+        "role": role,
+        "ground_truth_path": gt_path.to_dict(),
+        # Role primary = the surface the iPhone should perceive as walkable/drivable.
+        "traversable_grid": primary_grid,
+        "role_grids": {
+            "primary": primary_grid,
+            "caution": caution_grid,
+            "lane": lane_grid,
+            "obstacle": obstacle_grid,
+        },
+        # Fine lane truth (128x96, any-pixel) for closed-loop lane scoring.
+        "lane_grid_fine": lane_grid_fine,
+    }
+
+
+def create_camvid_role_manifest(
+    *,
+    images_dir: Path,
+    labels_dir: Path,
+    output_path: Path,
+    role: str,
+    split: str = "road",
+    scene_tags: list[str] | None = None,
+    limit: int = 0,
+) -> list[dict[str, Any]]:
+    """Create a ROLE-CONDITIONED CamVid manifest (walk / drive).
+
+    This is deliberately a SEPARATE artifact from ``create_camvid_manifest`` — it
+    writes to its own ``output_path`` (e.g. ``camvid-manifest-walk.jsonl``) and does
+    NOT overwrite the legacy binary manifest. Keeping both lets us (a) quantify the
+    defect of the old road+sidewalk-merged truth by comparing side by side, (b)
+    avoid silently changing semantics for existing consumers.
+
+    Each row carries four role layers as coarse grids (primary/caution/lane/
+    obstacle) so downstream metrics never re-read the RGB labels.
+    """
+    if not images_dir.is_dir():
+        raise FileNotFoundError(f"images dir not found: {images_dir}")
+    if not labels_dir.is_dir():
+        raise FileNotFoundError(f"CamVid labels dir not found: {labels_dir}")
+    policy = role_traversability_policy(role)
+    tags = scene_tags or CAMVID_SCENE_TAGS
+    rows: list[dict[str, Any]] = []
+    for image_path in _iter_images(images_dir):
+        label_path = _find_camvid_label(labels_dir, image_path)
+        if label_path is None:
+            continue
+        arr = np.asarray(Image.open(label_path).convert("RGB"), dtype=np.uint8)
+        row = _role_row_from_masks(
+            image_path=image_path,
+            images_dir=images_dir,
+            role=policy.role,
+            primary=_camvid_color_mask(arr, policy.primary),
+            caution=_camvid_color_mask(arr, policy.caution),
+            lane=_camvid_color_mask(arr, policy.lane),
+            obstacle=_camvid_color_mask(arr, policy.obstacle),
+            split=split,
+            scene_tags=tags,
+        )
+        row["label_path"] = str(label_path.resolve())
+        rows.append(row)
+        if limit and len(rows) >= limit:
+            break
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows) + ("\n" if rows else ""),
+        encoding="utf-8",
+    )
     return rows
 
 

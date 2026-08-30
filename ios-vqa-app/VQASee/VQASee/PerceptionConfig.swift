@@ -17,12 +17,46 @@ struct PerceptionThresholds: Equatable, Sendable {
     var segTraversablePixel: Double
 }
 
+/// Who the walkable/drivable surface is being derived FOR. The same N=5
+/// segmentation output yields a DIFFERENT traversable region per role: a walker's
+/// surface is the sidewalk, a driver's is the carriageway + lane. This is the core
+/// of "可通行区域必须区分人车" — one prediction, role-conditioned derivation.
+enum PerceptionRole: String, Equatable, Sendable {
+    case pedestrian  // walker / cyclist: primary surface = sidewalk
+    case vehicle     // motor vehicle: primary surface = road + lane markings
+
+    /// Segmentation class indices (see `SegClass`: 0 bg, 1 road, 2 sidewalk,
+    /// 3 lane, 4 obstacle) that count as THIS role's primary traversable surface.
+    var primaryClassIndices: [Int] {
+        switch self {
+        case .pedestrian: return [SegClass.sidewalk]
+        case .vehicle: return [SegClass.road, SegClass.lane]
+        }
+    }
+}
+
 struct PerceptionConfig: Equatable, Sendable {
     var version: Int
     var nearROI: CGRect
     var leftROI: CGRect
     var rightROI: CGRect
     var thresholds: PerceptionThresholds
+    /// Role the multiclass segmentation derives the traversable surface for.
+    /// Defaults to pedestrian (the safety-critical case T1 quantified: the old
+    /// binary model routed walkers onto the road). Binary (C<=2) models ignore it.
+    var role: PerceptionRole = .pedestrian
+    /// Staged rollout switch for the N=5 role-conditioned segmentation model.
+    /// Defaults to FALSE: the live app keeps the real-time-proven binary segmenter
+    /// until a real-device latency budget for mc5 is signed off (罗根). Flipping
+    /// this (via OTA config after sign-off) makes the app load the bundled mc5
+    /// model and derive the walkable region per `role`. Off = zero behavior change.
+    var useMulticlassSegmentation: Bool = false
+    /// Whether the dedicated lane-marking segmenter runs on the live device path.
+    /// Defaults to TRUE now that the model is bundled: it is a cheap (~single-digit
+    /// ms) second forward and is display-only (informational lane overlay; it never
+    /// gates a traversability decision), so shipping it on is low-risk. OTA can turn
+    /// it off if a real device shows a latency problem (罗根 to confirm the budget).
+    var useLaneSegmentation: Bool = true
 
     /// Single source of default values. ROIs reuse the engine constants so there
     /// is exactly one place defining the shipping defaults.
@@ -37,7 +71,10 @@ struct PerceptionConfig: Equatable, Sendable {
             segNearCautionRatio: 0.35,
             segSideCautionRatio: 0.30,
             segTraversablePixel: 0.55
-        )
+        ),
+        role: .pedestrian,
+        useMulticlassSegmentation: false,
+        useLaneSegmentation: true
     )
 }
 
@@ -69,6 +106,14 @@ struct PerceptionConfigWire: Codable, Equatable {
     var hash: String?
     var roi: ROISet
     var thresholds: ThresholdsWire
+    /// Optional for forward/backward compatibility: an older payload without a
+    /// role decodes to the pedestrian default; an explicit unknown value is
+    /// rejected (never silently coerced).
+    var role: String?
+    /// Optional staged-rollout switch for the N=5 segmenter; absent → false.
+    var use_multiclass_segmentation: Bool?
+    /// Optional switch for the dedicated lane segmenter; absent → true (bundled).
+    var use_lane_segmentation: Bool?
 }
 
 enum PerceptionConfigError: Error, CustomStringConvertible, Equatable {
@@ -122,6 +167,16 @@ extension PerceptionConfig {
             }
         }
 
+        let role: PerceptionRole
+        if let raw = wire.role {
+            guard let parsed = PerceptionRole(rawValue: raw) else {
+                throw PerceptionConfigError.outOfRange("role=\(raw) is not one of pedestrian|vehicle")
+            }
+            role = parsed
+        } else {
+            role = .pedestrian
+        }
+
         self.init(
             version: wire.version,
             nearROI: try rect(wire.roi.near, "near"),
@@ -133,7 +188,10 @@ extension PerceptionConfig {
                 segNearCautionRatio: wire.thresholds.seg_near_caution_ratio,
                 segSideCautionRatio: wire.thresholds.seg_side_caution_ratio,
                 segTraversablePixel: wire.thresholds.seg_traversable_pixel
-            )
+            ),
+            role: role,
+            useMulticlassSegmentation: wire.use_multiclass_segmentation ?? false,
+            useLaneSegmentation: wire.use_lane_segmentation ?? true
         )
     }
 

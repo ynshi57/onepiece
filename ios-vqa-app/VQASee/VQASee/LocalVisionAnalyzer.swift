@@ -145,36 +145,97 @@ enum WalkingFrameSendPolicy {
     }
 }
 
+/// Per-frame wall-clock latency of each on-device perception stage (milliseconds).
+/// nil for a stage that did not run this frame (e.g. depth only runs when native
+/// depth is unavailable; lane only runs when a lane runner is injected). This is a
+/// harness/telemetry read-out — it is NOT wired into any product decision — so a
+/// consolidated on-device perception budget (p50/p95) can be reported honestly
+/// instead of only per-model numbers.
+struct PerceptionFrameTimings: Sendable, Equatable {
+    var yoloMs: Double?
+    var segmentationMs: Double?
+    var depthMs: Double?
+    var laneMs: Double?
+    var totalMs: Double?
+}
+
 /// Apple Vision based local fast analyzer. It currently uses built-in Vision
 /// human rectangles plus a tiny luminance fingerprint. No custom Core ML model is
 /// bundled yet.
 final class LocalVisionAnalyzer {
+    /// Latency of the LAST `analyze` call, per stage. Read by the offline harness
+    /// to print a consolidated perception latency budget. Updated every frame.
+    private(set) var lastTimings = PerceptionFrameTimings()
     private var previousFingerprint: [Double]?
     private let perceptionRunner: LocalPerceptionCoreMLRunner
     private let monocularDepthRunner: LocalMonocularDepthRunner
     private let segmentationRunner: LocalTraversabilitySegmentationRunner
+    /// Dedicated lane-marking segmenter (T4). Optional and injected: nil on the
+    /// live device path (no extra forward pass until a latency budget is signed
+    /// off), non-nil on the harness so the lane channel is emitted + scored.
+    let laneRunner: LocalLaneSegmentationRunner?
+    /// Product lane geometry runner (UFLDv2). Kept injected/staged because current
+    /// UFLDv2 weights are large; harness can evaluate them before live rollout.
+    let lanePolylineRunner: LocalLanePolylineRunner?
     private var config: PerceptionConfig
+    /// Off on the live device path (real-time frame budget); the offline evaluation
+    /// harness turns it on to export the full traversable region raster.
+    private let emitTraversableGrid: Bool
 
     /// Default init keeps the shipping behavior: all runners load from the main
     /// app bundle and the built-in default perception config is used.
     init(config: PerceptionConfig = .default) {
         self.perceptionRunner = LocalPerceptionCoreMLRunner()
         self.monocularDepthRunner = LocalMonocularDepthRunner()
-        self.segmentationRunner = LocalTraversabilitySegmentationRunner()
+        // Staged rollout: load the N=5 role-conditioned segmenter only when the
+        // config flag is set (post real-device latency sign-off); otherwise keep
+        // the real-time-proven binary model. The multiclass sampler + config.role
+        // do the rest once mc5 is active.
+        self.segmentationRunner = config.useMulticlassSegmentation
+            ? LocalTraversabilitySegmentationRunner(modelName: "VQASeeTraversabilitySeg5")
+            : LocalTraversabilitySegmentationRunner()
+        // Dedicated lane-marking channel now ships bundled: load it on the live path
+        // when enabled (cheap, display-only) so the camera overlay can draw the real
+        // detected lanes instead of the old hardcoded diagonal placeholder.
+        self.laneRunner = config.useLaneSegmentation ? LocalLaneSegmentationRunner() : nil
+        self.lanePolylineRunner = nil
         self.config = config
+        self.emitTraversableGrid = false
     }
 
     /// Inject a model bundle so the offline macOS evaluation harness can load the
     /// exact same Core ML models the app ships, without duplicating perception
-    /// logic. iOS callers keep using the default init unchanged.
-    init(modelBundle: Bundle, config: PerceptionConfig = .default) {
+    /// logic. iOS callers keep using the default init unchanged. Pass
+    /// `emitTraversableGrid: true` on the harness to export the walkable-region
+    /// raster for closed-loop region scoring (kept off on-device for perf).
+    init(
+        modelBundle: Bundle,
+        config: PerceptionConfig = .default,
+        emitTraversableGrid: Bool = false,
+        laneRunner: LocalLaneSegmentationRunner? = nil,
+        lanePolylineRunner: LocalLanePolylineRunner? = nil,
+        segmentationRunner: LocalTraversabilitySegmentationRunner? = nil
+    ) {
         self.perceptionRunner = LocalPerceptionCoreMLRunner(bundle: modelBundle)
         self.monocularDepthRunner = LocalMonocularDepthRunner(bundle: modelBundle)
-        self.segmentationRunner = LocalTraversabilitySegmentationRunner(bundle: modelBundle)
+        // A caller (the harness) may inject an explicit segmenter — e.g. the N=5
+        // multiclass model compiled outside the bundle — to score a role-conditioned
+        // walkable region; otherwise load the bundled model by name.
+        self.segmentationRunner = segmentationRunner ?? LocalTraversabilitySegmentationRunner(bundle: modelBundle)
+        self.laneRunner = laneRunner
+        self.lanePolylineRunner = lanePolylineRunner
         self.config = config
+        self.emitTraversableGrid = emitTraversableGrid
     }
 
     /// Apply a new perception config at runtime (e.g. after an OTA config fetch).
+    /// ROI, thresholds and `role` are consumed per-frame, so they take effect
+    /// immediately (a walker→driver role switch re-derives the region live).
+    /// `useMulticlassSegmentation` is the exception: it selects which Core ML model
+    /// is LOADED, decided at analyzer construction (app launch / config load). A
+    /// runtime flip only takes effect next launch — surfaced here so it is not a
+    /// silent no-op; the OTA path persists the config and the app rebuilds the
+    /// analyzer on next start.
     func apply(config: PerceptionConfig) {
         self.config = config
     }
@@ -204,27 +265,51 @@ final class LocalVisionAnalyzer {
         depthCues: LocalDepthCueSignal = LocalDepthCueSignal(),
         depthCapability: LocalPathCapability = LocalDepthCapabilityDetector.currentDepthCapability()
     ) -> LocalVisionSignal {
+        let frameStart = DispatchTime.now()
+        var timings = PerceptionFrameTimings()
         let luminance = Self.luminanceFingerprint(pixelBuffer: pixelBuffer)
         let brightness = luminance.average
         let previous = previousFingerprint
         previousFingerprint = luminance.fingerprint
         let sceneChangeScore = Self.changeScore(current: luminance.fingerprint, previous: previous)
         let human = Self.detectHuman(pixelBuffer: pixelBuffer, orientation: orientation)
+        let yoloStart = DispatchTime.now()
         var perception = perceptionRunner
             .analyze(pixelBuffer: pixelBuffer, orientation: orientation)
             .merging(visionHuman: human)
-        if let segmentation = segmentationRunner.analyzeDetailed(pixelBuffer: pixelBuffer, orientation: orientation, config: config) {
+        timings.yoloMs = Self.elapsedMs(since: yoloStart)
+        let segStart = DispatchTime.now()
+        if let segmentation = segmentationRunner.analyzeDetailed(pixelBuffer: pixelBuffer, orientation: orientation, config: config, emitGrid: emitTraversableGrid) {
             if let segmentationCue = segmentation.cue {
                 perception.segmentationCues = segmentationCue
             }
             perception.guidancePath = segmentation.guidancePath
+            perception.traversableGrid = segmentation.traversableGrid
+            timings.segmentationMs = Self.elapsedMs(since: segStart)
+        }
+        // Dedicated lane-marking channel (T4). Separate model / second forward pass.
+        // Runs whenever a lane runner is present: the bundled model on the live
+        // device path (config.useLaneSegmentation, default on) or the harness-injected
+        // one. Produces a real lane raster; never fabricates a lane when it finds none.
+        if laneRunner != nil || lanePolylineRunner != nil {
+            let laneStart = DispatchTime.now()
+            if let laneGrid = laneRunner?.analyze(pixelBuffer: pixelBuffer, orientation: orientation) {
+                perception.laneGrid = laneGrid
+            }
+            if let polylines = lanePolylineRunner?.analyze(pixelBuffer: pixelBuffer, orientation: orientation) {
+                perception.lanePolylines = polylines
+            }
+            timings.laneMs = Self.elapsedMs(since: laneStart)
         }
         var resolvedDepthCues = depthCues
         var resolvedDepthCapability = depthCapability
-        if resolvedDepthCapability != .active,
-           let monocularCue = monocularDepthRunner.analyze(pixelBuffer: pixelBuffer, orientation: orientation) {
-            resolvedDepthCues = monocularCue
-            resolvedDepthCapability = .active
+        if resolvedDepthCapability != .active {
+            let depthStart = DispatchTime.now()
+            if let monocularCue = monocularDepthRunner.analyze(pixelBuffer: pixelBuffer, orientation: orientation) {
+                resolvedDepthCues = monocularCue
+                resolvedDepthCapability = .active
+            }
+            timings.depthMs = Self.elapsedMs(since: depthStart)
         }
         if resolvedDepthCues.nearDrop != .unknown || resolvedDepthCues.nearestObstacleDirection != .unknown {
             perception.depthCues = resolvedDepthCues
@@ -240,6 +325,9 @@ final class LocalVisionAnalyzer {
             config: config
         )
 
+        timings.totalMs = Self.elapsedMs(since: frameStart)
+        lastTimings = timings
+
         return LocalVisionSignal(
             hasHuman: human.hasHuman,
             humanDirection: human.direction,
@@ -250,6 +338,10 @@ final class LocalVisionAnalyzer {
             analyzerFailed: false,
             perception: perception
         )
+    }
+
+    private static func elapsedMs(since start: DispatchTime) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000.0
     }
 
     private static func detectHuman(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation = .right) -> (hasHuman: Bool, direction: LocalVisionDirection, boundingBox: CGRect?, confidence: Double) {

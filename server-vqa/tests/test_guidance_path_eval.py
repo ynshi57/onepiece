@@ -99,3 +99,23 @@ def test_evaluate_aggregate():
     assert report["both_ok"] == 2
     assert report["mean_deviation"] == 0.0
     assert report["hit_rate"] == 1.0
+
+
+def test_evaluate_guidance_reports_cross_frame_lateral_jump_metrics():
+    """Adjacent-frame line flips must become visible in the report/gate.
+
+    The old guidance evaluation only compared each frame to GT independently; it
+    could miss the exact user-visible defect where the line jumps from one side of
+    the image to the other between nearly adjacent frames.
+    """
+    gt_left = _line([(0.25, 0.0, 0.1), (0.25, 0.6, 0.1)])
+    gt_right = _line([(0.75, 0.0, 0.1), (0.75, 0.6, 0.1)])
+    report = evaluate_guidance_paths([
+        ("road/0001TP_006720", gt_left, gt_left),
+        ("road/0001TP_006750", gt_right, gt_right),
+    ])
+
+    assert report["gt_flip_pair_rate"] == 1.0
+    assert report["pred_flip_pair_rate"] == 1.0
+    assert report["gt_lateral_jump_p95"] == 0.5
+    assert report["pred_lateral_jump_p95"] == 0.5

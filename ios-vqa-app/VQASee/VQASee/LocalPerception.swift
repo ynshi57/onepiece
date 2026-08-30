@@ -1,5 +1,9 @@
 import CoreGraphics
-#if canImport(ARKit)
+// ARKit ships a module on the macOS SDK too, but ARWorldTrackingConfiguration is
+// iOS-only — so `canImport(ARKit)` alone is TRUE on the macOS harness and pulls in
+// symbols that don't exist there. Gate on the iOS platform, which is the real
+// intent (device depth capability), so the harness compiles the camera-only path.
+#if canImport(ARKit) && os(iOS)
 import ARKit
 #endif
 import CoreML
@@ -252,7 +256,7 @@ enum LocalPathCapability: String, Sendable, Equatable {
 
 enum LocalDepthCapabilityDetector {
     static func currentDepthCapability() -> LocalPathCapability {
-        #if canImport(ARKit)
+        #if canImport(ARKit) && os(iOS)
         guard ARWorldTrackingConfiguration.isSupported else {
             return .unsupported
         }
@@ -281,11 +285,55 @@ struct LocalSegmentationCueSignal: Sendable, Equatable {
     }
 }
 
-/// Combined output of one segmentation inference: the coarse ROI cue and the
-/// traversable guidance line, derived from the same per-pixel map.
+/// Coarse raster of what on-device segmentation considers traversable ("the green
+/// walkable region the iPhone perceives"). Row-major, `cells[row * cols + col]`,
+/// row 0 = TOP of the image (image space, top-left origin, aligned to the frame
+/// image and to the CamVid ground-truth mask). `1` = the device considers the
+/// cell traversable (segmentation prob >= config threshold). This is the SAME
+/// signal that feeds the coarse ROI cue and the guidance line — surfaced whole so
+/// the closed loop can score region IoU instead of only 3-box agreement.
+///
+/// It is computed only on the offline harness / evaluation path (opt-in), never on
+/// the device's real-time frame budget, which deliberately samples only ROIs +
+/// ≤16 centerline rows instead of materializing the full grid.
+struct TraversableGrid: Sendable, Equatable {
+    var cols: Int
+    var rows: Int
+    var cells: [Int]
+
+    func toWire() -> [String: Any] {
+        ["cols": cols, "rows": rows, "cells": cells]
+    }
+}
+
+/// Combined output of one segmentation inference: the coarse ROI cue, the
+/// traversable guidance line, and (harness only) the traversable region grid — all
+/// derived from the same per-pixel map.
 struct LocalSegmentationResult: Sendable, Equatable {
     var cue: LocalSegmentationCueSignal?
     var guidancePath: GuidancePath?
+    var traversableGrid: TraversableGrid? = nil
+}
+
+/// Coarse raster of LANE-MARKING pixels the on-device dedicated lane segmenter
+/// (`VQASeeLaneSegmentation`, [1,2,H,W] logits, ch1 = lane) perceives. Row-major,
+/// `cells[row * cols + col]`, row 0 = TOP of the image (image space, top-left
+/// origin), `1` = the model calls the cell a lane marking (2-class softmax prob of
+/// the lane class >= threshold). It is a DISTINCT signal from `TraversableGrid`
+/// (lane ≠ walkable), and finer-grained because lane markings are thin: a coarse
+/// 64×48 grid would erase them.
+///
+/// Honest scope: this is lane-marking PIXEL segmentation, NOT lane geometry /
+/// polylines / ego-lane (that needs CULane-style instance labels + a row-anchor
+/// model; deferred). No route is ever declared safe from this.
+struct LaneGrid: Sendable, Equatable {
+    var cols: Int
+    var rows: Int
+    var cells: [Int]
+
+    func toWire() -> [String: Any] {
+        ["cols": cols, "rows": rows, "cells": cells]
+    }
 }
 
 struct LocalPathGuidanceSignal: Sendable, Equatable {
@@ -496,6 +544,18 @@ struct LocalPerceptionSignal: Sendable, Equatable {
     /// when no segmentation model is available; status=insufficient when free
     /// space is too broken to trace a line (explicit degrade, never fabricated).
     var guidancePath: GuidancePath? = nil
+    /// Coarse traversable region raster ("iPhone-perceived walkable area"). Only
+    /// populated on the offline evaluation harness (opt-in); nil on the live
+    /// on-device path so the real-time frame budget is untouched.
+    var traversableGrid: TraversableGrid? = nil
+    /// Lane-marking raster from the dedicated lane segmenter (T4). nil when no lane
+    /// model is loaded (default on the live device path until a latency budget is
+    /// signed off); populated on the harness / when a lane runner is injected.
+    var laneGrid: LaneGrid? = nil
+    /// Product lane-line geometry from UFLDv2-style row/column anchors. Empty means
+    /// no geometry channel or no lane found; the app/platform must not fabricate
+    /// fallback lines from the old pixel grid.
+    var lanePolylines: [LanePolyline] = []
 
     static let empty = LocalPerceptionSignal()
 

@@ -58,8 +58,30 @@ class BonjourAdvertiser:
             properties=properties,
             server=server,
         )
-        zeroconf = Zeroconf()
-        zeroconf.register_service(service_info)
+
+        # LAN auto-advertise is a best-effort convenience so the iPhone can find
+        # this Mac automatically. If mDNS registration fails (zeroconf
+        # EventLoopBlocked/timeout, no multicast route, firewall), we must NOT
+        # take down the whole server: degrade loudly and keep serving. The iPhone
+        # can still connect via a manually entered IP or the relay. This is an
+        # explicit best-effort subsystem, so we log the failure instead of
+        # re-raising (see AGENTS「不可妥协原则 4」).
+        zeroconf = None
+        try:
+            zeroconf = Zeroconf()
+            zeroconf.register_service(service_info)
+        except Exception as exc:  # noqa: BLE001 - any mDNS failure must be non-fatal
+            if zeroconf is not None:
+                try:
+                    zeroconf.close()
+                except Exception:  # noqa: BLE001 - cleanup best-effort
+                    pass
+            print(
+                f"Bonjour discovery unavailable ({type(exc).__name__}: {exc}). "
+                "Server continues WITHOUT LAN auto-advertise; connect the iPhone "
+                "via manual IP or relay. Set VQASEE_DISABLE_BONJOUR=1 to skip this."
+            )
+            return
 
         self._zeroconf = zeroconf
         self._service_info = service_info

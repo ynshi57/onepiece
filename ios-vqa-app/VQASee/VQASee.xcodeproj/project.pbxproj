@@ -33,6 +33,8 @@
 		4210DF692FCFFEC900080AA6 /* VQASee */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			explicitFileTypes = {
+				VQASeeLaneSegmentation.mlmodelc = wrapper.mlmodelc;
+				VQASeeTraversabilitySeg5.mlmodelc = wrapper.mlmodelc;
 				YOLO11nObject.mlmodelc = wrapper.mlmodelc;
 			};
 			path = VQASee;

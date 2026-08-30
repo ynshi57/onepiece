@@ -142,3 +142,161 @@ def test_camvid_traversable_colors_rejects_unknown_mode():
 
     with _pytest.raises(ValueError):
         camvid_traversable_colors("fly")
+
+
+def test_role_policy_walk_favours_sidewalk_over_road():
+    """A pedestrian's PRIMARY (green) surface is the sidewalk; the road is only
+    caution (crossable, not preferred) and must never be primary. This is the
+    core role-conditioned fix."""
+    from app.open_dataset_adapters import role_traversability_policy
+
+    walk = role_traversability_policy("walk")
+    ROAD = (128, 64, 128)
+    SIDEWALK = (0, 0, 192)
+    assert SIDEWALK in walk.primary
+    assert ROAD in walk.caution
+    assert ROAD not in walk.primary          # road is NOT walkable-primary
+    # Vehicles/pedestrians are obstacles for a walker.
+    assert (64, 0, 128) in walk.obstacle     # Car
+    assert (64, 64, 0) in walk.obstacle      # Pedestrian
+
+
+def test_role_policy_drive_favours_road_and_blocks_sidewalk():
+    from app.open_dataset_adapters import role_traversability_policy
+
+    drive = role_traversability_policy("drive")
+    ROAD = (128, 64, 128)
+    SIDEWALK = (0, 0, 192)
+    assert ROAD in drive.primary
+    assert (128, 0, 192) in drive.primary    # LaneMkgsDriv drivable
+    assert SIDEWALK not in drive.primary
+    assert SIDEWALK in drive.obstacle        # sidewalk is not drivable
+
+
+def test_role_policy_bike_aliases_walk_and_unknown_rejected():
+    from app.open_dataset_adapters import role_traversability_policy
+
+    import pytest as _pytest
+
+    assert role_traversability_policy("bike").primary == role_traversability_policy("walk").primary
+    with _pytest.raises(ValueError):
+        role_traversability_policy("fly")
+
+
+def test_role_policy_lane_layer_separated_from_road():
+    """Lane markings are exposed as a distinct layer (previously lost inside road)."""
+    from app.open_dataset_adapters import role_traversability_policy, CAMVID_LANE_COLORS
+
+    walk = role_traversability_policy("walk")
+    assert (128, 0, 192) in CAMVID_LANE_COLORS   # LaneMkgsDriv
+    assert walk.lane == CAMVID_LANE_COLORS
+
+
+def _write_camvid_pair(tmp_path, label_rgb):
+    """Write a 1-frame CamVid image/label pair; return (images_dir, labels_dir)."""
+    images = tmp_path / "CamVid_RGB"
+    labels = tmp_path / "CamVid_Label"
+    images.mkdir()
+    labels.mkdir()
+    h, w = label_rgb.shape[:2]
+    Image.new("RGB", (w, h), "black").save(images / "frame.png")
+    Image.fromarray(label_rgb).save(labels / "frame.png")
+    return images, labels
+
+
+def test_camvid_role_manifest_walk_emits_four_layers_and_does_not_overwrite(tmp_path):
+    """A2: the role manifest is a SEPARATE artifact carrying primary/caution/lane/
+    obstacle grids. For a walker, sidewalk -> primary, road -> caution, and a car
+    -> obstacle. The legacy binary manifest must stay untouched."""
+    from app.open_dataset_adapters import create_camvid_manifest, create_camvid_role_manifest
+    from app.region_grid import grid_from_wire
+
+    label = np.zeros((48, 64, 3), dtype=np.uint8)
+    label[24:48, 0:32] = np.array([0, 0, 192], dtype=np.uint8)     # Sidewalk (left-bottom)
+    label[24:48, 32:64] = np.array([128, 64, 128], dtype=np.uint8)  # Road (right-bottom)
+    label[0:12, 40:56] = np.array([64, 0, 128], dtype=np.uint8)     # Car (top)
+    images, labels = _write_camvid_pair(tmp_path, label)
+
+    legacy = tmp_path / "camvid-manifest.jsonl"
+    create_camvid_manifest(images_dir=images, labels_dir=labels, output_path=legacy)
+    legacy_bytes = legacy.read_bytes()
+
+    role_out = tmp_path / "camvid-manifest-walk.jsonl"
+    rows = create_camvid_role_manifest(
+        images_dir=images, labels_dir=labels, output_path=role_out, role="walk",
+    )
+
+    # Legacy file untouched (new-and-old coexist, no silent semantic change).
+    assert legacy.read_bytes() == legacy_bytes
+    assert role_out.is_file()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["role"] == "walk"
+    assert row["ground_truth_source"] == "camvid_rgb_semantic_role"
+    grids = row["role_grids"]
+    primary = grid_from_wire(grids["primary"])
+    caution = grid_from_wire(grids["caution"])
+    obstacle = grid_from_wire(grids["obstacle"])
+    # Sidewalk became primary; road became caution (NOT merged into primary).
+    assert primary[:, 0:32].any() and not primary[:, 40:64].any()
+    assert caution[:, 40:64].any()
+    assert not caution[:, 0:16].any()
+    # Car cell is an obstacle, and is not primary.
+    assert obstacle[0:12, 40:56].any()
+    assert not primary[0:12, 40:56].any()
+    # The shared traversable_grid mirrors the role primary (role-conditioned green).
+    assert row["traversable_grid"] == grids["primary"]
+
+
+def test_camvid_role_manifest_drive_makes_road_primary_and_sidewalk_obstacle(tmp_path):
+    """A2: for a driver, road -> primary and sidewalk -> obstacle (not drivable)."""
+    from app.open_dataset_adapters import create_camvid_role_manifest
+    from app.region_grid import grid_from_wire
+
+    label = np.zeros((48, 64, 3), dtype=np.uint8)
+    label[24:48, 0:32] = np.array([0, 0, 192], dtype=np.uint8)      # Sidewalk (left)
+    label[24:48, 32:64] = np.array([128, 64, 128], dtype=np.uint8)  # Road (right)
+    images, labels = _write_camvid_pair(tmp_path, label)
+
+    rows = create_camvid_role_manifest(
+        images_dir=images, labels_dir=labels, output_path=tmp_path / "drive.jsonl", role="drive",
+    )
+    grids = rows[0]["role_grids"]
+    primary = grid_from_wire(grids["primary"])
+    obstacle = grid_from_wire(grids["obstacle"])
+    assert primary[:, 40:64].any()          # road is primary for a vehicle
+    assert not primary[:, 0:16].any()        # sidewalk is not primary
+    assert obstacle[:, 0:16].any()           # sidewalk is a blocker for a vehicle
+
+
+def test_camvid_class_map_assigns_five_classes_with_priority(tmp_path):
+    """T2: the per-pixel N=5 class map must keep lane distinct from road, keep an
+    obstacle over any surface as obstacle, and treat unlisted colors as background."""
+    from app.open_dataset_adapters import (
+        camvid_class_map,
+        CAMVID_CLASS_BACKGROUND,
+        CAMVID_CLASS_ROAD,
+        CAMVID_CLASS_SIDEWALK,
+        CAMVID_CLASS_LANE,
+        CAMVID_CLASS_OBSTACLE,
+        CAMVID_NUM_CLASSES,
+    )
+
+    assert CAMVID_NUM_CLASSES == 5
+    label = np.zeros((10, 10, 3), dtype=np.uint8)
+    label[0:5, 0:5] = np.array([128, 64, 128], dtype=np.uint8)   # Road
+    label[0:5, 5:10] = np.array([0, 0, 192], dtype=np.uint8)     # Sidewalk
+    label[5:10, 0:5] = np.array([128, 0, 192], dtype=np.uint8)   # LaneMkgsDriv (also in road set)
+    label[5:10, 5:10] = np.array([64, 0, 128], dtype=np.uint8)   # Car (obstacle)
+    label[0, 0] = np.array([70, 70, 70], dtype=np.uint8)          # unlisted -> background
+    label[9, 9] = np.array([64, 64, 0], dtype=np.uint8)           # Pedestrian over-writes? it's obstacle region already
+
+    cmap = camvid_class_map(label)
+    assert cmap.shape == (10, 10)
+    assert cmap[2, 2] == CAMVID_CLASS_ROAD
+    assert cmap[2, 7] == CAMVID_CLASS_SIDEWALK
+    # Lane color is a subset of the road set but must stay LANE, not road.
+    assert cmap[7, 2] == CAMVID_CLASS_LANE
+    assert cmap[7, 7] == CAMVID_CLASS_OBSTACLE
+    assert cmap[0, 0] == CAMVID_CLASS_BACKGROUND
+    assert set(np.unique(cmap)).issubset(set(range(CAMVID_NUM_CLASSES)))

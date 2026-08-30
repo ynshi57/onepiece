@@ -591,11 +591,45 @@
       "from": "new",
       "note": "全麦已归因为 ROI 阈值处于旧概率尺度，待按新 sigmoid 分布重标定（recalibrate-roi）",
       "to": "triaged"
+    },
+    {
+      "at": "2026-08-24T04:22:28.689669+00:00",
+      "event": "status",
+      "from": "triaged",
+      "note": "",
+      "to": "new"
+    },
+    {
+      "at": "2026-08-24T04:22:29.067622+00:00",
+      "event": "status",
+      "from": "new",
+      "note": "",
+      "to": "fixing"
+    },
+    {
+      "at": "2026-08-24T04:22:29.816741+00:00",
+      "event": "status",
+      "from": "fixing",
+      "note": "",
+      "to": "new"
+    },
+    {
+      "at": "2026-08-24T04:22:32.204299+00:00",
+      "event": "status",
+      "from": "new",
+      "note": "",
+      "to": "fixing"
+    },
+    {
+      "at": "2026-08-26T07:39:16.917368+00:00",
+      "event": "recluster",
+      "frame_count": 566,
+      "note": "重新聚类：566 → 566（cluster:camvid-manifest-ios-harness.jsonl）"
     }
   ],
   "linked_fix": "待重标定阈值：见 docs/model-lab/2026-08-19-segmentation-2channel-sampler-fix.md 「诚实取舍与遗留」；工具 server-vqa/tools/sweep_seg_threshold.py",
-  "status": "triaged",
+  "status": "fixing",
   "suspected_cause": "采样 bug 修复后概率尺度从 raw logit 变为真 sigmoid，ROI 阈值(0.60/0.28)是在旧尺度下拍的，偏保守导致真值可走却报注意/占用。属修复带来的已知取舍，误阻挡比漏报安全。",
   "title": "误阻挡簇 · camvid-manifest",
-  "updated_at": "2026-08-19T07:31:00+00:00"
+  "updated_at": "2026-08-26T07:39:16.917368+00:00"
 }
