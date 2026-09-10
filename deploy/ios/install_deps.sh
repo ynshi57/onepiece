@@ -7,10 +7,6 @@ version_lt() {
   [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n 1)" != "$2" ]
 }
 
-if [ -x "/opt/homebrew/opt/ruby/bin/ruby" ]; then
-  export PATH="/opt/homebrew/opt/ruby/bin:${PATH}"
-fi
-
 log "Installing Python dependencies for local VQA server"
 python3 -m venv "${ROOT_DIR}/.venv"
 source "${ROOT_DIR}/.venv/bin/activate"
@@ -27,8 +23,9 @@ RUBY_VERSION="$(ruby -e 'print RUBY_VERSION')"
 if version_lt "${RUBY_VERSION}" "3.2.0"; then
   echo "Ruby ${RUBY_VERSION} is too old for modern fastlane dependencies."
   echo "Please run:"
-  echo "  brew install ruby"
-  echo "  echo 'export PATH=\"/opt/homebrew/opt/ruby/bin:\$PATH\"' >> ~/.zshrc"
+  echo "  brew install ruby@3.4"
+  echo "  echo 'export PATH=\"/usr/local/opt/ruby@3.4/bin:\$PATH\"' >> ~/.zshrc   # Intel"
+  echo "  echo 'export PATH=\"/opt/homebrew/opt/ruby/bin:\$PATH\"' >> ~/.zshrc     # Apple Silicon"
   echo "  source ~/.zshrc"
   echo "Then re-run: bash deploy/ios/install_deps.sh"
   exit 2

@@ -76,12 +76,29 @@ done
 
 ensure_venv() {
   # Create (once) and activate the repo virtualenv. Shared by core/models/ios.
+  # Prefer 3.11+ because the backend uses PEP 604 unions and current FastAPI /
+  # pydantic wheels assume it. `python3` on some Macs is still 3.9.
   if [ ! -d .venv ]; then
-    if ! have python3; then
-      err "python3 未找到。装 Xcode Command Line Tools（xcode-select --install）或 brew install python"
+    local py=""
+    local cand
+    for cand in python3.13 python3.12 python3.11 python3; do
+      if have "${cand}"; then
+        py="$(command -v "${cand}")"
+        break
+      fi
+    done
+    if [ -z "${py}" ]; then
+      err "python3 未找到。装 Xcode Command Line Tools（xcode-select --install）或 brew install python@3.11"
       return 1
     fi
-    python3 -m venv .venv || return 1
+    local pyver
+    pyver="$("${py}" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+    if ! version_ge "${pyver}" "3.11"; then
+      err "需要 Python >= 3.11（当前 ${py} 是 ${pyver}）。brew install python@3.11 后重跑。"
+      return 1
+    fi
+    log "创建 venv：${py} (${pyver})"
+    "${py}" -m venv .venv || return 1
   fi
   # shellcheck disable=SC1091
   source .venv/bin/activate || return 1
@@ -142,10 +159,18 @@ profile_core() {
     add_summary "FAIL|core|requirements-dev 安装失败"
     return 1
   fi
-  # Diagnostics platform imports PIL at module load (app.diagnostic_api). It is
-  # declared in requirements-dev.txt now, but install it explicitly too so the
-  # platform still comes up even on an older checkout.
-  pip install Pillow >/dev/null 2>&1 || true
+  # app.main imports app.diagnostic_api at module load, which needs numpy + PIL.
+  # They are declared in requirements.txt now; verify explicitly so an older
+  # checkout or a partial install fails loudly here instead of much later at
+  # `uvicorn app.main:app` time (No Silent Failures).
+  if ! python -c "import numpy, PIL" >/dev/null 2>&1; then
+    warn "numpy/Pillow 缺失（旧 checkout 或安装不完整）——补装一次"
+    if ! pip install numpy Pillow; then
+      add_summary "FAIL|core|numpy/Pillow 安装失败，app.main 无法导入"
+      deactivate 2>/dev/null || true
+      return 1
+    fi
+  fi
 
   log "冒烟测试：pytest server-vqa/tests（会导入含 PIL 的 app.main）"
   if pytest server-vqa/tests -q; then
@@ -186,11 +211,28 @@ profile_models() {
     return 1
   fi
 
-  log "安装模型转换依赖 (huggingface_hub[cli] + coremltools + onnx)"
-  if ! pip install -U "huggingface_hub[cli]" coremltools onnx; then
+  # torch is required by convert_fast_scnn_cityscapes_pth_to_coreml.py (it loads
+  # the .pth and traces the graph before coremltools converts it). It is not in
+  # any requirements*.txt because it is only needed for model conversion, so it
+  # must be installed here or the segmentation step aborts on a fresh Mac.
+  log "安装模型转换依赖 (torch + huggingface_hub[cli] + coremltools + onnx)"
+  if ! pip install -U torch "huggingface_hub[cli]" coremltools onnx; then
     add_summary "FAIL|models|模型转换依赖安装失败"
     deactivate 2>/dev/null || true
     return 1
+  fi
+
+  # PyTorch ships no macOS x86_64 wheels after 2.2.2, and torch<2.3 is built
+  # against the numpy 1.x ABI. Paired with numpy>=2 every conversion dies late
+  # with "RuntimeError: Numpy is not available". Detect the broken pairing and
+  # pin numpy back; the backend and its tests run fine on numpy 1.26.
+  if ! python -c "import torch; torch.zeros(1).numpy()" >/dev/null 2>&1; then
+    warn "torch 与 numpy ABI 不兼容（Intel Mac 上 torch 封顶 2.2.2，需 numpy<2）——降级 numpy"
+    if ! pip install "numpy<2"; then
+      add_summary "FAIL|models|numpy<2 降级失败，模型转换无法进行"
+      deactivate 2>/dev/null || true
+      return 1
+    fi
   fi
 
   if ! coremlcompiler_available; then
@@ -304,10 +346,21 @@ profile_ios() {
     return 1
   fi
 
+  for ruby_bin in \
+    /opt/homebrew/opt/ruby/bin \
+    /usr/local/opt/ruby@3.4/bin \
+    /usr/local/opt/ruby/bin
+  do
+    if [[ -x "${ruby_bin}/ruby" ]]; then
+      export PATH="${ruby_bin}:${PATH}"
+      break
+    fi
+  done
+
   local rubyv
   rubyv="$(ruby -e 'print RUBY_VERSION' 2>/dev/null || echo 0)"
   if ! version_ge "${rubyv}" "3.2.0"; then
-    warn "Ruby ${rubyv} 过旧（fastlane 需 >=3.2）。brew install ruby，并把 /opt/homebrew/opt/ruby/bin 加入 PATH。"
+    warn "Ruby ${rubyv} 过旧（fastlane 需 >=3.2）。执行 brew install ruby@3.4，并把 /usr/local/opt/ruby@3.4/bin（Intel）或 /opt/homebrew/opt/ruby/bin（Apple Silicon）加入 PATH。"
     add_summary "SKIP|ios|Ruby 版本不足（需 >=3.2）"
     return 1
   fi

@@ -5,9 +5,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IOS_DIR="${ROOT_DIR}/ios-vqa-app"
 LOG_DIR="${ROOT_DIR}/deploy/logs"
 
-if [ -x "/opt/homebrew/opt/ruby/bin/ruby" ]; then
-  export PATH="/opt/homebrew/opt/ruby/bin:${PATH}"
-fi
+for ruby_bin in \
+  /opt/homebrew/opt/ruby/bin \
+  /usr/local/opt/ruby@3.4/bin \
+  /usr/local/opt/ruby/bin
+do
+  if [ -x "${ruby_bin}/ruby" ]; then
+    export PATH="${ruby_bin}:${PATH}"
+    break
+  fi
+done
 
 DEVELOPER_DIR_DEFAULT="/Applications/Xcode.app/Contents/Developer"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-${DEVELOPER_DIR_DEFAULT}}"

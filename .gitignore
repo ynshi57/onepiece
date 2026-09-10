@@ -10,7 +10,8 @@ ios-vqa-app/fastlane/.env
 deploy/ios/ExportOptions.plist
 
 # Xcode user-local state and build products
-ios-vqa-app/VQASee/**/xcuserdata/**/UserInterfaceState.xcuserstate
+.DS_Store
+ios-vqa-app/VQASee/**/xcuserdata/
 ios-vqa-app/VQASee/DerivedData/
 ios-vqa-app/VQASee/build/
 
@@ -33,3 +34,6 @@ server-vqa/data/perception_config.json
 
 # Server-side offline traversability predictor ONNX model (large binary; not committed).
 server-vqa/models/
+
+# Local open-dataset downloads (CamVid images/labels). Never commit binaries.
+/dataset/

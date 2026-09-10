@@ -21,6 +21,33 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _repeat_penalty() -> float:
+    """Decode-time repetition penalty for the VQA request.
+
+    We decode greedily (temperature 0) for reproducibility, but greedy decoding
+    makes Qwen 3B degenerate: it locks into a loop inside a free-text field
+    (typically ``changes``: "道路右侧有障碍物，道路左侧有障碍物，…" repeated) until it
+    hits max_tokens. The JSON then never closes, parsing fails, and every frame
+    reaches the user as "模型输出异常" — a silent-looking failure on a safety path.
+    Measured on qwen2.5vl:3b, one CamVid street frame, walking mode: 3/3 frames
+    truncated (finish_reason=length, 260 tokens) without a penalty; 3/3 valid and
+    shorter (143 tokens) with 1.1. Set QWEN_REPEAT_PENALTY=1.0 to disable.
+
+    Note: this is llama.cpp's ``repeat_penalty``, not OpenAI's
+    ``frequency_penalty`` — the latter was measured to collapse every field to an
+    empty string on the same frame, which is worse than the loop.
+    """
+    raw = os.getenv("QWEN_REPEAT_PENALTY", "1.1").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Invalid QWEN_REPEAT_PENALTY=%r; falling back to 1.1", raw)
+        return 1.1
+    if value <= 0:
+        return 1.0
+    return value
+
+
 def _heuristic_vqa(prompt: str) -> dict:
     normalized_prompt = prompt.lower()
     if "道路" in prompt or "road" in normalized_prompt:
@@ -299,6 +326,7 @@ def runtime_status() -> dict:
         "max_tokens_fast": _MAX_TOKENS_FAST,
         "max_tokens_incremental": _MAX_TOKENS_INCREMENTAL,
         "max_tokens_full": _MAX_TOKENS_FULL,
+        "repeat_penalty": _repeat_penalty(),
         "send_previous_image_in_incremental": os.getenv("QWEN_SEND_PREVIOUS_IMAGE_IN_INCREMENTAL", "0") == "1",
     }
 
@@ -553,6 +581,10 @@ def run_vqa_from_frame(
             },
         ],
     }
+
+    repeat_penalty = _repeat_penalty()
+    if repeat_penalty > 1.0:
+        request_payload["repeat_penalty"] = repeat_penalty
 
     qwen_http_ms = 0.0
     try:

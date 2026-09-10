@@ -179,11 +179,73 @@ func readManifestRows(_ path: String) -> [[String: Any]] {
     return rows
 }
 
+func posixJoin(_ base: URL, _ relative: String) -> String {
+    var rel = relative.replacingOccurrences(of: "\\", with: "/")
+    while rel.hasPrefix("./") {
+        rel = String(rel.dropFirst(2))
+    }
+    if rel.hasPrefix("/") { return rel }
+    return (base.path as NSString).appendingPathComponent(rel)
+}
+
+func guessRepoRoot(from start: URL) -> URL {
+    let fm = FileManager.default
+    var dir = start
+    for _ in 0..<10 {
+        if fm.fileExists(atPath: posixJoin(dir, "dataset/camvid"))
+            || fm.fileExists(atPath: posixJoin(dir, "docs/datasets")) {
+            return dir
+        }
+        let parent = dir.deletingLastPathComponent()
+        if parent.path == dir.path { break }
+        dir = parent
+    }
+    return start.deletingLastPathComponent().deletingLastPathComponent()
+}
+
+func remapCamVidPath(_ value: String, repoRoot: URL) -> String? {
+    let posix = value.replacingOccurrences(of: "\\", with: "/")
+    for marker in ["CamVid_RGB/", "CamVid_Label/"] {
+        if let range = posix.range(of: marker) {
+            let tail = String(posix[range.lowerBound...])
+            return posixJoin(repoRoot, "dataset/camvid/" + tail)
+        }
+    }
+    return nil
+}
+
 func resolveImagePath(_ row: [String: Any], manifestDir: URL) -> String? {
     let raw = (row["image_path"] as? String) ?? (row["image"] as? String)
     guard let value = raw, !value.isEmpty else { return nil }
-    if value.hasPrefix("/") { return value }
-    return manifestDir.appendingPathComponent(value).path
+    let fm = FileManager.default
+    // Relative `dataset/camvid/...` is from the repo root, not from
+    // `docs/datasets/` (the manifest directory). Prefer repo-root joins;
+    // treat manifest-dir joins as last resort so a miss reports the real path.
+    let repoRoot = guessRepoRoot(from: manifestDir)
+    let cwd = URL(fileURLWithPath: fm.currentDirectoryPath, isDirectory: true)
+    var preferred: [String] = []
+    var lastResort: [String] = []
+    func appendUnique(_ path: String, lastResort last: Bool = false) {
+        if preferred.contains(path) || lastResort.contains(path) { return }
+        if last { lastResort.append(path) } else { preferred.append(path) }
+    }
+    if value.hasPrefix("/") {
+        appendUnique(value)
+    } else {
+        appendUnique(posixJoin(repoRoot, value))
+        appendUnique(posixJoin(cwd, value))
+        appendUnique(posixJoin(manifestDir, value), lastResort: true)
+    }
+    if let remapped = remapCamVidPath(value, repoRoot: repoRoot) {
+        appendUnique(remapped)
+    }
+    if let remapped = remapCamVidPath(value, repoRoot: cwd) {
+        appendUnique(remapped)
+    }
+    for path in preferred + lastResort {
+        if fm.fileExists(atPath: path) { return path }
+    }
+    return preferred.first ?? lastResort.first
 }
 
 func frameID(_ row: [String: Any]) -> String {

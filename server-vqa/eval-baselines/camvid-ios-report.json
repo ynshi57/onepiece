@@ -146,7 +146,7 @@
     },
     "unknown_prediction_rate": 0.0014
   },
-  "guidance_baseline": "/Users/bayes/repo/onepiece/server-vqa/eval-baselines/camvid-ios-guidance.json",
+  "guidance_baseline": "camvid-ios-guidance.json",
   "guidance_line": {
     "both_ok": 693,
     "direction_error": 0.1136784992784994,
@@ -178,5 +178,5 @@
     "scored": 701,
     "skipped": 0
   },
-  "region_baseline": "/Users/bayes/repo/onepiece/server-vqa/eval-baselines/camvid-ios-region.json"
+  "region_baseline": "camvid-ios-region.json"
 }

@@ -23,6 +23,12 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Red
 from PIL import Image
 from pydantic import BaseModel
 
+from app.dataset_paths import (
+    open_dataset_root,
+    remap_stale_dataset_path,
+    resolve_dataset_file,
+    rewrite_manifest_resolved_paths,
+)
 from app.case_store import (
     annotate as case_annotate,
     cluster_failures,
@@ -1029,20 +1035,24 @@ def _allowed_local_roots() -> list[Path]:
     if configured:
         roots.append(Path(configured).expanduser().resolve())
     # Always allow wherever datasets actually live (durable default is
-    # ~/.cache/vqasee, which is NOT under cwd/tmp). Deriving this from the same
-    # resolver keeps the file-serving allowlist in lockstep with the download
-    # target, so moving the root can't silently break image serving.
+    # <repo>/dataset). Deriving this from the same resolver keeps the
+    # file-serving allowlist in lockstep with the download target, so moving
+    # the root can't silently break image serving.
     roots.append(_open_dataset_root())
     return roots
 
 
 def _safe_local_file(path_text: str) -> Path:
-    path = Path(path_text).expanduser().resolve()
-    if not path.is_file():
+    found = resolve_dataset_file(
+        path_text,
+        dataset_root=_open_dataset_root(),
+        repo=_repo_root(),
+    )
+    if found is None:
         raise HTTPException(status_code=404, detail="file_not_found")
-    if not any(root == path or root in path.parents for root in _allowed_local_roots()):
+    if not any(root == found or root in found.parents for root in _allowed_local_roots()):
         raise HTTPException(status_code=403, detail="file_not_allowed")
-    return path
+    return found
 
 
 @router.get("/local-file")
@@ -1201,7 +1211,7 @@ def dataset_create_open_ui():
 
 <div class='callout'>
   <h2><span class='step'>1</span>一键下载 CamVid GitHub 数据并生成 manifest</h2>
-  <p class='hint'>推荐先点这个。平台会从 GitHub 下载公开 CamVid 镜像到本地缓存目录 <code>~/.cache/vqasee/open-datasets/camvid</code>（非临时目录，不会被系统清理；可用环境变量 <code>VQASEE_DATASET_ROOT</code> 覆盖），读取道路/人行道语义标签，生成 VQASee path-guidance manifest。若目录被清空会自动重新下载。</p>
+  <p class='hint'>推荐先点这个。平台会从 GitHub 下载公开 CamVid 镜像到仓库 <code>dataset/camvid</code>（可用环境变量 <code>VQASEE_DATASET_ROOT</code> 覆盖），读取道路/人行道语义标签，生成 VQASee path-guidance manifest。若目录被清空会自动重新下载。</p>
   <button id='downloadCamvidButton' type='button' onclick='downloadCamvid()'>下载 CamVid 并生成 manifest</button>
   <div id='downloadStatus' class='status' style='display:none'></div>
   <p class='explain'>如果网络慢或 GitHub 不可达，页面会显示失败原因，不会只让浏览器一直转圈。也可以先用下面的“内置演示”确认流程。</p>
@@ -1220,7 +1230,7 @@ async function downloadCamvid() {
   status.innerHTML = '正在连接 GitHub 并下载 CamVid… 已等待 0 秒。<br><span class="muted">如果网络较慢，可以先跑本地演示；失败后这里会显示原因。</span>';
   const timer = setInterval(() => {
     seconds += 1;
-    status.innerHTML = `正在连接 GitHub 并下载 CamVid… 已等待 ${seconds} 秒。<br><span class="muted">超过 30 秒仍无结果，通常是 GitHub 网络慢；你可以打开本地演示或稍后重试。</span>`;
+    status.innerHTML = `正在连接 GitHub 并下载 CamVid… 已等待 ${seconds} 秒。<br><span class="muted">完整包较大，可能需要几分钟。网络慢时可以先打开本地演示或稍后重试。</span>`;
   }, 1000);
   try {
     const response = await fetch('/diagnostics/datasets/download-open?dataset=camvid&as_json=true', {headers: {'Accept': 'application/json'}});
@@ -1272,18 +1282,9 @@ async function downloadCamvid() {
 
 
 def _open_dataset_root() -> Path:
-    configured = os.getenv("VQASEE_DATASET_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser().resolve()
-    # NOT /tmp: macOS periodically purges /private/tmp (files untouched for ~3
-    # days), which silently emptied the CamVid images and broke every harness
-    # run with misleading "decode_failed". Datasets are inputs to a repeatable
-    # closed loop, so they must live somewhere durable. Honor a legacy /tmp copy
-    # if it still has images, so existing setups keep working until re-download.
-    legacy = Path("/tmp/vqasee-open-datasets")
-    if _dir_has_images(_find_dataset_dir(legacy / "camvid", "CamVid_RGB")):
-        return legacy.resolve()
-    return (Path.home() / ".cache" / "vqasee" / "open-datasets").resolve()
+    # Default is <repo>/dataset so committed manifests never bake in another
+    # machine's home directory. VQASEE_DATASET_ROOT still overrides.
+    return open_dataset_root()
 
 
 def _dir_has_images(directory: Path | None) -> bool:
@@ -1375,14 +1376,85 @@ def _find_dataset_dir(root: Path, name: str) -> Path | None:
     return None
 
 
-def _download_url_to_file(url: str, output_path: Path, *, timeout_seconds: int = 30) -> None:
+def _normalize_camvid_layout(root: Path) -> None:
+    """Accept GitHub (CamVid_RGB/Label) and official UCL (701_StillsRaw_full + *_L.png)."""
+    rgb = _find_dataset_dir(root, "CamVid_RGB")
+    raw = _find_dataset_dir(root, "701_StillsRaw_full")
+    if not _dir_has_images(rgb) and _dir_has_images(raw) and raw is not None:
+        target = root / "CamVid_RGB"
+        if target.exists() and target.resolve() != raw.resolve():
+            shutil.rmtree(target)
+        if raw.resolve() != target.resolve():
+            raw.rename(target)
+
+    lbl = _find_dataset_dir(root, "CamVid_Label")
+    if _dir_has_images(lbl):
+        return
+    target = root / "CamVid_Label"
+    target.mkdir(parents=True, exist_ok=True)
+    for png in root.rglob("*_L.png"):
+        if not png.is_file():
+            continue
+        dest = target / png.name
+        if png.resolve() == dest.resolve():
+            continue
+        if dest.exists():
+            continue
+        png.replace(dest)
+
+
+def _download_official_camvid(root: Path) -> None:
+    """Download the original Cambridge/UCL CamVid stills + labels (not GitHub)."""
+    rgb_zip = root / "701_StillsRaw_full.zip"
+    lbl_zip = root / "LabeledApproved_full.zip"
+    _download_url_to_file(
+        "http://web4.cs.ucl.ac.uk/staff/g.brostow/MotionSegRecData/files/701_StillsRaw_full.zip",
+        rgb_zip,
+        timeout_seconds=1800,
+    )
+    _download_url_to_file(
+        "http://web4.cs.ucl.ac.uk/staff/g.brostow/MotionSegRecData/data/LabeledApproved_full.zip",
+        lbl_zip,
+        timeout_seconds=600,
+    )
+    _extract_zip_flat(rgb_zip, root)
+    labels_tmp = root / "_labels_extract"
+    if labels_tmp.exists():
+        shutil.rmtree(labels_tmp)
+    labels_tmp.mkdir(parents=True)
+    _extract_zip_flat(lbl_zip, labels_tmp)
+    rgb_zip.unlink(missing_ok=True)
+    lbl_zip.unlink(missing_ok=True)
+    _normalize_camvid_layout(root)
+    shutil.rmtree(labels_tmp, ignore_errors=True)
+
+
+
+def _download_url_to_file(url: str, output_path: Path, *, timeout_seconds: int = 300) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "VQASee-diagnostics/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response, output_path.open("wb") as handle:
-        while True:
-            chunk = response.read(1024 * 1024)
-            if not chunk:
-                break
-            handle.write(chunk)
+    last_error: Exception | None = None
+    # Try the process proxy first, then a direct connection. Local HTTP proxies
+    # on this machine have previously truncated GitHub/Homebrew payloads.
+    for disable_proxy in (False, True):
+        try:
+            if disable_proxy:
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                response_cm = opener.open(request, timeout=timeout_seconds)
+            else:
+                response_cm = urllib.request.urlopen(request, timeout=timeout_seconds)
+            with response_cm as response, output_path.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+            if output_path.stat().st_size == 0:
+                raise OSError(f"empty download: {url}")
+            return
+        except Exception as exc:
+            last_error = exc
+            output_path.unlink(missing_ok=True)
+    raise last_error or OSError(f"download_failed: {url}")
 
 
 @router.get("/datasets/download-open")
@@ -1397,6 +1469,8 @@ def dataset_download_open(dataset: str = "camvid", output: str = "", limit: int 
     urls = [
         "https://github.com/lih627/CamVid/archive/refs/heads/main.zip",
         "https://github.com/lih627/CamVid/archive/refs/heads/master.zip",
+        "https://ghproxy.net/https://github.com/lih627/CamVid/archive/refs/heads/main.zip",
+        "https://mirror.ghproxy.com/https://github.com/lih627/CamVid/archive/refs/heads/main.zip",
     ]
     # Re-download when the images are missing OR the dir exists but is empty
     # (e.g. macOS purged /tmp). Checking presence-of-files, not just the folder,
@@ -1408,14 +1482,21 @@ def dataset_download_open(dataset: str = "camvid", output: str = "", limit: int 
         downloaded = False
         for url in urls:
             try:
-                _download_url_to_file(url, zip_path, timeout_seconds=30)
+                _download_url_to_file(url, zip_path, timeout_seconds=300)
                 _extract_zip_flat(zip_path, root)
+                _normalize_camvid_layout(root)
                 downloaded = True
                 break
             except Exception as exc:  # pragma: no cover - network failures are environment-specific.
                 last_error = exc
             finally:
                 zip_path.unlink(missing_ok=True)
+        if not downloaded:
+            try:
+                _download_official_camvid(root)
+                downloaded = True
+            except Exception as exc:  # pragma: no cover - network failures are environment-specific.
+                last_error = exc
         if not downloaded:
             raise HTTPException(status_code=502, detail=f"download_failed: {last_error}")
     images_dir = _find_dataset_dir(root, "CamVid_RGB")
@@ -1899,7 +1980,7 @@ async function runHarness(force) {{
 }}
 </script>"""
 
-    if cache.get("exists"):
+    if cache.get("exists") and cache.get("count"):
         eval_url = (
             f"/diagnostics/datasets/ios-harness/ui?manifest={encoded_manifest}"
             f"&predictions={html.escape(cache['out_path'])}"
@@ -1944,7 +2025,7 @@ async function runHarness(force) {{
   <h2><span class='step'>1</span>跑真身感知</h2>
   <p class='hint'>平台跑的是 iPhone 上一模一样的感知代码（YOLO11n Core ML + 通行区域引擎），不是近似实现。诊断台就在这台 Mac 上，可直接一键触发，无需自己开终端。跑一次后会缓存，之后无需每次重跑。</p>
   <div class='callout'>
-    <p><b>推荐：一键在本机跑</b>（服务器直接调用已编译的 harness；首次会自动编译）</p>
+    <p><b>推荐：一键在本机跑</b>（服务器直接调用 harness；二进制缺失或源码更新后会自动重新编译）</p>
     <button id='runBtn' onclick='runHarness(false)'>▶ 一键在本机跑真身感知</button>
     <div id='runStatus' class='status' style='display:none'></div>
     <p class='muted'>仅在诊断台运行于 macOS 时可用；非 Mac 或缺 Core ML 模型会明确报错，不会静默假装成功。</p>
@@ -2181,6 +2262,100 @@ def _repo_root() -> Path:
 
 def _harness_bin() -> Path:
     return _repo_root() / "ios-vqa-app" / "perception-harness" / ".build" / "debug" / "PerceptionHarness"
+
+
+def _harness_dir() -> Path:
+    return _repo_root() / "ios-vqa-app" / "perception-harness"
+
+
+def _iter_harness_source_files(harness_dir: Path) -> list[Path]:
+    files = [harness_dir / "Package.swift"]
+    sources = harness_dir / "Sources"
+    if sources.is_dir():
+        files.extend(path for path in sources.rglob("*") if path.is_file())
+    return files
+
+
+def _harness_binary_stale(harness_bin: Path, harness_dir: Path) -> bool:
+    """True when the binary is missing or older than Package.swift / Sources (follows symlinks)."""
+    if not harness_bin.is_file():
+        return True
+    try:
+        bin_mtime = harness_bin.stat().st_mtime
+    except OSError:
+        return True
+    for path in _iter_harness_source_files(harness_dir):
+        try:
+            if path.stat().st_mtime > bin_mtime:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _build_harness(harness_dir: Path, harness_bin: Path) -> dict | None:
+    """Run ``swift build``. Return an error payload, or None on success."""
+    try:
+        build = subprocess.run(
+            ["swift", "build"],
+            cwd=str(harness_dir),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except FileNotFoundError:
+        return {
+            "status": "unsupported",
+            "capability": "needs_build",
+            "reason": "找不到 swift 工具链。请安装 Xcode Command Line Tools 后重试，或手动执行 swift build。",
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "capability": "needs_build",
+            "reason": "swift build 超时（>600s）。请在 Mac 终端手动执行 swift build 后重试。",
+        }
+    if build.returncode != 0 or not harness_bin.is_file():
+        tail = (build.stderr or build.stdout or "").strip().splitlines()[-12:]
+        return {
+            "status": "error",
+            "capability": "needs_build",
+            "reason": "自动编译失败，请在 Mac 终端手动执行 `cd ios-vqa-app/perception-harness && swift build` 查看完整报错。",
+            "build_stderr": "\n".join(tail),
+        }
+    return None
+
+
+def _ensure_harness_binary(harness_dir: Path, harness_bin: Path) -> tuple[str, dict | None]:
+    """Build when missing or sources are newer. Returns (note, error_payload)."""
+    if not _harness_binary_stale(harness_bin, harness_dir):
+        return "", None
+    note = (
+        "源码新于二进制，已重新编译 harness。"
+        if harness_bin.is_file()
+        else "已自动编译 harness。"
+    )
+    err = _build_harness(harness_dir, harness_bin)
+    if err is not None:
+        return "", err
+    return note, None
+
+
+def _harness_missing_images_reason(stderr_text: str) -> str:
+    """Explain a predicted=0 run whose stderr is image_not_found, without blaming the wrong root."""
+    if "docs/datasets/dataset/" in stderr_text:
+        return (
+            "运行结束但未产出预测：harness 把仓库相对路径 dataset/camvid/... "
+            "接到了 manifest 所在目录 docs/datasets/ 下面"
+            "（实际图片在仓库根 dataset/camvid/）。"
+            "平台会在源码更新后自动重新编译 harness；请再点一次「一键在本机跑真身感知」。"
+        )
+    expected = open_dataset_root() / "camvid" / "CamVid_RGB"
+    return (
+        "运行结束但未产出预测：manifest 里引用的图片文件在磁盘上找不到。"
+        f"当前数据集根是 {expected.parent.parent}，CamVid 应在 {expected}。"
+        "若该目录为空，请回到「接入开源数据集」重新下载 CamVid，再重跑真身感知。"
+    )
 
 
 def _harness_models_dir() -> Path:
@@ -2513,6 +2688,9 @@ def _harness_cache_info(manifest_path: Path) -> dict:
         except OSError:
             pass
 
+    if count == 0:
+        reasons.append("上次未产出任何预测，不能当缓存复用")
+
     info["stale_reasons"] = reasons
     info["fresh"] = not reasons
     return info
@@ -2533,7 +2711,7 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
 
     Honest capability reporting (never a silent failure):
       - not macOS            -> status=unsupported (Core ML/Vision are Apple-only)
-      - binary missing       -> best-effort `swift build`; if still missing, needs_build
+      - binary missing or sources newer -> best-effort `swift build`; if still missing, needs_build
       - harness non-zero rc  -> error with stderr tail (e.g. YOLO model not found)
     """
     manifest_path = Path(manifest).expanduser()
@@ -2551,7 +2729,7 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
     # Reuse cached predictions when nothing changed — cached results are
     # platform-independent to read, so allow this even off macOS.
     cache = _harness_cache_info(manifest_path)
-    if not force and cache.get("exists") and cache.get("fresh"):
+    if not force and cache.get("exists") and cache.get("fresh") and cache.get("count"):
         return {
             "status": "cached",
             "predictions": cache["out_path"],
@@ -2588,45 +2766,42 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
         }
 
     repo_root = _repo_root()
-    harness_dir = repo_root / "ios-vqa-app" / "perception-harness"
-    harness_bin = harness_dir / ".build" / "debug" / "PerceptionHarness"
+    harness_dir = _harness_dir()
+    harness_bin = _harness_bin()
 
-    build_note = ""
-    if not harness_bin.is_file():
-        # Best-effort build. The harness has no third-party deps (only Apple
-        # frameworks + symlinked app sources), so this is offline-capable.
-        try:
-            build = subprocess.run(
-                ["swift", "build"],
-                cwd=str(harness_dir),
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-        except FileNotFoundError:
-            return {
-                "status": "unsupported",
-                "capability": "needs_build",
-                "reason": "找不到 swift 工具链。请安装 Xcode Command Line Tools 后重试，或手动执行 swift build。",
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                "status": "error",
-                "capability": "needs_build",
-                "reason": "swift build 超时（>600s）。请在 Mac 终端手动执行 swift build 后重试。",
-            }
-        if build.returncode != 0 or not harness_bin.is_file():
-            tail = (build.stderr or build.stdout or "").strip().splitlines()[-12:]
-            return {
-                "status": "error",
-                "capability": "needs_build",
-                "reason": "自动编译失败，请在 Mac 终端手动执行 `cd ios-vqa-app/perception-harness && swift build` 查看完整报错。",
-                "build_stderr": "\n".join(tail),
-            }
-        build_note = "已自动编译 harness。"
+    build_note, build_err = _ensure_harness_binary(harness_dir, harness_bin)
+    if build_err is not None:
+        return build_err
+
+    dataset_root = open_dataset_root()
+    resolved_manifest = Path(f"/tmp/{manifest_path.stem}-harness-resolved.jsonl")
+    try:
+        resolve_stats = rewrite_manifest_resolved_paths(
+            manifest_path,
+            resolved_manifest,
+            dataset_root=dataset_root,
+            repo=repo_root,
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "status": "error",
+            "reason": f"无法把 manifest 图片路径解析到磁盘文件：{exc}",
+        }
+    if resolve_stats["rows"] and resolve_stats["resolved"] == 0:
+        example = resolve_stats["missing"][0] if resolve_stats["missing"] else ""
+        expected = remap_stale_dataset_path(example, dataset_root=dataset_root)
+        where = expected if expected is not None else (dataset_root / "camvid")
+        return {
+            "status": "error",
+            "reason": (
+                "manifest 里的图片路径在磁盘上解析不到文件"
+                + (f"（例：{example}）" if example else "")
+                + f"。期望位置：{where}。请确认仓库根 dataset/camvid 已下载。"
+            ),
+        }
 
     out_path = str(_harness_out_path(manifest_path))
-    cmd = [str(harness_bin), "--manifest", str(manifest_path), "--out", out_path]
+    cmd = [str(harness_bin), "--manifest", str(resolved_manifest), "--out", out_path]
     if limit and limit > 0:
         cmd += ["--limit", str(limit)]
     # Inject the lane model when available so the prediction carries lane_grid and
@@ -2688,11 +2863,7 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
         images_missing = "image_not_found:" in stderr_text
         reason = f"运行结束但未产出预测（{out_path} 为空）。见下方 stderr。"
         if images_missing:
-            reason = (
-                "运行结束但未产出预测：manifest 里引用的图片文件在磁盘上不存在了"
-                "（很可能数据集被系统清理，如放在 /tmp）。请回到「接入开源数据集」"
-                "重新下载 CamVid（平台已会自动重下并重生成 manifest），再重跑真身感知。"
-            )
+            reason = _harness_missing_images_reason(stderr_text)
         return {
             "status": "error",
             "reason": reason,

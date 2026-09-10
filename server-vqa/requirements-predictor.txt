@@ -7,6 +7,6 @@
 #
 # Without these, the predictor honestly reports capability=unsupported.
 -r requirements.txt
+# numpy / Pillow come from requirements.txt (app.main needs them anyway);
+# onnxruntime is the only extra the predictor adds.
 onnxruntime
-numpy
-Pillow

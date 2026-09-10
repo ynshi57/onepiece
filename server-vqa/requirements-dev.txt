@@ -4,8 +4,6 @@ httpx
 # Enables uvicorn --reload (auto-restart on code edits) used by
 # start_diagnostics_platform.sh. Dev-only.
 watchfiles
-# The diagnostics platform imports PIL at module load (app.diagnostic_api draws
-# per-frame overlays), so Pillow is a hard runtime dependency of the platform,
-# not just of the optional predictor. Declared here so the platform can start
-# from a plain `pip install -r requirements-dev.txt`.
-Pillow
+# numpy / Pillow are NOT listed here on purpose: app.main imports them
+# transitively, so they live in requirements.txt (single source of truth) and
+# are inherited via the -r above.

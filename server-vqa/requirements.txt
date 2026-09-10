@@ -4,3 +4,9 @@ pydantic
 websockets
 httpx
 zeroconf
+# app.main imports app.diagnostic_api at module load, which imports numpy and
+# PIL at ITS module load (per-frame overlays + mask math). They are therefore
+# hard dependencies of the plain backend, not just of the diagnostics platform
+# or the optional predictor. Without them `uvicorn app.main:app` fails to import.
+numpy
+Pillow

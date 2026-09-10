@@ -8,6 +8,7 @@ from typing import Any, Iterable
 import numpy as np
 from PIL import Image, ImageDraw
 
+from app.dataset_paths import portable_dataset_path
 from app.guidance_path import centerline_from_mask
 from app.path_dataset_import import LEFT_ROI, NEAR_ROI, RIGHT_ROI, focus_direction, roi_coverage, status_from_coverage
 from app.region_grid import downsample_mask_to_grid, grid_to_wire, lane_presence_grid
@@ -248,7 +249,7 @@ def _row_from_mask(*, image_path: Path, images_dir: Path, mask: np.ndarray, spli
     return {
         "frame_id": f"{split}/{image_path.stem}",
         "image": rel,
-        "image_path": str(image_path.resolve()),
+        "image_path": portable_dataset_path(image_path),
         "split": split,
         "scene_tags": scene_tags,
         "dataset_source": scene_tags[-1] if scene_tags else "open_dataset",
@@ -382,7 +383,7 @@ def _role_row_from_masks(
     return {
         "frame_id": f"{split}/{image_path.stem}",
         "image": rel,
-        "image_path": str(image_path.resolve()),
+        "image_path": portable_dataset_path(image_path),
         "split": split,
         "scene_tags": scene_tags,
         "dataset_source": "camvid_github",
@@ -446,7 +447,7 @@ def create_camvid_role_manifest(
             split=split,
             scene_tags=tags,
         )
-        row["label_path"] = str(label_path.resolve())
+        row["label_path"] = portable_dataset_path(label_path)
         rows.append(row)
         if limit and len(rows) >= limit:
             break
@@ -524,7 +525,7 @@ def create_camvid_manifest(
         row["dataset_source"] = "camvid_github"
         row["ground_truth_source"] = "camvid_rgb_semantic_label"
         row["traversable_classes"] = traversable_classes
-        row["label_path"] = str(label_path.resolve())
+        row["label_path"] = portable_dataset_path(label_path)
         rows.append(row)
         if limit and len(rows) >= limit:
             break

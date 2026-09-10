@@ -379,6 +379,22 @@ def test_find_dataset_dir_locates_nested_directory(tmp_path):
     assert _find_dataset_dir(tmp_path, "DoesNotExist") is None
 
 
+def test_normalize_camvid_layout_maps_official_ucl_folders(tmp_path):
+    from app.diagnostic_api import _normalize_camvid_layout
+
+    raw = tmp_path / "701_StillsRaw_full"
+    raw.mkdir()
+    (raw / "0001TP_006690.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (tmp_path / "0001TP_006690_L.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    _normalize_camvid_layout(tmp_path)
+
+    assert (tmp_path / "CamVid_RGB" / "0001TP_006690.png").is_file()
+    assert (tmp_path / "CamVid_Label" / "0001TP_006690_L.png").is_file()
+    assert not raw.exists()
+
+
+
 def test_dir_has_images_treats_empty_dir_as_absent(tmp_path):
     """Regression: macOS purged /tmp left empty CamVid dirs, which the old check
     counted as 'downloaded' and so silently skipped re-download. An empty (or
@@ -402,9 +418,9 @@ def test_dir_has_images_treats_empty_dir_as_absent(tmp_path):
 
 
 def test_allowed_local_roots_track_the_dataset_root(monkeypatch, tmp_path):
-    """Regression: after moving datasets to the durable ~/.cache/vqasee root, the
-    file-serving allowlist still only trusted cwd//tmp, so every image 403'd with
-    file_not_allowed. The allowlist must derive from _open_dataset_root()."""
+    """Regression: after moving the dataset root, the file-serving allowlist
+    still only trusted cwd//tmp, so every image 403'd with file_not_allowed.
+    The allowlist must derive from _open_dataset_root()."""
     import app.diagnostic_api as da
 
     sentinel = (tmp_path / "cache" / "vqasee" / "open-datasets").resolve()
@@ -427,6 +443,34 @@ def test_local_file_serves_image_from_durable_dataset_root(monkeypatch, tmp_path
     monkeypatch.setattr(da, "_open_dataset_root", lambda: root)
 
     response = client.get(f"/diagnostics/local-file?path={image_path}")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/")
+
+
+def test_open_dataset_root_defaults_to_repo_dataset(monkeypatch):
+    monkeypatch.delenv("VQASEE_DATASET_ROOT", raising=False)
+    from app.dataset_paths import open_dataset_root, repo_root
+
+    assert open_dataset_root() == (repo_root() / "dataset").resolve()
+
+
+def test_local_file_remaps_stale_machine_camvid_path(monkeypatch, tmp_path):
+    """Committed manifests used to bake /Users/bayes/.cache/... absolute paths.
+    Serving must remap onto the current dataset root instead of 404."""
+    import app.diagnostic_api as da
+    from PIL import Image
+
+    root = (tmp_path / "dataset").resolve()
+    img_dir = root / "camvid" / "CamVid_RGB"
+    img_dir.mkdir(parents=True)
+    image_path = img_dir / "0001TP_006690.png"
+    Image.new("RGB", (16, 16), "#202020").save(image_path)
+
+    monkeypatch.setattr(da, "_open_dataset_root", lambda: root)
+    monkeypatch.setattr(da, "_repo_root", lambda: tmp_path)
+
+    stale = "/Users/bayes/.cache/vqasee/open-datasets/camvid/CamVid_RGB/0001TP_006690.png"
+    response = client.get("/diagnostics/local-file", params={"path": stale})
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/")
 
@@ -479,6 +523,60 @@ def test_ios_harness_run_rejects_predictions_file(tmp_path):
     assert payload["capability"] == "wrong_manifest"
     # The message must point the user at a real dataset manifest.
     assert "camvid-manifest.jsonl" in payload["reason"]
+
+
+def test_harness_binary_stale_when_source_newer(tmp_path):
+    import os
+
+    from app.diagnostic_api import _harness_binary_stale
+
+    harness_dir = tmp_path / "perception-harness"
+    (harness_dir / "Sources" / "PerceptionHarness").mkdir(parents=True)
+    pkg = harness_dir / "Package.swift"
+    src = harness_dir / "Sources" / "PerceptionHarness" / "main.swift"
+    pkg.write_text("// pkg\n", encoding="utf-8")
+    src.write_text("let x = 1\n", encoding="utf-8")
+    missing = tmp_path / "missing-bin"
+    assert _harness_binary_stale(missing, harness_dir) is True
+
+    bin_path = tmp_path / "PerceptionHarness"
+    bin_path.write_bytes(b"bin")
+    os.utime(bin_path, (1_000_000, 1_000_000))
+    os.utime(src, (2_000_000, 2_000_000))
+    os.utime(pkg, (1_000_000, 1_000_000))
+    assert _harness_binary_stale(bin_path, harness_dir) is True
+    os.utime(src, (500_000, 500_000))
+    assert _harness_binary_stale(bin_path, harness_dir) is False
+
+
+def test_harness_missing_images_reason_wrong_relative_join():
+    from app.diagnostic_api import _harness_missing_images_reason
+
+    stderr = (
+        "image_not_found: /Users/x/onepiece/docs/datasets/dataset/camvid/CamVid_RGB/a.png\n"
+        "harness done: predicted=0 missing_image=701\n"
+    )
+    reason = _harness_missing_images_reason(stderr)
+    assert "docs/datasets" in reason
+    assert "dataset/camvid" in reason
+    assert "/tmp" not in reason
+
+
+def test_harness_cache_empty_predictions_are_not_fresh(tmp_path):
+    from app import diagnostic_api
+
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text('{"frame_id":"f1","image_path":"x.png"}\n', encoding="utf-8")
+    out = diagnostic_api._harness_out_path(manifest)
+    out.write_text("", encoding="utf-8")
+    try:
+        info = diagnostic_api._harness_cache_info(manifest)
+        assert info["exists"] is True
+        assert info["count"] == 0
+        assert info["fresh"] is False
+        assert any("未产出" in r for r in info["stale_reasons"])
+    finally:
+        out.unlink(missing_ok=True)
 
 
 def test_manifest_runnable_reason_accepts_dataset_flags_predictions(tmp_path):
@@ -728,6 +826,7 @@ def test_diagnostics_open_dataset_demo_flow():
     assert "一键下载 CamVid GitHub 数据" in ui_response.text
     assert "一键下载 CamVid GitHub 数据" in ui_response.text
     assert "VQASEE_DATASET_ROOT" in ui_response.text
+    assert "dataset/camvid" in ui_response.text
     assert "高级：接入 BDD100K 大数据集" in ui_response.text
     assert "downloadCamvid()" in ui_response.text
     assert "downloadStatus" in ui_response.text

@@ -15,7 +15,7 @@ Usage:
   python deploy/ios/decode_ufldv2_lanes.py \
     --model ~/.cache/vqasee/models/VQASeeLaneUFLDv2.mlpackage \
     --images 0001TP_006990.png 0006R0_f00930.png \
-    --camvid-dir ~/.cache/vqasee/open-datasets/camvid/CamVid_RGB \
+    --camvid-dir dataset/camvid/CamVid_RGB \
     --out /tmp/ufldv2_camvid_lanes.png
 """
 from __future__ import annotations

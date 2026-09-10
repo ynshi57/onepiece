@@ -193,6 +193,7 @@ def test_runtime_status_for_direct_llama_runtime(monkeypatch):
     assert status["dynamic_model_selection"] is False
     assert status["available_models"] == ["qwen2.5vl:3b"]
     assert status["resolved_model"] == "qwen2.5vl:3b"
+    assert status["repeat_penalty"] == 1.1
 
 
 def test_truncated_json_surfaces_reason_not_person():
@@ -256,7 +257,38 @@ def test_incremental_fast_request_does_not_send_previous_image_by_default(monkey
     assert len(images) == 1
     assert captured["payload"]["max_tokens"] == vqa_service._MAX_TOKENS_FAST
     assert captured["payload"]["response_format"]["json_schema"]["name"] == "vqa_walking_fast_result"
+    assert captured["payload"]["repeat_penalty"] == 1.1
     assert result["change_significance"] == "none"
+
+
+def test_repeat_penalty_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("QWEN_API_BASE_URL", "http://127.0.0.1:11435")
+    monkeypatch.setenv("QWEN_REPEAT_PENALTY", "1.0")
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"objects":[],"scene":"走廊","summary":"ok"}'}}]}
+
+    def fake_post(url, json, timeout):
+        captured["payload"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr(vqa_service.httpx, "post", fake_post)
+    vqa_service.run_vqa_from_frame(
+        prompt="模式=行走。",
+        image_base64="/9j/4AAQSkZJRgABAQAAAQABAAD/2w==",
+        fast_response=True,
+    )
+    assert "repeat_penalty" not in captured["payload"]
+
+
+def test_repeat_penalty_invalid_env_falls_back(monkeypatch):
+    monkeypatch.setenv("QWEN_REPEAT_PENALTY", "not-a-number")
+    assert vqa_service._repeat_penalty() == 1.1
 
 
 def test_incremental_can_opt_in_to_previous_image_validation(monkeypatch):
