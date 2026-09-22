@@ -127,36 +127,6 @@ enum TwinLiteOccupiedRails {
         return out
     }
 
-    /// Paint-rail strokes for overlay. `twinliteMask` is ignored by UFLD guidance.
-    static func displayPolylines(
-        lane: [Bool],
-        width: Int,
-        height: Int
-    ) -> [LanePolyline] {
-        guard width > 8, height > 8, lane.count == width * height else { return [] }
-        let hoodRows = max(8, Int((0.02 * Double(height)).rounded()))
-        var paint = railsFromLaneMask(
-            lane: lane,
-            width: width,
-            height: height,
-            hoodRows: hoodRows
-        )
-        paint = paint.map { trimBorderGlued($0, width: width) }
-        var out: [LanePolyline] = []
-        for (idx, rail) in paint.enumerated() {
-            var points: [CGPoint] = []
-            points.reserveCapacity(height)
-            for y in 0..<height where rail[y].isFinite {
-                let x = min(max((rail[y] + 0.5) / Double(width), 0.0), 1.0)
-                let yn = min(max((Double(y) + 0.5) / Double(height), 0.0), 1.0)
-                points.append(CGPoint(x: x, y: yn))
-            }
-            guard points.count >= 2 else { continue }
-            out.append(LanePolyline(laneIndex: idx, source: .twinliteMask, points: points))
-        }
-        return out
-    }
-
     // MARK: - GuidancePath export
 
     private static func guidancePathFromImagePoints(
