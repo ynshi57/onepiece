@@ -1,0 +1,57 @@
+{
+  "task_slug": "perception-four-questions",
+  "forum_dir": "auto_docs",
+  "main_agent": "Opus",
+  "reviewers": ["GPT", "Sonnet", "Gemini"],
+  "auto_execute": true,
+  "messages": [
+    {
+      "agent": "Opus",
+      "type": "PROPOSAL",
+      "time": "2026-09-21 12:04",
+      "content": "用户四问。乔布斯裁决：1) YOLO11n=COCO，无台阶/路沿，不加空映射。2) TwinLiteNet 不是产品默认：12帧未过门，且是驾驶DA不是行人可走。无标注叠图里它比 UFLD 好看，但不是「最好就能上」。3) 退役 live 二值 Fast-SCNN（有害+延迟大头）；harness 不再静默回落二值。4) Mac≠iPhone 能解：先删大头；TwinLiteNet 2.4s 是 CPU PyTorch；mc5 要真机 ANE 签。auto_execute 因用户已说去掉二值。"
+    },
+    {
+      "agent": "GPT",
+      "type": "REVIEW",
+      "time": "2026-09-21 12:10",
+      "content": "态度：同意。COCO 80 类无 stair/curb，Swift 映射是空壳。去二值要让 segmentationRunner 可选，harness 禁止 ?? binary。子代理额度不足，主 Agent 代写。"
+    },
+    {
+      "agent": "Sonnet",
+      "type": "REVIEW",
+      "time": "2026-09-21 12:10",
+      "content": "态度：有条件同意。去二值后 live 没有绿区和中线，只剩 YOLO+车道像素——必须跟用户说清楚，不能假装可走区还在。TwinLiteNet 不能顶行人角色。"
+    },
+    {
+      "agent": "Gemini",
+      "type": "REVIEW",
+      "time": "2026-09-21 12:10",
+      "content": "态度：同意。2.4s 不能当 TwinLiteNet 实时结论。评测 walk/drive 仍走 harness --seg-model mc5。"
+    },
+    {
+      "agent": "GPT",
+      "type": "VOTE",
+      "time": "2026-09-21 12:10",
+      "content": "赞成。"
+    },
+    {
+      "agent": "Sonnet",
+      "type": "VOTE",
+      "time": "2026-09-21 12:10",
+      "content": "赞成，须写清 live 画面少了什么。"
+    },
+    {
+      "agent": "Gemini",
+      "type": "VOTE",
+      "time": "2026-09-21 12:10",
+      "content": "赞成。"
+    },
+    {
+      "agent": "Opus",
+      "type": "EXECUTION",
+      "time": "2026-09-21 12:10",
+      "content": "live 默认不再加载二值 Fast-SCNN；harness 不再静默回落。Swift 真机未在本机编过。"
+    }
+  ]
+}

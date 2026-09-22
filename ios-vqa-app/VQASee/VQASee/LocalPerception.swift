@@ -544,9 +544,8 @@ struct LocalPerceptionSignal: Sendable, Equatable {
     /// when no segmentation model is available; status=insufficient when free
     /// space is too broken to trace a line (explicit degrade, never fabricated).
     var guidancePath: GuidancePath? = nil
-    /// Coarse traversable region raster ("iPhone-perceived walkable area"). Only
-    /// populated on the offline evaluation harness (opt-in); nil on the live
-    /// on-device path so the real-time frame budget is untouched.
+    /// Coarse traversable / drivable region raster. Live TwinLiteNet emits it so
+    /// the camera overlay can tint DA; the harness also exports it for IoU.
     var traversableGrid: TraversableGrid? = nil
     /// Lane-marking raster from the dedicated lane segmenter (T4). nil when no lane
     /// model is loaded (default on the live device path until a latency budget is

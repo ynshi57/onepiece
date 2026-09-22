@@ -1,0 +1,87 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "storagePrecision" : "Float16",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 2 × 360 × 640)",
+        "shortDescription" : "",
+        "shape" : "[1, 2, 360, 640]",
+        "name" : "da_logits",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float16",
+        "formattedType" : "MultiArray (Float16 1 × 2 × 360 × 640)",
+        "shortDescription" : "",
+        "shape" : "[1, 2, 360, 640]",
+        "name" : "lane_logits",
+        "type" : "MultiArray"
+      }
+    ],
+    "modelParameters" : [
+
+    ],
+    "specificationVersion" : 7,
+    "mlProgramOperationTypeHistogram" : {
+      "Concat" : 10,
+      "Ios16.cast" : 1,
+      "Ios16.mul" : 3,
+      "Ios16.prelu" : 20,
+      "Ios16.sub" : 1,
+      "Ios16.conv" : 52,
+      "Ios16.add" : 29,
+      "Ios16.avgPool" : 2,
+      "Ios16.matmul" : 4,
+      "Ios16.softmax" : 2,
+      "Ios16.reduceMax" : 1,
+      "Ios16.batchNorm" : 7,
+      "Tile" : 1,
+      "Ios16.reshape" : 6,
+      "Ios16.convTranspose" : 6
+    },
+    "computePrecision" : "Mixed (Float16, Float32, Int32)",
+    "isUpdatable" : "0",
+    "stateSchema" : [
+
+    ],
+    "availability" : {
+      "macOS" : "13.0",
+      "tvOS" : "16.0",
+      "visionOS" : "1.0",
+      "watchOS" : "9.0",
+      "iOS" : "16.0",
+      "macCatalyst" : "16.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.conversion_date" : "2026-09-21",
+      "com.github.apple.coremltools.source" : "torch==2.2.2",
+      "com.github.apple.coremltools.version" : "9.0",
+      "com.github.apple.coremltools.source_dialect" : "TorchScript"
+    },
+    "inputSchema" : [
+      {
+        "height" : "360",
+        "colorspace" : "RGB",
+        "isOptional" : "0",
+        "width" : "640",
+        "isColor" : "1",
+        "formattedType" : "Image (Color 640 × 360)",
+        "hasSizeFlexibility" : "0",
+        "type" : "Image",
+        "shortDescription" : "",
+        "name" : "image"
+      }
+    ],
+    "generatedClassName" : "VQASeeTwinLiteNet",
+    "method" : "predict"
+  }
+]

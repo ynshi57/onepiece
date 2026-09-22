@@ -73,7 +73,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     /// localized `riskText` so the UI can pick a semantic color without parsing
     /// display strings (which breaks once the text is localized).
     @Published var currentRiskLevel: String = "low"
-    @Published var actionText: String = String(localized: "请让 Mac 连接 iPhone 热点，并启动本地后端。")
+    @Published var actionText: String = String(localized: "请让 iPhone 与 Mac 连同一 Wi‑Fi，并在 Mac 上启动本地后端。")
     @Published var debugText: String = "waiting"
     @Published var latencyText: String = "--"
     /// True while a frame is in flight; the UI keeps showing the previous latency
@@ -583,7 +583,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
 #if !targetEnvironment(simulator)
         if StreamingConfigValidator.isLoopbackHost(serverURLInput) {
             streamStatus = .error("invalid_server_url_for_device")
-            errorText = String(localized: "还没有自动发现 Mac 后端。请确认 iPhone 热点已开启、Mac 已连接该热点，并且 Mac 上已运行 bash ./start_backend.sh。")
+            errorText = String(localized: "还没有自动发现 Mac 后端。请确认 iPhone 与 Mac 连同一 Wi‑Fi、已在 iOS 设置中允许 VQASee 使用本地网络，并且 Mac 上已运行 bash ./start_backend.sh。")
             return
         }
 #endif
@@ -647,36 +647,58 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     private func waitForNearbyServerIfNeeded() async {
-        // "Address undetermined" == still the default loopback value. A resolved
-        // single backend is auto-filled (see applyDiscoveryDecision), which flips
-        // this off; a user-picked/typed address is likewise non-loopback. So the
-        // loopback check doubles as "we don't yet have a usable address".
+        // Loopback == we don't yet have a usable address (default placeholder).
         guard StreamingConfigValidator.isLoopbackHost(serverURLInput) else {
+            return
+        }
+        guard !userPinnedServer else {
             return
         }
 
         nearbyServerText = String(localized: "正在自动连接 Mac 后端…")
-        for _ in 0..<12 {
+
+        // Bonjour and /24 health sweep run in parallel — whichever finds the Mac
+        // first wins. Previously Bonjour waited ~3s serially before sweeping, which
+        // often timed out on same-Wi-Fi setups where mDNS is slow or VPN skews the
+        // advertised address.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { @MainActor in
+                await self.waitForBonjourAutoFill()
+            }
+            group.addTask { @MainActor in
+                await self.probeSubnetForBackendIfNeeded()
+            }
+        }
+    }
+
+    private func waitForBonjourAutoFill() async {
+        let pollNs = UInt64(BackendDiscoveryTimings.bonjourPollIntervalSeconds * 1_000_000_000)
+        let rounds = Int(
+            BackendDiscoveryTimings.bonjourWaitSeconds / BackendDiscoveryTimings.bonjourPollIntervalSeconds
+        )
+        for _ in 0..<rounds {
             if !StreamingConfigValidator.isLoopbackHost(serverURLInput) {
                 return
             }
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            if !discoveredServers.isEmpty {
+                applyDiscoveryDecision()
+            }
+            if !StreamingConfigValidator.isLoopbackHost(serverURLInput) {
+                return
+            }
+            try? await Task.sleep(nanoseconds: pollNs)
         }
-        await probeCommonHotspotHostsIfNeeded()
     }
 
-    private func probeCommonHotspotHostsIfNeeded() async {
+    private func probeSubnetForBackendIfNeeded() async {
         guard StreamingConfigValidator.isLoopbackHost(serverURLInput) else {
             return
         }
 
-        nearbyServerText = String(localized: "Bonjour 未发现，正在扫描局域网地址…")
+        nearbyServerText = String(localized: "正在扫描局域网中的 Mac 后端…")
 
-        // Sweep the phone's own /24 first (covers same-Wi-Fi setups where Bonjour
-        // failed to resolve, e.g. a VPN interface on the Mac). On an iPhone hotspot
-        // the phone itself sits on 172.20.10.x, so this also covers that case. The
-        // static hotspot list stays as a backstop for when we can't read the
-        // device's own address for some reason.
+        // Sweep the phone's own /24 (same Wi‑Fi). Hotspot (172.20.10.x) is covered
+        // because the phone sits on that subnet when acting as the AP.
         var candidateHosts = [String]()
         if let deviceIP = Self.deviceWiFiIPv4() {
             candidateHosts = LocalSubnetPlanner.candidateHosts(deviceIPv4: deviceIP)
@@ -685,9 +707,10 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             candidateHosts = ["172.20.10.1"] + (2...15).map { "172.20.10.\($0)" }
         }
 
-        if let host = await firstHealthyHost(candidateHosts, port: 9000) {
-            serverURLInput = "ws://\(host):9000/ws/signaling"
-            nearbyServerText = String(localized: "已连接 Mac 后端：\(host)")
+        if let host = await firstHealthyHost(candidateHosts, port: 9000),
+           let url = URL(string: "ws://\(host):9000/ws/signaling") {
+            applyDiscoveredURL(url)
+            nearbyServerText = String(localized: "已发现 Mac 后端：\(host)（点开始连接）")
         }
     }
 
@@ -699,7 +722,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         guard !hosts.isEmpty else {
             return nil
         }
-        let maxConcurrent = 24
+        let maxConcurrent = BackendDiscoveryTimings.maxConcurrentHealthProbes
         var bestIndex: Int?
         var index = 0
         while index < hosts.count {
@@ -769,7 +792,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             return false
         }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 0.35
+        request.timeoutInterval = BackendDiscoveryTimings.healthProbeTimeoutSeconds
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)

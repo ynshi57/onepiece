@@ -560,6 +560,41 @@ final class VQASeeTests: XCTestCase {
         XCTAssertTrue(LocalSubnetPlanner.candidateHosts(deviceIPv4: "192.168.1.999").isEmpty) // octet out of range
     }
 
+    // MARK: - BonjourTXTRecord (explicit ip TXT + path)
+
+    func testBonjourTXTRecordPrefersExplicitIPOverHostname() {
+        let txt = NetService.data(fromTXTRecord: [
+            "ip": Data("192.168.1.20".utf8),
+            "path": Data("/ws/signaling".utf8),
+        ])
+        let host = BonjourTXTRecord.preferredHost(
+            txtRecordData: txt,
+            addresses: nil,
+            hostName: "macbook.local.",
+            serviceName: "VQASee Mac VQA"
+        )
+        XCTAssertEqual(host, "192.168.1.20")
+        XCTAssertEqual(BonjourTXTRecord.path(from: txt), "/ws/signaling")
+    }
+
+    func testBonjourTXTRecordRejectsLoopbackIPInTXT() {
+        let txt = NetService.data(fromTXTRecord: [
+            "ip": Data("127.0.0.1".utf8),
+        ])
+        let host = BonjourTXTRecord.preferredHost(
+            txtRecordData: txt,
+            addresses: nil,
+            hostName: "macbook.local.",
+            serviceName: "VQASee Mac VQA"
+        )
+        XCTAssertEqual(host, "macbook.local")
+    }
+
+    func testBackendDiscoveryTimingsAllowParallelBonjourAndSweep() {
+        XCTAssertGreaterThanOrEqual(BackendDiscoveryTimings.bonjourWaitSeconds, 8)
+        XCTAssertGreaterThanOrEqual(BackendDiscoveryTimings.healthProbeTimeoutSeconds, 0.5)
+    }
+
     func testFrameContextHasContentAndPayload() {
         let empty = FrameContext(prevSummary: "", prevScene: "", prevObjects: [], placeLabel: "", elapsedMs: 0)
         XCTAssertFalse(empty.hasContent)
@@ -1187,12 +1222,14 @@ final class VQASeeTests: XCTestCase {
         XCTAssertEqual(PerceptionConfig.from(jsonData: json(role: nil))?.role, .pedestrian)
         // An explicit unknown role is rejected (never silently coerced).
         XCTAssertNil(PerceptionConfig.from(jsonData: json(role: "bogus")))
-        // Staged rollout defaults: without the flag the app keeps the binary model.
+        // Staged rollout defaults: without the flag the app does not run binary Fast-SCNN.
         XCTAssertEqual(PerceptionConfig.default.useMulticlassSegmentation, false)
         XCTAssertEqual(PerceptionConfig.from(jsonData: json(role: nil))?.useMulticlassSegmentation, false)
         // Lane segmenter ships bundled → default ON (absent flag decodes to true).
         XCTAssertEqual(PerceptionConfig.default.useLaneSegmentation, true)
         XCTAssertEqual(PerceptionConfig.from(jsonData: json(role: nil))?.useLaneSegmentation, true)
+        XCTAssertEqual(PerceptionConfig.default.roadBackend, .twinlite)
+        XCTAssertEqual(PerceptionConfig.from(jsonData: json(role: nil))?.roadBackend, .twinlite)
     }
 
     func testPerceptionConfigWireParsesMulticlassFlag() {
@@ -1233,6 +1270,30 @@ final class VQASeeTests: XCTestCase {
         }
         """.utf8)
         XCTAssertEqual(PerceptionConfig.from(jsonData: jsonOff)?.useLaneSegmentation, false)
+    }
+
+    func testPerceptionConfigWireParsesRoadBackend() {
+        func json(_ backend: String) -> Data {
+            Data("""
+            {
+              "version": 2,
+              "road_backend": "\(backend)",
+              "roi": {
+                "near": {"x": 0.25, "y": 0.00, "w": 0.50, "h": 0.58},
+                "left": {"x": 0.00, "y": 0.05, "w": 0.42, "h": 0.62},
+                "right": {"x": 0.58, "y": 0.05, "w": 0.42, "h": 0.62}
+              },
+              "thresholds": {
+                "near_blocked_area": 0.82, "side_blocked_area": 0.86,
+                "seg_near_caution_ratio": 0.35, "seg_side_caution_ratio": 0.30,
+                "seg_traversable_pixel": 0.55
+              }
+            }
+            """.utf8)
+        }
+        XCTAssertEqual(PerceptionConfig.from(jsonData: json("mc5"))?.roadBackend, .mc5)
+        XCTAssertEqual(PerceptionConfig.from(jsonData: json("off"))?.roadBackend, .off)
+        XCTAssertNil(PerceptionConfig.from(jsonData: json("ufld")))
     }
 
     // MARK: - UFLDv2 lane polyline decoding

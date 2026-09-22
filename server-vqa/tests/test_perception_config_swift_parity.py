@@ -37,6 +37,12 @@ def test_wire_roi_shape_present_in_swift():
         assert token in swift, f"ROI wire token '{token}' missing from PerceptionConfig.swift"
 
 
+def test_wire_role_and_model_switches_present_in_swift():
+    swift = SWIFT_CONFIG.read_text(encoding="utf-8")
+    for token in ("var role: String?", "use_multiclass_segmentation", "use_lane_segmentation", "road_backend"):
+        assert token in swift, f"role/model-switch wire token '{token}' missing from PerceptionConfig.swift"
+
+
 def test_default_threshold_values_match_swift_literals():
     swift = SWIFT_CONFIG.read_text(encoding="utf-8")
     t = pc.default_config().thresholds

@@ -1,0 +1,67 @@
+{
+  "task_slug": "obstacle-first-complete-road",
+  "forum_dir": "auto_docs",
+  "main_agent": "Opus",
+  "reviewers": [
+    "GPT",
+    "Sonnet",
+    "Gemini"
+  ],
+  "auto_execute": false,
+  "messages": [
+    {
+      "agent": "Opus",
+      "type": "CONTEXT_SHARE",
+      "time": "2026-09-20 14:00",
+      "content": "用户原话：把 YOLO 障碍检测提到可走区域前面，保留障碍物位置，可走区域检测时去掉障碍物，让可走区域作为完整区域，也可让模型填补去掉障碍物后的部分（完整路面和车道线），然后输出引导线。要求乔布斯与队员讨论可行性与执行方案。\n\n代码事实：\n1. LocalVisionAnalyzer.analyze 已是 YOLO → mc5 分割 → 车道 → 深度，顺序已经是检测在前，但 YOLO 框不喂给分割、不挖 mask。\n2. mc5 第 5 类就是 obstacle；人/车像素通常已经不是 primary（road/lane 或 sidewalk），所以可走区本身有洞。\n3. GuidancePathBuilder.centerline 遇到 interior gap 就停，禁止跨障碍搭桥。0001TP_008430 drive 预测线因此在车前人处断开/拐向 SEAT。\n4. 该帧 YOLO 有超大左侧 obstacle 框（厢货/墙），若按框去障碍会误伤大片路面。\n5. 产品红线：false_go（真值无路却报有路）、不能承诺可以走/可以开、不允许静默失败。\n6. 实时性是四核之一；端上神经 inpaint 会加一截模型，罗根尚未给 mc5 ANE 延迟签字。"
+    },
+    {
+      "agent": "Opus",
+      "type": "PROPOSAL",
+      "time": "2026-09-20 14:02",
+      "content": "## 乔布斯方向（未执行，待三审 + 投票）\n\n### 客户问题\n用户真正要的不是「YOLO 再往前挪」——它已经在分割前面。要的是：引导线表达「路往哪延伸」，而不是「眼前没被车挡住的那条蛇形空隙」。0001TP_008430 紫线贴厢货、后半段拐向 SEAT，就是洞把马路劈开后，中心线跟最近 run 走的后果。\n\n### 真实问题归因\n模型能力（可走区被障碍挖洞）+ UI/信任（线像可穿过或乱拐）+ 产品语义（引导线到底是自由空间还是道路结构）。\n\n### 裁决：做分层，不做「去障碍后出一条可走线」\nP0 否决：用 YOLO 从 RGB 抠掉人/车，再 inpaint/让分割脑补完整路面，然后把这条完整中心线当作用户主引导线。这等于把人画进可走区，false_go 风险，且超大误检框会抹掉半幅路。\n\nP1 采纳意图：道路结构 与 眼前自由空间 分开。\n- 层 A 自由空间（现网主线）：primary mask 带洞，centerline 遇洞即停。用户主引导线仍是这条。\n- 层 B 道路结构（新，默认淡显示）：在 CPU 上把「被车/人占住、但四周是马路」的洞标成 occupied-road，得到 structure_grid；可另描一条结构线，必须视觉上明显弱于主线，且穿过障碍的片段必须是 risk_segments。\n\n### 明确不做什么\n- 不在端上跑神经 inpaint / 第二套分割吃擦除图（延迟 + 伪造像素）。\n- 不把 YOLO 框直接从 RGB 挖掉再送 mc5（框噪声已在该帧验证）。\n- 不改变「辅助而非接管」：结构线不是可以开。\n- 不把 Qwen 拉进这一层。\n\n### MVP 执行（确认后才写代码）\n最小实验（离线、单帧+test 12 帧，零新模型）：\n1. 用已有 traversable_grid + objects。\n2. 仅对 kind∈{person,car,truck,bus,bicycle} 且面积 < 画面 15%、confidence≥0.85 的框，对框与 road 邻接的洞做闭运算/孔洞填充，得到 structure_grid。\n3. 对 structure_grid 跑同一 centerline，输出 structure_path；原 guidance_path 不动。\n4. 穿过 YOLO 人/车框的折线点打 risk_segments。\n5. 指标：guidance false_go 不准升；structure 与 drive GT 中心线的 mean_deviation；填充被超大框拒绝的帧数；额外 CPU 耗时目标 <5ms。\n6. UI：结构线浅虚、主线实、框仍在；文案不说可以走。\n\n成功再考虑：mc5 的 obstacle 通道与 YOLO 对齐；车道线在结构层上更稳。失败则只修描线（遇洞停但仍选主车道 run），不做补全。\n\n### 角色主责（若执行）\n- 全麦：structure_grid 派生 + 评测口径 + 0001TP_008430 / drive-test 回归\n- 罗根：禁止新模型；CPU 预算；失败可见（填充拒绝原因）\n- 思余：双线层级、颜色、不能看起来像导航可走\n- 小马：若以后要 inpaint，再雷达；本轮不引入\n\n请 GPT/Sonnet/Gemini 分别 REVIEW：同意 / 有条件同意 / 反对；并分别带上罗根、思余、全麦视角的否决点。然后 VOTE 是否把本方案提交用户确认（auto_execute=false，不得写代码）。"
+    },
+    {
+      "agent": "GPT",
+      "type": "REVIEW",
+      "time": "2026-09-20 14:12",
+      "content": "态度：有条件同意。\n\n（子代理 Task 因额度无法启动，本条由主 Agent 按 GPT/全麦+罗根审查清单独立写出，不假装独立进程。）\n\n问题本质：用户方案把「道路在几何上往哪延伸」和「眼前能不能过」焊成一条线。焊在一起必 false_go。\n\n全麦：CamVid drive 真值把车/人涂成非马路，现有 IoU/中心线 GT 都是带洞的。补全层若拿现有 drive IoU 当成功指标，分数会掉——那不是失败，是口径错了。结构层必须另造 structure_gt（对 GT 马路做同样孔洞填充）再比。不要用 YOLO 大框当填充先验；0001TP_008430 左侧超大 obstacle 框会把墙/厢货涂成路。优先填「被 primary 包围的 mc5 obstacle 洞」，YOLO 只做人/车确认，面积>15% 直接拒绝。\n\n罗根：用户方案 YOLO→擦图→分割→inpaint 是最坏串行。现网已是 YOLO 再 seg，但无融合。正确融合是两模型仍吃原图，CPU 后融合。禁止新模型。\n\n风险：孔洞填充把人行横道缺口、路口空隙、路沿内侧坑当成「车下的路」。必须 4-连通封闭洞 + 邻接 road + 与人/车重叠三条件。\n\n最小实验：离线 12 帧 test，不动 App。\n闭环缺口：structure 评测口径未写进 evaluate 脚本前不能上 UI。\n需要证据：填充后 false_go 是否仍为 0；大框拒绝率；CPU ms。"
+    },
+    {
+      "agent": "Sonnet",
+      "type": "REVIEW",
+      "time": "2026-09-20 14:12",
+      "content": "态度：有条件同意。\n\n问题本质：缺一条数据契约。guidance_path 今天 = 自由空间。用户想改成 = 补全路面。不能改语义，只能加字段。\n\n架构：structure_grid / structure_path 新 wire 字段，默认缺省=无结构层，旧 harness 不变。派生放 GuidancePathBuilder 旁纯函数，便于 Python/Swift 对拍。不要改 mc5 输入。\n\n逻辑：层 B 若被画成主线，产品语义崩。代码层应用 kind=structure vs primary，UI 不得复用同一紫色实线。\n\n风险：双网格内存（64×48×2 可忽略）；真正风险是状态机——structure ok 而 guidance insufficient 时播报什么。必须：主状态仍跟 guidance_path，structure 只是背景。\n\n最小改动：先 Python 离线出 0001TP_008430 对照图（自由空间线 vs 结构线 vs GT），再决定是否进 Swift。\n需要证据：同一帧三线图，队员能一眼看出主线仍停在人车前。"
+    },
+    {
+      "agent": "Gemini",
+      "type": "REVIEW",
+      "time": "2026-09-20 14:12",
+      "content": "态度：有条件同意。\n\n思余：两根线用户会当成「推荐走结构线」。结构线必须更淡、更细、可关；穿过人车的片段用打断/斜线，不能连成畅通曲线。文案只能是占道/路还在，不能是往前走。\n\n罗根：神经 inpaint 本轮否决。CPU 闭运算 64×48 远低于 5ms，但要在 harness 打日志证明，不能口说。\n\n测试：现有 camvid-ios-mc5-drive 基线必须回归，guidance 指标不允许为了结构层变差。新增 structure 指标单独存，不替换 camvid-ios-mc5-drive 门禁。\n\n文档：若做，需要 decisions 短文区分两层，避免下轮又有人把 YOLO 框挖进 RGB。\n\n依赖：零新 pip/模型。失败回滚=不发布 structure 字段。"
+    },
+    {
+      "agent": "GPT",
+      "type": "VOTE",
+      "time": "2026-09-20 14:13",
+      "content": "赞成提交用户确认。理由：否决原方案主线穿障碍；双层+离线实验可逆。"
+    },
+    {
+      "agent": "Sonnet",
+      "type": "VOTE",
+      "time": "2026-09-20 14:13",
+      "content": "赞成提交用户确认。理由：先加字段不改旧语义，符合小步可验证。"
+    },
+    {
+      "agent": "Gemini",
+      "type": "VOTE",
+      "time": "2026-09-20 14:13",
+      "content": "赞成提交用户确认。理由：性能与测试门禁写清楚了；UI 信任是执行时的硬条件。"
+    },
+    {
+      "agent": "Opus",
+      "type": "VOTE",
+      "time": "2026-09-20 14:13",
+      "content": "赞成提交用户确认（4 票一致）。auto_execute=false，不写业务代码。QA：是否执行离线最小实验？"
+    }
+  ]
+}

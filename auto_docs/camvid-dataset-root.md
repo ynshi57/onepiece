@@ -32,7 +32,8 @@
 
 ## 待办 / 阻塞
 
-- 全量 701 帧真身感知仍需用户在诊断台再点一次（本轮修路径 + 自动重编；未替用户跑完全量）
+- 日常迭代请跑 12 帧 test 集（见 `auto_docs/camvid-iteration-test-split.md`），不要每次跑 701
+- 全量 701 仍是发布回归门；多类分割约 35–45 分钟，已改为后台跑
 
 ## 关键路径
 
@@ -48,4 +49,5 @@ docs/datasets/camvid-manifest.jsonl
 - 相对路径依赖仓库根（`dataset/camvid` 或 `docs/datasets` 标记）；Python 启动前解析兜底
 - 回滚：恢复默认 `~/.cache/vqasee/open-datasets` 并重新生成绝对路径 manifest（不推荐）
 
-更新时间: 2026-09-10 13:55
+更新时间: 2026-09-11 10:40
+更新时间: 2026-09-11 11:00

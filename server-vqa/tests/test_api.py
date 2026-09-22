@@ -579,6 +579,39 @@ def test_harness_cache_empty_predictions_are_not_fresh(tmp_path):
         out.unlink(missing_ok=True)
 
 
+def test_read_manifest_eval_role_maps_drive_and_walk(tmp_path):
+    from app.diagnostic_api import _overlay_harness_config_for_manifest, _read_manifest_eval_role
+
+    drive = tmp_path / "camvid-manifest-drive.jsonl"
+    drive.write_text('{"frame_id":"f","role":"drive","image_path":"x.png"}\n', encoding="utf-8")
+    walk = tmp_path / "camvid-manifest-walk.jsonl"
+    walk.write_text('{"frame_id":"f","role":"walk","image_path":"x.png"}\n', encoding="utf-8")
+    plain = tmp_path / "other.jsonl"
+    plain.write_text('{"frame_id":"f","image_path":"x.png"}\n', encoding="utf-8")
+    assert _read_manifest_eval_role(drive) == "vehicle"
+    assert _read_manifest_eval_role(walk) == "pedestrian"
+    assert _read_manifest_eval_role(plain) is None
+
+    from app.perception_config import default_config
+
+    overlaid = _overlay_harness_config_for_manifest(default_config().to_dict(), "vehicle")
+    assert overlaid["role"] == "vehicle"
+    assert overlaid["use_multiclass_segmentation"] is True
+    assert overlaid["road_backend"] == "mc5"
+
+
+def test_ios_harness_ui_drive_manifest_states_vehicle_role():
+    resp = client.get(
+        "/diagnostics/datasets/ios-harness/ui",
+        params={"manifest": "docs/datasets/camvid-manifest-drive.jsonl"},
+    )
+    assert resp.status_code == 200
+    assert "机动车评估" in resp.text
+    assert "人行道不算可行驶" in resp.text
+    assert "全量 701" in resp.text
+    assert "camvid-manifest-drive-test.jsonl" in resp.text
+
+
 def test_manifest_runnable_reason_accepts_dataset_flags_predictions(tmp_path):
     import json as _json
 
@@ -611,6 +644,31 @@ def test_datasets_ui_marks_predictions_file_non_evaluable():
     # (which would report a cryptic missing_image=N for every frame).
     assert "datasets/evaluate/ui?manifest=docs/datasets/camvid-ios-harness.jsonl" not in text
     assert "datasets/ios-harness/ui?manifest=docs/datasets/camvid-ios-harness.jsonl" not in text
+
+
+def test_datasets_ui_recommends_camvid_test_split_over_full_701():
+    resp = client.get("/diagnostics/datasets/ui")
+    assert resp.status_code == 200
+    text = resp.text
+    assert "日常迭代（推荐）" in text
+    assert "camvid-manifest-drive-test.jsonl" in text
+    assert "camvid-manifest-walk-test.jsonl" in text
+    assert "推荐迭代" in text
+    assert "全量回归" in text
+    drive_test_link = "datasets/ios-harness/ui?manifest=docs/datasets/camvid-manifest-drive-test.jsonl"
+    assert drive_test_link in text
+
+
+def test_ios_harness_ui_test_manifest_quotes_small_runtime_not_full_701():
+    resp = client.get(
+        "/diagnostics/datasets/ios-harness/ui",
+        params={"manifest": "docs/datasets/camvid-manifest-drive-test.jsonl"},
+    )
+    assert resp.status_code == 200
+    assert "机动车评估" in resp.text
+    assert "日常迭代 test 集" in resp.text
+    assert "35–45 分钟" not in resp.text
+    assert "701 帧在 Intel" not in resp.text
 
 
 def test_dataset_evaluate_ui_surfaces_missing_predictions():

@@ -74,6 +74,84 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
 
+def _ensure_torchvision() -> None:
+    """UFLDv2 backbone imports torchvision. Stub ResNet if the wheel is missing."""
+    try:
+        import torchvision  # noqa: F401
+        return
+    except ImportError:
+        pass
+    import types
+
+    import torch.nn as nn
+
+    class BasicBlock(nn.Module):
+        expansion = 1
+
+        def __init__(self, inplanes, planes, stride=1, downsample=None):
+            super().__init__()
+            self.conv1 = nn.Conv2d(inplanes, planes, 3, stride=stride, padding=1, bias=False)
+            self.bn1 = nn.BatchNorm2d(planes)
+            self.relu = nn.ReLU(inplace=True)
+            self.conv2 = nn.Conv2d(planes, planes, 3, stride=1, padding=1, bias=False)
+            self.bn2 = nn.BatchNorm2d(planes)
+            self.downsample = downsample
+
+        def forward(self, x):
+            identity = x
+            out = self.relu(self.bn1(self.conv1(x)))
+            out = self.bn2(self.conv2(out))
+            if self.downsample is not None:
+                identity = self.downsample(x)
+            return self.relu(out + identity).contiguous()
+
+    class ResNet(nn.Module):
+        def __init__(self, layers):
+            super().__init__()
+            self.inplanes = 64
+            self.conv1 = nn.Conv2d(3, 64, 7, stride=2, padding=3, bias=False)
+            self.bn1 = nn.BatchNorm2d(64)
+            self.relu = nn.ReLU(inplace=True)
+            self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+            self.layer1 = self._make_layer(64, layers[0])
+            self.layer2 = self._make_layer(128, layers[1], stride=2)
+            self.layer3 = self._make_layer(256, layers[2], stride=2)
+            self.layer4 = self._make_layer(512, layers[3], stride=2)
+            self.fc = nn.Linear(512, 1000)
+
+        def _make_layer(self, planes, blocks, stride=1):
+            downsample = None
+            if stride != 1 or self.inplanes != planes:
+                downsample = nn.Sequential(
+                    nn.Conv2d(self.inplanes, planes, 1, stride=stride, bias=False),
+                    nn.BatchNorm2d(planes),
+                )
+            layers_mod = [BasicBlock(self.inplanes, planes, stride, downsample)]
+            self.inplanes = planes
+            for _ in range(1, blocks):
+                layers_mod.append(BasicBlock(self.inplanes, planes))
+            return nn.Sequential(*layers_mod)
+
+    def _resnet(layers, pretrained=False, **kwargs):
+        del pretrained, kwargs
+        return ResNet(layers)
+
+    models = types.ModuleType("torchvision.models")
+    models.resnet18 = lambda pretrained=False, **k: _resnet([2, 2, 2, 2], pretrained, **k)
+    models.resnet34 = lambda pretrained=False, **k: _resnet([3, 4, 6, 3], pretrained, **k)
+    models.resnet50 = lambda pretrained=False, **k: _resnet([3, 4, 6, 3], pretrained, **k)
+    models.resnet101 = lambda pretrained=False, **k: _resnet([3, 4, 23, 3], pretrained, **k)
+    models.resnet152 = lambda pretrained=False, **k: _resnet([3, 8, 36, 3], pretrained, **k)
+    models.resnext50_32x4d = models.resnet50
+    models.resnext101_32x8d = models.resnet101
+    models.wide_resnet50_2 = models.resnet50
+    models.wide_resnet101_2 = models.resnet101
+    tv = types.ModuleType("torchvision")
+    tv.models = models
+    sys.modules["torchvision"] = tv
+    sys.modules["torchvision.models"] = models
+
+
 class UFLDv2Wrapper(torch.nn.Module):
     """Wrap parsingNet so the traced graph (a) accepts a 0-1 image tensor and bakes
     in ImageNet normalization (Core ML ImageType only supports a scalar scale + a
@@ -97,6 +175,7 @@ def build_net(repo: Path, cfg: dict) -> torch.nn.Module:
     checkpoint, so we must not download ImageNet backbone weights)."""
     import importlib  # noqa: E402
     sys.path.insert(0, str(repo))
+    _ensure_torchvision()
     # model_* -> utils.common -> `from data.dali_data import TrainCollect`, which pulls
     # NVIDIA DALI (CUDA-only training dep). Inference needs only initialize_weights from
     # utils.common, so stub the DALI module out.
@@ -111,6 +190,30 @@ def build_net(repo: Path, cfg: dict) -> torch.nn.Module:
         setattr(dist_stub, _name, lambda *a, **k: None)
     dist_stub.DistSummaryWriter = object
     sys.modules.setdefault("utils.dist_utils", dist_stub)
+    try:
+        import addict  # noqa: F401
+    except ImportError:
+        addict_mod = types.ModuleType("addict")
+
+        class _Dict(dict):
+            def __getattr__(self, key):
+                try:
+                    return self[key]
+                except KeyError as exc:
+                    raise AttributeError(key) from exc
+
+            def __setattr__(self, key, value):
+                self[key] = value
+
+        addict_mod.Dict = _Dict
+        sys.modules["addict"] = addict_mod
+    try:
+        import pathspec  # noqa: F401
+    except ImportError:
+        pathspec_mod = types.ModuleType("pathspec")
+        pathspec_mod.PathSpec = object
+        pathspec_mod.patterns = types.SimpleNamespace(GitWildMatchPattern=object)
+        sys.modules["pathspec"] = pathspec_mod
     parsingNet = importlib.import_module(cfg["model_module"]).parsingNet  # noqa: E402
 
     kwargs = dict(

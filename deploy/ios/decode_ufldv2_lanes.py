@@ -37,6 +37,14 @@ DECODE = {
         row_gate_div=2.0, col_gate_div=4.0,
         net_h=320, net_w=1600, crop_ratio=0.6,
     ),
+    "tusimple": dict(
+        num_grid_row=100, num_grid_col=100, num_row=56, num_col=41,
+        row_anchor=np.linspace(160.0, 710.0, 56) / 720.0,
+        col_anchor=np.linspace(0.0, 1.0, 41),
+        row_lane_idx=[1, 2], col_lane_idx=[0, 3],
+        row_gate_div=2.0, col_gate_div=4.0,
+        net_h=320, net_w=800, crop_ratio=0.8,
+    ),
     "curvelanes": dict(
         num_grid_row=200, num_grid_col=100, num_row=72, num_col=41,
         row_anchor=np.linspace(0.4, 1.0, 72), col_anchor=np.linspace(0.0, 1.0, 41),
@@ -45,6 +53,22 @@ DECODE = {
         net_h=800, net_w=1600, crop_ratio=0.8,
     ),
 }
+
+
+def cfg_from_pred(pred: dict) -> dict:
+    """Pick CULane / TuSimple / CurveLanes decode from loc_row shape."""
+    loc_row = np.asarray(pred["loc_row"])
+    if loc_row.ndim == 3:
+        loc_row = loc_row[None, ...]
+    grid, num_row, lanes = int(loc_row.shape[1]), int(loc_row.shape[2]), int(loc_row.shape[3])
+    del grid
+    if lanes >= 10:
+        return DECODE["curvelanes"]
+    if num_row == 56:
+        return DECODE["tusimple"]
+    return DECODE["culane"]
+
+
 LANE_COLORS = [(255, 60, 60), (60, 200, 255), (60, 255, 120), (255, 214, 10),
                (200, 60, 255), (255, 140, 40), (40, 255, 220), (255, 90, 160),
                (150, 255, 60), (100, 160, 255)]
@@ -64,7 +88,16 @@ def _softmax(x: np.ndarray, axis: int) -> np.ndarray:
     return e / e.sum(axis=axis, keepdims=True)
 
 
-def decode(pred: dict, img_w: int, img_h: int, cfg: dict, local_width: int = 1) -> list[list[tuple[int, int]]]:
+def decode(
+    pred: dict,
+    img_w: int,
+    img_h: int,
+    cfg: dict,
+    local_width: int = 1,
+    *,
+    exist_min: int | None = None,
+    all_lanes: bool = False,
+) -> list[list[tuple[int, int]]]:
     loc_row = pred["loc_row"][0]      # (grid_row, num_row, lanes)
     loc_col = pred["loc_col"][0]      # (grid_col, num_col, lanes)
     exist_row = pred["exist_row"][0]  # (2, num_row, lanes)
@@ -73,6 +106,10 @@ def decode(pred: dict, img_w: int, img_h: int, cfg: dict, local_width: int = 1) 
     num_grid_row, num_row = cfg["num_grid_row"], cfg["num_row"]
     num_grid_col, num_col = cfg["num_grid_col"], cfg["num_col"]
     row_anchor, col_anchor = cfg["row_anchor"], cfg["col_anchor"]
+    row_need = int(exist_min) if exist_min is not None else None
+    col_need = int(exist_min) if exist_min is not None else None
+    row_idx = list(range(int(loc_row.shape[-1]))) if all_lanes else list(cfg["row_lane_idx"])
+    col_idx = list(range(int(loc_col.shape[-1]))) if all_lanes else list(cfg["col_lane_idx"])
 
     max_idx_row = loc_row.argmax(0)   # (num_row, lanes)
     valid_row = exist_row.argmax(0)   # (num_row, lanes)
@@ -81,9 +118,13 @@ def decode(pred: dict, img_w: int, img_h: int, cfg: dict, local_width: int = 1) 
 
     lanes: list[list[tuple[int, int]]] = []
 
-    for i in cfg["row_lane_idx"]:
+    for i in row_idx:
         pts: list[tuple[int, int]] = []
-        if valid_row[:, i].sum() > num_row / cfg["row_gate_div"]:
+        if (
+            valid_row[:, i].sum() >= row_need
+            if row_need is not None
+            else valid_row[:, i].sum() > num_row / cfg["row_gate_div"]
+        ):
             for k in range(num_row):
                 if valid_row[k, i]:
                     lo = max(0, max_idx_row[k, i] - local_width)
@@ -97,9 +138,13 @@ def decode(pred: dict, img_w: int, img_h: int, cfg: dict, local_width: int = 1) 
         if pts:
             lanes.append(pts)
 
-    for i in cfg["col_lane_idx"]:
+    for i in col_idx:
         pts = []
-        if valid_col[:, i].sum() > num_col / cfg["col_gate_div"]:
+        if (
+            valid_col[:, i].sum() >= col_need
+            if col_need is not None
+            else valid_col[:, i].sum() > num_col / cfg["col_gate_div"]
+        ):
             for k in range(num_col):
                 if valid_col[k, i]:
                     lo = max(0, max_idx_col[k, i] - local_width)

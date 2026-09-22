@@ -8,6 +8,7 @@ import html
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -61,6 +62,7 @@ from app.path_parity import compute_parity
 from app.perception_config import (
     ConfigValidationError,
     bump_and_save,
+    config_from_dict,
     config_store_path,
     load_active_config,
 )
@@ -113,6 +115,8 @@ def _html_page(title: str, body: str) -> HTMLResponse:
     .hero {{ background: linear-gradient(135deg, #1c1c1e, #102033); border: 1px solid #3a3a3c; border-radius: 20px; padding: 20px; margin: 16px 0; }}
     .card {{ background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 16px; padding: 16px; margin: 16px 0; }}
     .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }}
+    .gallery {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }}
+    .gallery img {{ max-width: 100%; width: 100%; height: auto; }}
     img {{ max-width: 420px; border-radius: 12px; border: 1px solid #3a3a3c; }}
     input, select, textarea, button {{ font: inherit; margin: 4px; }}
     input, select, textarea {{ background: #2c2c2e; color: #fff; border: 1px solid #555; border-radius: 8px; padding: 8px; }}
@@ -673,6 +677,7 @@ async function deleteSession(sessionId) {
     drilldown = """
 <div class='grid'>
   <div class='card'><h2>逐帧识别效果</h2><p class='muted'>逐帧看 iPhone 感知的可走区域 / 引导线 与 CamVid 真值叠加，按漏报/误挡筛选。</p><p><a href='/diagnostics/datasets/ui'>打开数据集评估 →</a></p></div>
+  <div class='card'><h2>TwinLiteNet 预览</h2><p class='muted'>12 帧 CamVid test：红可行驶区 / 绿车道线 / 蓝引导线。只吃 RGB，不是 App 默认。</p><p><a href='/diagnostics/twinlite/ui'>打开 TwinLiteNet 画廊 →</a></p></div>
   <div class='card'><h2>闭环 case</h2><p class='muted'>评估里的失败帧自动聚类成可跟踪、能重开的 case（借鉴 DCL 统一载体 + 生命周期）。</p><p><a href='/diagnostics/cases/ui'>打开 case 列表 →</a></p></div>
   <div class='card'><h2>感知配置（OTA）</h2><p class='muted'>查看/发布下发到 iPhone 的感知参数版本。</p><p><a href='/diagnostics/perception-config/ui'>打开感知配置 →</a></p></div>
 </div>
@@ -934,6 +939,37 @@ def _dataset_manifest_candidates() -> list[Path]:
     return candidates
 
 
+def _is_camvid_test_manifest(path: Path) -> bool:
+    name = path.name
+    return name.startswith("camvid-manifest") and name.endswith("-test.jsonl")
+
+
+def _is_camvid_full_manifest(path: Path) -> bool:
+    return path.name in {
+        "camvid-manifest.jsonl",
+        "camvid-manifest-walk.jsonl",
+        "camvid-manifest-drive.jsonl",
+    }
+
+
+def _truth_dataset_card(path: Path, *, badge: str = "", hint: str = "") -> str:
+    safe_name = html.escape(path.name)
+    encoded = html.escape(str(path))
+    links = (
+        f"<a href='/diagnostics/datasets/manifest/ui?manifest={encoded}'>浏览</a> · "
+        f"<a href='/diagnostics/datasets/evaluate/ui?manifest={encoded}'>服务器代理评估</a> · "
+        f"<a href='/diagnostics/datasets/ios-harness/ui?manifest={encoded}'>iPhone 真身评估</a>"
+    )
+    badge_html = f" {badge}" if badge else ""
+    hint_html = f"<p class='hint'>{hint}</p>" if hint else ""
+    return (
+        f"<div class='card'><h2>{safe_name}{badge_html}</h2>"
+        f"<p class='muted'>{html.escape(str(path))}</p>"
+        f"{hint_html}"
+        f"<p>{links}</p></div>"
+    )
+
+
 def _read_first_json_row(path: Path) -> Optional[dict]:
     """First non-empty JSONL row as a dict, or None if empty/unparseable."""
     try:
@@ -979,34 +1015,57 @@ def datasets_ui():
     #   - 真值数据集 (runnable): the answer keys the harness scores against.
     #   - 预测结果/派生文件 (NOT runnable): harness outputs; results belong on the
     #     scorecard, so these are collapsed under a "developer" section.
-    truth_cards: list[str] = []
+    iteration_cards: list[str] = []
+    full_cards: list[str] = []
+    other_cards: list[str] = []
     pred_cards: list[str] = []
     for path in _dataset_manifest_candidates():
-        safe_name = html.escape(path.name)
-        encoded = html.escape(str(path))
         runnable = _manifest_runnable_reason(path) is None
-        if runnable:
-            links = (
-                f"<a href='/diagnostics/datasets/manifest/ui?manifest={encoded}'>浏览</a> · "
-                f"<a href='/diagnostics/datasets/evaluate/ui?manifest={encoded}'>服务器代理评估</a> · "
-                f"<a href='/diagnostics/datasets/ios-harness/ui?manifest={encoded}'>iPhone 真身评估</a>"
-            )
-            truth_cards.append(
-                f"<div class='card'><h2>{safe_name}</h2>"
+        if not runnable:
+            pred_cards.append(
+                f"<div class='card'><h2>{html.escape(path.name)}</h2>"
                 f"<p class='muted'>{html.escape(str(path))}</p>"
-                f"<p>{links}</p></div>"
+                f"<p><a href='/diagnostics/datasets/manifest/ui?manifest={html.escape(str(path))}'>浏览原始行</a></p></div>"
+            )
+            continue
+        if _is_camvid_test_manifest(path):
+            role = "机动车" if "drive" in path.name else "行人" if "walk" in path.name else "混合可走"
+            iteration_cards.append(
+                _truth_dataset_card(
+                    path,
+                    badge="<span class='pill' style='border:1px solid #30d158;color:#30d158'>推荐迭代</span>",
+                    hint=f"CamVid 四种街道场景各 3 张，共 12 帧 · {role}。改算法先跑这个，大约 1 分钟出结果。",
+                )
+            )
+        elif _is_camvid_full_manifest(path):
+            full_cards.append(
+                _truth_dataset_card(
+                    path,
+                    hint="全量 701 帧，发布前回归用。日常改算法请用上面的 test 集。",
+                )
             )
         else:
-            pred_cards.append(
-                f"<div class='card'><h2>{safe_name}</h2>"
-                f"<p class='muted'>{html.escape(str(path))}</p>"
-                f"<p><a href='/diagnostics/datasets/manifest/ui?manifest={encoded}'>浏览原始行</a></p></div>"
-            )
+            other_cards.append(_truth_dataset_card(path))
 
-    truth_section = (
+    truth_blocks = []
+    if iteration_cards:
+        truth_blocks.append(
+            "<h2>日常迭代（推荐）</h2>"
+            "<p class='hint'>从 CamVid 四段行车录像各抽 3 张，用来快速看车道线、可通行区和障碍物效果。全量 701 太慢，不适合每次改一点就重跑。</p>"
+            + "".join(iteration_cards)
+        )
+    if full_cards:
+        truth_blocks.append(
+            "<details><summary>全量回归（701 帧，Intel Mac 多类分割大约 35–45 分钟）</summary>"
+            "<p class='hint'>发布前或要数字基线时再跑。带角色后缀的是同一批帧按行人/机动车重新判定的可通行真值。</p>"
+            + "".join(full_cards)
+            + "</details>"
+        )
+    if other_cards:
+        truth_blocks.append("<h2>其他真值数据集</h2>" + "".join(other_cards))
+    truth_section = "".join(truth_blocks) or (
         "<h2>真值数据集</h2>"
-        "<p class='hint'>评测的“标准答案”。带角色后缀的是同一批帧按行人/机动车重新判定的可通行真值。</p>"
-        + ("".join(truth_cards) or "<p class='muted'>暂无真值数据集。示例：docs/datasets/camvid-manifest.jsonl</p>")
+        "<p class='muted'>暂无真值数据集。示例：docs/datasets/camvid-manifest-drive-test.jsonl</p>"
     )
     pred_section = ""
     if pred_cards:
@@ -1018,10 +1077,17 @@ def datasets_ui():
             + "".join(pred_cards)
             + "</details>"
         )
+    twinlite_card = (
+        "<div class='card'><h2>TwinLiteNet 预览（不是 App 默认）</h2>"
+        "<p class='hint'>同一套 12 帧 test split，只吃 RGB：红=可行驶区域，绿=车道线，蓝=引导线。"
+        "第一次打开大约半分钟出齐缓存。</p>"
+        "<p><a href='/diagnostics/twinlite/ui'>打开 12 帧画廊 →</a></p></div>"
+    )
     body = (
         "<p><a href='/diagnostics/ui'>← 感知能力总览</a></p>"
         "<h1>开源/本地数据集评估</h1>"
-        "<p><a href='/diagnostics/datasets/create-open/ui'>接入开源数据集</a> · <a href='/diagnostics/datasets/create/ui'>从图片+mask目录创建 manifest</a> · <a href='/diagnostics/perception-config/ui'>感知配置（OTA）</a></p>"
+        + twinlite_card
+        + "<p><a href='/diagnostics/datasets/create-open/ui'>接入开源数据集</a> · <a href='/diagnostics/datasets/create/ui'>从图片+mask目录创建 manifest</a> · <a href='/diagnostics/perception-config/ui'>感知配置（OTA）</a></p>"
         "<p class='hint'>开源数据集先使用本地已下载数据；平台不自动下载大文件，也不绕过数据集 license。生成的 path manifest 放到 docs/datasets/ 或 VQASEE_DATASET_MANIFEST_DIR 后可在这里评估。</p>"
         + truth_section
         + pred_section
@@ -1111,6 +1177,153 @@ def camvid_mask(label: str, classes: str = "walk", w: int = 560):
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return Response(content=buffer.getvalue(), media_type="image/png")
+
+
+def _twinlite_catalog() -> dict:
+    from app.camvid_scene_sample import load_camvid_test_catalog
+
+    return load_camvid_test_catalog(_repo_root())
+
+
+def _twinlite_allowed_stems() -> set[str]:
+    catalog = _twinlite_catalog()
+    stems = [str(stem) for stem in (catalog.get("stems") or []) if stem]
+    if stems:
+        return set(stems)
+    return {
+        str(sample.get("stem"))
+        for scene in (catalog.get("scenes") or [])
+        if isinstance(scene, dict)
+        for sample in (scene.get("samples") or [])
+        if isinstance(sample, dict) and sample.get("stem")
+    }
+
+
+def _twinlite_rgb(stem: str) -> np.ndarray:
+    from app.camvid_scene_sample import camvid_rgb_dir
+
+    path = camvid_rgb_dir() / f"{stem}.png"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="rgb_not_found")
+    safe = _safe_local_file(str(path))
+    return np.asarray(Image.open(safe).convert("RGB"))
+
+
+def _twinlite_overlay_file(stem: str) -> Path:
+    from app.twinlite_preview import write_cached_overlay
+
+    if stem not in _twinlite_allowed_stems():
+        raise HTTPException(status_code=404, detail="stem_not_in_test_split")
+    try:
+        rgb = _twinlite_rgb(stem)
+        return write_cached_overlay(stem, rgb)
+    except HTTPException:
+        raise
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=f"twinlite_overlay_failed: {exc}") from exc
+
+
+@router.get("/twinlite/status")
+def twinlite_status():
+    from app.twinlite_net import LAST_ERROR, default_twinlite_repo, default_twinlite_weights
+    from app.twinlite_preview import cached_overlay_path
+
+    stems = sorted(_twinlite_allowed_stems())
+    cached = [stem for stem in stems if cached_overlay_path(stem).is_file()]
+    weights = default_twinlite_weights()
+    repo = default_twinlite_repo()
+    return {
+        "weights": weights is not None,
+        "weights_path": str(weights) if weights is not None else None,
+        "repo": repo is not None,
+        "stems": stems,
+        "cached": cached,
+        "last_error": LAST_ERROR,
+        "app_default": False,
+        "note": "诊断台预览，不是 iPhone 默认路径。本机 CPU 约 2.4 秒/帧。",
+    }
+
+
+@router.get("/twinlite/frame")
+def twinlite_frame(stem: str, w: int = 0):
+    file_path = _twinlite_overlay_file(stem)
+    if w and w > 0:
+        max_width = min(int(w), 1600)
+        try:
+            with Image.open(file_path) as image:
+                image = image.convert("RGB")
+                image.thumbnail((max_width, max_width * 4))
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG", quality=82)
+        except OSError as exc:
+            raise HTTPException(status_code=422, detail=f"thumbnail_failed: {exc}") from exc
+        return Response(content=buffer.getvalue(), media_type="image/jpeg")
+    return FileResponse(file_path, media_type="image/jpeg")
+
+
+@router.get("/twinlite/ui", response_class=HTMLResponse)
+def twinlite_ui():
+    catalog = _twinlite_catalog()
+    scenes = catalog.get("scenes") or []
+    sections: list[str] = []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        samples = scene.get("samples") or []
+        cards: list[str] = []
+        for sample in samples:
+            if not isinstance(sample, dict) or not sample.get("stem"):
+                continue
+            stem = str(sample["stem"])
+            encoded = html.escape(stem)
+            situation = html.escape(str(sample.get("situation_label") or sample.get("situation") or ""))
+            cards.append(
+                "<div class='card'>"
+                f"<h3>{encoded}</h3>"
+                f"<p class='muted'>{situation}</p>"
+                f"<img data-src='/diagnostics/twinlite/frame?stem={encoded}&w=720' alt='{encoded}'>"
+                "</div>"
+            )
+        if not cards:
+            continue
+        label = html.escape(str(scene.get("label") or scene.get("id") or ""))
+        summary = html.escape(str(scene.get("summary") or ""))
+        sections.append(
+            f"<h2>{html.escape(str(scene.get('id') or ''))} · {label}</h2>"
+            f"<p class='hint'>{summary}</p>"
+            f"<div class='gallery'>{''.join(cards)}</div>"
+        )
+    missing = ""
+    if not sections:
+        missing = "<p class='muted'>没有 camvid-test-scenes.json，或里面没有帧。</p>"
+    body = (
+        "<p><a href='/diagnostics/ui'>← 感知能力总览</a> · "
+        "<a href='/diagnostics/datasets/ui'>数据集评估</a></p>"
+        "<h1>TwinLiteNet 城市街景预览</h1>"
+        "<div class='callout'>"
+        "<p><strong>不是 iPhone 默认。</strong>只吃 RGB，不读 CamVid 车道标注。"
+        "红=预测可行驶区域，绿=预测车道线，蓝=占用车道引导线。</p>"
+        "<p class='muted'>本机 CPU 大约 2.4 秒/帧。第一次打开会<strong>一张一张</strong>生成，避免 12 路同时推理把机器打满。之后走缓存。</p>"
+        "<p class='muted'>看图门：绿线是不是司机看见的边，蓝线有没有钩子/喷到对向车道。</p>"
+        "</div>"
+        + missing
+        + "".join(sections)
+        + """<script>
+(async function () {
+  const imgs = [...document.querySelectorAll('img[data-src]')];
+  for (const img of imgs) {
+    img.src = img.dataset.src;
+    await new Promise((resolve) => {
+      img.onload = resolve;
+      img.onerror = resolve;
+    });
+  }
+})();
+</script>"""
+    )
+    return _html_page("TwinLiteNet 预览", body)
 
 
 def _traversable_grid_to_mask(grid: dict) -> "np.ndarray | None":
@@ -1936,12 +2149,60 @@ def dataset_ios_harness_ui(manifest: str, predictions: str = ""):
     encoded_manifest = html.escape(manifest)
     default_out = str(_harness_out_path(manifest_path))
     cache = _harness_cache_info(manifest_path)
-    _lane_flag = "".join(f" \\\n  {flag}" for flag in _optional_harness_model_flags())
+    eval_role = _read_manifest_eval_role(manifest_path)
+    frame_count = _jsonl_line_count(manifest_path)
+    eta_text = _format_duration(_harness_eta_seconds(max(frame_count, 1), eval_role))
+    is_test = _is_camvid_test_manifest(manifest_path)
+    is_full = _is_camvid_full_manifest(manifest_path)
+    _lane_flag = "".join(
+        f" \\\n  {flag}" for flag in _optional_harness_model_flags(eval_role=eval_role)
+    )
+    role_config_flag = ""
+    if eval_role == "vehicle":
+        role_config_flag = " \\\n  --config docs/datasets/harness-config-drive.json"
+    elif eval_role == "pedestrian":
+        role_config_flag = " \\\n  --config docs/datasets/harness-config-walk.json"
     run_cmd = (
         "ios-vqa-app/perception-harness/.build/debug/PerceptionHarness \\\n"
         f"  --manifest {manifest} \\\n"
-        f"  --out {default_out}{_lane_flag}"
+        f"  --out {default_out}{_lane_flag}{role_config_flag}"
     )
+    role_banner = ""
+    if eval_role == "vehicle":
+        role_banner = (
+            "<div class='status' style='border-color:#ffd60a'>"
+            "<b>这份是机动车评估。</b>真值绿线走车道，人行道不算可行驶。"
+            f"一键跑会用车角色 + 多类分割（{frame_count} 帧，Intel Mac {eta_text}）。"
+            "</div>"
+        )
+    elif eval_role == "pedestrian":
+        role_banner = (
+            "<div class='status'>"
+            "<b>这份是行人评估。</b>真值绿线偏人行道，马路是慎行不是首选。"
+            f"一键跑会用行人角色 + 多类分割（{frame_count} 帧，Intel Mac {eta_text}）。"
+            "</div>"
+        )
+    if is_full:
+        if "drive" in manifest_path.name:
+            test_name = "camvid-manifest-drive-test.jsonl"
+        elif "walk" in manifest_path.name:
+            test_name = "camvid-manifest-walk-test.jsonl"
+        else:
+            test_name = "camvid-manifest-test.jsonl"
+        test_href = html.escape(f"/diagnostics/datasets/ios-harness/ui?manifest=docs/datasets/{test_name}")
+        role_banner += (
+            "<div class='status'>"
+            f"这是全量 701 帧，改算法请先用 "
+            f"<a href='{test_href}'>{html.escape(test_name)}</a>"
+            "（四种街道场景各 3 张，大约 1 分钟）。全量留给发布前回归。"
+            "</div>"
+        )
+    elif is_test:
+        role_banner += (
+            "<div class='status ok'>"
+            "这是日常迭代 test 集：CamVid 四段行车各 3 张，不跑全量 701。"
+            "</div>"
+        )
     run_script = f"""<script>
 async function runHarness(force) {{
   const status = document.getElementById('runStatus');
@@ -1949,7 +2210,9 @@ async function runHarness(force) {{
   const btn2 = document.getElementById('rerunBtn');
   status.style.display = 'block';
   status.className = 'status';
-  status.textContent = force ? '正在强制重跑真身感知…（701 帧全量 + 车道模型可能需要数分钟）' : '正在处理…（若已有新鲜缓存会秒回；全量重跑可能需要数分钟）';
+  status.textContent = force
+    ? '正在启动真身感知…（{frame_count} 帧，Intel Mac {eta_text}，后台跑，页面自动刷新进度）'
+    : '正在处理…（新鲜缓存会秒回；重跑在后台进行，页面自动刷新）';
   if (btn) btn.disabled = true;
   if (btn2) btn2.disabled = true;
   try {{
@@ -1964,10 +2227,10 @@ async function runHarness(force) {{
       window.location.href = next;
       return;
     }}
-    if (payload.status === 'already_running') {{
+    if (payload.status === 'started' || payload.status === 'already_running') {{
       status.className = 'status';
-      status.innerHTML = '<pre style="margin:0;white-space:pre-wrap">' + (payload.reason || '真身感知已在运行中').replace(/</g,'&lt;') + '</pre>';
-      if(btn)btn.disabled=false; if(btn2)btn2.disabled=false;
+      status.innerHTML = '<pre style="margin:0;white-space:pre-wrap">' + (payload.reason || payload.note || '真身感知已在后台运行').replace(/</g,'&lt;') + '</pre>';
+      setTimeout(function() {{ runHarness(false); }}, 5000);
       return;
     }}
     status.className = 'status error';
@@ -2007,6 +2270,7 @@ async function runHarness(force) {{
 <div class='card'>
   <h2><span class='step'>1</span>用真身结果（已有缓存）</h2>
   <p class='hint'>{summary}</p>
+  {role_banner}
   {cache_state}
   <p>
     <a href='{eval_url}'><button type='button'>直接查看评估（用缓存）</button></a>
@@ -2024,6 +2288,7 @@ async function runHarness(force) {{
 <div class='card'>
   <h2><span class='step'>1</span>跑真身感知</h2>
   <p class='hint'>平台跑的是 iPhone 上一模一样的感知代码（YOLO11n Core ML + 通行区域引擎），不是近似实现。诊断台就在这台 Mac 上，可直接一键触发，无需自己开终端。跑一次后会缓存，之后无需每次重跑。</p>
+  {role_banner}
   <div class='callout'>
     <p><b>推荐：一键在本机跑</b>（服务器直接调用 harness；二进制缺失或源码更新后会自动重新编译）</p>
     <button id='runBtn' onclick='runHarness(false)'>▶ 一键在本机跑真身感知</button>
@@ -2367,16 +2632,70 @@ def _harness_models_dir() -> Path:
     return Path.home() / ".cache" / "vqasee" / "models"
 
 
-def _optional_harness_model_flags() -> list[str]:
-    """Append optional lane models for the offline iPhone harness.
+def _seg5_model_path() -> Path | None:
+    """N=5 role-conditioned segmenter: bundled App copy first, then models cache."""
+    bundled = (
+        _repo_root()
+        / "ios-vqa-app"
+        / "VQASee"
+        / "VQASee"
+        / "VQASeeTraversabilitySeg5.mlmodelc"
+    )
+    cached = _harness_models_dir() / "VQASeeTraversabilitySeg5.mlmodelc"
+    for path in (bundled, cached):
+        if path.is_dir():
+            return path
+    return None
+
+
+def _read_manifest_eval_role(manifest_path: Path) -> str | None:
+    """Map a role-conditioned CamVid manifest onto the Swift wire role.
+
+    ``walk`` / ``drive`` in jsonl are dataset roles; the harness config uses
+    ``pedestrian`` / ``vehicle``. A manifest without ``role`` is not a
+    role-conditioned eval (binary segmenter stays correct).
+    """
+    try:
+        with manifest_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                row = json.loads(text)
+                raw = str(row.get("role") or "").strip().lower()
+                if raw in ("drive", "vehicle"):
+                    return "vehicle"
+                if raw in ("walk", "pedestrian", "bike"):
+                    return "pedestrian"
+                return None
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def _overlay_harness_config_for_manifest(payload: dict, eval_role: str | None) -> dict:
+    """Force the harness config to match the dataset role. Never silently score
+    a drive GT against the pedestrian default + binary (road∪sidewalk) model."""
+    if not eval_role:
+        return payload
+    merged = dict(payload)
+    merged["role"] = eval_role
+    merged["use_multiclass_segmentation"] = True
+    merged["road_backend"] = "mc5"
+    return config_from_dict(merged).to_dict()
+
+
+def _optional_harness_model_flags(*, eval_role: str | None = None) -> list[str]:
+    """Append optional lane / role-segmentation models for the offline iPhone harness.
 
     Product lane lines are UFLDv2 ``lane_polylines`` when
     ``VQASeeLaneUFLDv2.mlmodelc`` exists. The older
     ``VQASeeLaneSegmentation.mlmodelc`` still emits ``lane_grid`` as a debug mask
     for regressions, but it is no longer the product lane-line surface.
 
-    Missing optional models omit their flags (harness reports no lane channel),
-    never a hard failure and never a fabricated lane.
+    Role-conditioned manifests (walk/drive) also inject the N=5 segmenter so
+    ``config.role`` can derive sidewalk vs carriageway. Missing optional models
+    omit their flags (harness reports no lane channel), never a fabricated lane.
     """
     flags: list[str] = []
     models_dir = _harness_models_dir()
@@ -2386,6 +2705,10 @@ def _optional_harness_model_flags() -> list[str]:
     lane_polyline = models_dir / "VQASeeLaneUFLDv2.mlmodelc"
     if lane_polyline.is_dir():
         flags += ["--lane-polyline-model", str(lane_polyline)]
+    if eval_role:
+        seg5 = _seg5_model_path()
+        if seg5 is not None:
+            flags += ["--seg-model", str(seg5)]
     return flags
 
 
@@ -2519,20 +2842,17 @@ def _active_harness_process(manifest_path: Path) -> dict | None:
     return None
 
 
-def _write_harness_lock(manifest_path: Path, *, pid: int, cmd: list[str]) -> Path:
+def _write_harness_lock(manifest_path: Path, *, pid: int, cmd: list[str], extra: dict | None = None) -> Path:
     lock = _harness_lock_path(manifest_path)
-    lock.write_text(
-        json.dumps(
-            {
-                "pid": pid,
-                "manifest": str(manifest_path),
-                "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "cmd": cmd,
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
+    payload = {
+        "pid": pid,
+        "manifest": str(manifest_path),
+        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "cmd": cmd,
+    }
+    if extra:
+        payload.update(extra)
+    lock.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return lock
 
 
@@ -2552,6 +2872,144 @@ def _clear_harness_lock(manifest_path: Path, *, pid: int | None = None) -> None:
         lock.unlink()
     except OSError:
         pass
+
+
+def _harness_stderr_path(manifest_path: Path) -> Path:
+    return Path(f"/tmp/{manifest_path.stem}-ios-harness.stderr.log")
+
+
+def _harness_exit_path(manifest_path: Path) -> Path:
+    return Path(f"/tmp/{manifest_path.stem}-ios-harness.exit")
+
+
+def _harness_runner_path(manifest_path: Path) -> Path:
+    return Path(f"/tmp/{manifest_path.stem}-ios-harness.run.sh")
+
+
+def _jsonl_line_count(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    try:
+        with path.open(encoding="utf-8") as handle:
+            return sum(1 for line in handle if line.strip())
+    except OSError:
+        return 0
+
+
+def _harness_seconds_per_frame(eval_role: str | None) -> float:
+    # Measured on this Intel Mac: binary ~0.8s/frame, mc5 role eval ~3.2s/frame.
+    return 3.2 if eval_role else 0.8
+
+
+def _harness_eta_seconds(frame_count: int, eval_role: str | None) -> int:
+    return max(1, int(frame_count * _harness_seconds_per_frame(eval_role)))
+
+
+def _format_duration(seconds: int) -> str:
+    minutes = max(1, (seconds + 59) // 60)
+    if minutes < 60:
+        return f"约 {minutes} 分钟"
+    hours, minutes = divmod(minutes, 60)
+    return f"约 {hours} 小时 {minutes} 分钟" if minutes else f"约 {hours} 小时"
+
+
+def _active_eval_config_payload(manifest_path: Path) -> dict:
+    """Active perception config overlaid with the dataset role.
+
+    Drive/walk manifests must hash as vehicle/pedestrian + multiclass, not as the
+    stored pedestrian default — otherwise a finished role run looks stale forever.
+    """
+    payload = load_active_config().to_dict()
+    role = _read_manifest_eval_role(manifest_path)
+    return _overlay_harness_config_for_manifest(payload, role)
+
+
+def _harness_progress_reason(manifest_path: Path, info: dict) -> str:
+    expected = int(info.get("expected") or 0)
+    predicted = _jsonl_line_count(_harness_out_path(manifest_path))
+    eval_role = info.get("eval_role")
+    remaining = max(0, expected - predicted) if expected else expected
+    eta = _format_duration(_harness_eta_seconds(remaining or expected or 1, eval_role))
+    started = info.get("started_at", "?")
+    role_note = "多类分割（车/行人角色）" if eval_role else "二值分割"
+    progress = f"{predicted}/{expected} 帧" if expected else f"已写出 {predicted} 帧"
+    return (
+        f"真身感知正在运行（pid {info.get('pid')}，开始于 {started}）。"
+        f"{role_note}，进度 {progress}，剩余{eta}。"
+        "请稍等，页面会自动刷新；不要再点一次以免误以为失败。"
+    )
+
+
+def _finalize_dead_harness(manifest_path: Path) -> dict | None:
+    """If a lock exists but the process is gone, collect the result. Never unlink
+    a live run. Survives diagnostics auto-reload because the child is detached."""
+    lock = _harness_lock_path(manifest_path)
+    try:
+        info = json.loads(lock.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if str(info.get("manifest")) != str(manifest_path):
+        return None
+    if _pid_is_running(info.get("pid")):
+        return None
+    exit_path = Path(info["exit_path"]) if info.get("exit_path") else _harness_exit_path(manifest_path)
+    stderr_path = Path(info["stderr_path"]) if info.get("stderr_path") else _harness_stderr_path(manifest_path)
+    stderr_text = ""
+    if stderr_path.is_file():
+        try:
+            stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            stderr_text = ""
+    stderr_tail = "\n".join(stderr_text.strip().splitlines()[-12:])
+    exit_code: int | None = None
+    if exit_path.is_file():
+        try:
+            exit_code = int(exit_path.read_text(encoding="utf-8").strip().splitlines()[-1])
+        except (OSError, ValueError):
+            exit_code = None
+    predicted = _jsonl_line_count(_harness_out_path(manifest_path))
+    expected = int(info.get("expected") or 0)
+    _clear_harness_lock(manifest_path, pid=info.get("pid"))
+    incomplete = bool(expected) and predicted < expected
+    killed = exit_code is None and incomplete
+    failed = exit_code not in (None, 0) or predicted == 0 or killed
+    if failed:
+        reason = "真身感知运行失败。"
+        if killed or exit_code == 143 or "SIGTERM" in stderr_text:
+            reason = (
+                "真身感知被中断（旧逻辑会在 15 分钟时杀掉仍在跑的多类分割任务）。"
+                "请再点一次重跑；现在会在后台跑完，不再用 15 分钟超时。"
+            )
+        elif predicted == 0:
+            reason = "真身感知结束但未产出预测。"
+            if "image_not_found:" in stderr_text:
+                reason = _harness_missing_images_reason(stderr_text)
+        return {
+            "status": "error",
+            "reason": reason,
+            "returncode": exit_code,
+            "stderr": stderr_tail,
+            "predicted": predicted,
+        }
+    _write_harness_meta(
+        manifest_path,
+        count=predicted,
+        config_version=info.get("config_version"),
+        config_hash=info.get("config_hash"),
+    )
+    note = f"已在本机跑完真身感知，产出 {predicted} 帧预测"
+    if expected and predicted < expected:
+        note += f"（manifest {expected} 帧，有些图可能缺失）。"
+    else:
+        note += "。"
+    return {
+        "status": "ok",
+        "predictions": str(_harness_out_path(manifest_path)),
+        "predicted": predicted,
+        "config_version": info.get("config_version"),
+        "note": note,
+        "stderr": stderr_tail,
+    }
 
 
 def _sha256_file(path: Path) -> str | None:
@@ -2627,9 +3085,9 @@ def _harness_cache_info(manifest_path: Path) -> dict:
     info["config_version"] = cfg_version
 
     try:
-        active_cfg = load_active_config()
-        active_version = active_cfg.version
-        active_hash = active_cfg.content_hash()
+        eval_payload = _active_eval_config_payload(manifest_path)
+        active_version = eval_payload.get("version")
+        active_hash = eval_payload.get("hash")
     except ConfigValidationError:
         active_version = None
         active_hash = None
@@ -2662,7 +3120,7 @@ def _harness_cache_info(manifest_path: Path) -> dict:
         ):
             v_from = meta.get("config_version")
             reasons.append(
-                f"感知配置行为已变化（v{v_from}→v{active_version}，ROI/阈值哈希不一致），需用新配置重跑"
+                f"感知配置行为已变化（v{v_from}→v{active_version}，含角色/多类开关哈希不一致），需用新配置重跑"
             )
         current_bin_hash = _sha256_file(_harness_bin()) if _harness_bin().is_file() else None
         if (
@@ -2726,6 +3184,10 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
     if wrong_manifest is not None:
         return {"status": "error", "capability": "wrong_manifest", "reason": wrong_manifest}
 
+    finished = _finalize_dead_harness(manifest_path)
+    if finished is not None and not force:
+        return finished
+
     # Reuse cached predictions when nothing changed — cached results are
     # platform-independent to read, so allow this even off macOS.
     cache = _harness_cache_info(manifest_path)
@@ -2757,12 +3219,8 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
             "status": "already_running",
             "pid": active_run.get("pid"),
             "started_at": active_run.get("started_at"),
-            "reason": (
-                "真身感知已经在运行中，未启动第二个任务。"
-                f"开始时间：{active_run.get('started_at', '?')}；"
-                "701 帧全量加车道模型可能需要数分钟。请等当前任务完成后刷新，"
-                "或先点“直接查看评估（用缓存）”。"
-            ),
+            "predicted": _jsonl_line_count(_harness_out_path(manifest_path)),
+            "reason": _harness_progress_reason(manifest_path, active_run),
         }
 
     repo_root = _repo_root()
@@ -2800,92 +3258,98 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
             ),
         }
 
+    eval_role = _read_manifest_eval_role(manifest_path)
+    if eval_role and _seg5_model_path() is None:
+        return {
+            "status": "error",
+            "capability": "needs_seg5",
+            "reason": (
+                "这份是角色评估（行人/机动车），需要多类分割模型 "
+                "VQASeeTraversabilitySeg5.mlmodelc，才能区分人行道和车道。"
+                "模型应在 ios-vqa-app/VQASee/VQASee/ 或 VQASEE_MODELS_DIR。"
+                "缺少它时不会静默改用二值模型（否则会把车引上人行道）。"
+            ),
+        }
+
     out_path = str(_harness_out_path(manifest_path))
     cmd = [str(harness_bin), "--manifest", str(resolved_manifest), "--out", out_path]
     if limit and limit > 0:
         cmd += ["--limit", str(limit)]
     # Inject the lane model when available so the prediction carries lane_grid and
     # the per-frame view can draw lanes (otherwise lanes silently never appear).
-    cmd += _optional_harness_model_flags()
+    cmd += _optional_harness_model_flags(eval_role=eval_role)
 
     # Evaluate the CURRENTLY ACTIVE perception config so tuning it (and bumping
     # the version) is reflected in the harness result — this is what makes the
-    # tune -> re-run -> gate -> ship loop coherent. Fall back to compiled defaults
-    # (no --config) if the active config can't be serialized; never fake success.
+    # tune -> re-run -> gate -> ship loop coherent. Role-conditioned manifests
+    # overlay pedestrian/vehicle + multiclass so drive GT is never scored against
+    # the walker default. Fall back to compiled defaults (no --config) if the
+    # active config can't be serialized; never fake success.
     config_file = None
+    active_cfg: dict = {}
     try:
-        active_cfg = load_active_config().to_dict()
+        active_cfg = _overlay_harness_config_for_manifest(
+            load_active_config().to_dict(), eval_role
+        )
         config_file = Path(f"/tmp/{manifest_path.stem}-perception-config.json")
         config_file.write_text(json.dumps(active_cfg), encoding="utf-8")
         cmd += ["--config", str(config_file)]
     except (ConfigValidationError, OSError):
         config_file = None
-    proc: subprocess.Popen[str] | None = None
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(repo_root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        _write_harness_lock(manifest_path, pid=proc.pid, cmd=cmd)
-        stdout, stderr = proc.communicate(timeout=900)
-    except subprocess.TimeoutExpired:
-        if proc is not None:
-            proc.kill()
-            _stdout, stderr = proc.communicate()
-        else:
-            stderr = ""
-        return {
-            "status": "error",
-            "reason": "真身感知运行超时（>900s）。可用 limit 参数先跑少量帧验证，或在终端手动执行。",
-            "stderr": "\n".join((stderr or "").strip().splitlines()[-8:]),
-        }
-    finally:
-        _clear_harness_lock(manifest_path, pid=proc.pid if proc is not None else None)
+        active_cfg = {}
 
-    stderr_tail = (stderr or "").strip().splitlines()[-8:]
-    if proc.returncode != 0:
-        return {
-            "status": "error",
-            "reason": "真身感知运行失败（非零退出）。常见原因：缺少 YOLO Core ML 模型。见下方 stderr。",
-            "returncode": proc.returncode,
-            "stderr": "\n".join(stderr_tail),
-        }
-
+    expected = limit if (limit and limit > 0) else int(resolve_stats.get("resolved") or 0)
+    eta_seconds = _harness_eta_seconds(max(expected, 1), eval_role)
+    stderr_path = _harness_stderr_path(manifest_path)
+    exit_path = _harness_exit_path(manifest_path)
+    runner = _harness_runner_path(manifest_path)
+    stdout_log = Path(f"/tmp/{manifest_path.stem}-ios-harness.stdout.log")
     try:
-        predicted = sum(1 for _ in open(out_path, "r", encoding="utf-8"))
+        exit_path.unlink()
     except OSError:
-        predicted = 0
-    if predicted == 0:
-        stderr_text = stderr or ""
-        images_missing = "image_not_found:" in stderr_text
-        reason = f"运行结束但未产出预测（{out_path} 为空）。见下方 stderr。"
-        if images_missing:
-            reason = _harness_missing_images_reason(stderr_text)
-        return {
-            "status": "error",
-            "reason": reason,
-            "stderr": "\n".join(stderr_tail),
-        }
-
-    cfg_version = active_cfg.get("version") if config_file else None
-    cfg_hash = active_cfg.get("hash") if config_file else None
-    _write_harness_meta(
-        manifest_path, count=predicted, config_version=cfg_version, config_hash=cfg_hash
+        pass
+    quoted = " ".join(shlex.quote(part) for part in cmd)
+    runner.write_text(
+        "#!/bin/bash\n"
+        "set +e\n"
+        f"{quoted} >{shlex.quote(str(stdout_log))} 2>{shlex.quote(str(stderr_path))}\n"
+        f"echo $? > {shlex.quote(str(exit_path))}\n",
+        encoding="utf-8",
     )
+    os.chmod(runner, 0o755)
+    proc = subprocess.Popen(
+        ["/bin/bash", str(runner)],
+        cwd=str(repo_root),
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    lock_extra = {
+        "expected": expected,
+        "eval_role": eval_role,
+        "config_version": active_cfg.get("version"),
+        "config_hash": active_cfg.get("hash"),
+        "stderr_path": str(stderr_path),
+        "exit_path": str(exit_path),
+        "eta_seconds": eta_seconds,
+    }
+    _write_harness_lock(manifest_path, pid=proc.pid, cmd=cmd, extra=lock_extra)
+    started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return {
-        "status": "ok",
+        "status": "started",
+        "pid": proc.pid,
         "predictions": out_path,
-        "predicted": predicted,
-        "config_version": cfg_version,
+        "expected": expected,
+        "eta_seconds": eta_seconds,
         "note": (
             build_note
-            + f"已在本机跑完真身感知，产出 {predicted} 帧预测"
-            + (f"（配置 v{cfg_version}）。" if cfg_version is not None else "。")
+            + f"已在后台启动真身感知（{expected} 帧，{_format_duration(eta_seconds)}）。"
+            "页面会自动刷新进度；完成后打开评估。不会再因 15 分钟超时杀掉任务。"
         ).strip(),
-        "stderr": "\n".join(stderr_tail),
+        "reason": _harness_progress_reason(
+            manifest_path,
+            {"pid": proc.pid, "started_at": started_at, **lock_extra},
+        ),
     }
 
 
@@ -3137,6 +3601,26 @@ def dataset_ios_harness_frames_ui(
         if fid is not None:
             pred_index[str(fid)] = row
 
+    eval_role = _read_manifest_eval_role(manifest_path)
+    if eval_role == "vehicle":
+        overlay_legend = (
+            "<b style='color:#bf5af2'>紫实线=iPhone 预测路径</b> · "
+            "<b style='color:#30d158'>绿虚线=车道真值（机动车）</b>；"
+            "蓝虚框=检测物体；<b style='color:#30d158'>绿色叠层=车可通行区（不含人行道）</b>；"
+            "<b style='color:#ffd60a'>黄色实线=iPhone 车道折线</b> · "
+            "<b style='color:#ffd60a'>黄块=旧像素车道调试层</b> · "
+            "<b style='color:#0a84ff'>蓝色=真值车道线</b>。"
+        )
+    else:
+        overlay_legend = (
+            "<b style='color:#bf5af2'>紫实线=iPhone 预测路径</b> · "
+            "<b style='color:#30d158'>绿虚线=真值路径</b>（主信号，越贴合越准）；"
+            "蓝虚框=检测物体；<b style='color:#30d158'>绿色叠层=可走区域</b>；"
+            "<b style='color:#ffd60a'>黄色实线=iPhone 车道折线</b> · "
+            "<b style='color:#ffd60a'>黄块=旧像素车道调试层</b> · "
+            "<b style='color:#0a84ff'>蓝色=真值车道线</b>。"
+        )
+
     # Classify every frame once so we can both filter and show per-category counts
     # (with 701 frames the user needs to jump straight to the bad ones).
     flags_by_index: list = []
@@ -3183,7 +3667,13 @@ def dataset_ios_harness_frames_ui(
         # Translucent CamVid traversable-region layer, from the SAME mask that the
         # green GT line was traced from. Lets the user see the line's provenance.
         label_path = str(row.get("label_path") or "")
-        tclasses = str(row.get("traversable_classes") or "walk")
+        role = str(row.get("role") or "").strip().lower()
+        if role == "drive":
+            tclasses = "drive"
+        elif role == "walk":
+            tclasses = "walk"
+        else:
+            tclasses = str(row.get("traversable_classes") or "walk")
         mask_layer = ""
         if label_path:
             mask_src = (
@@ -3272,7 +3762,7 @@ def dataset_ios_harness_frames_ui(
             f"""<div class='card'><h2>{html.escape(frame_id)}</h2>
 <div class='row'>
   <div>{image_block}
-    <p class='explain'><b style='color:#bf5af2'>紫实线=iPhone 预测路径</b> · <b style='color:#30d158'>绿虚线=真值路径</b>（主信号，越贴合越准）；蓝虚框=检测物体；<b style='color:#30d158'>绿色叠层=可走区域</b>；<b style='color:#ffd60a'>黄色实线=iPhone 车道折线</b> · <b style='color:#ffd60a'>黄块=旧像素车道调试层</b> · <b style='color:#0a84ff'>蓝色=真值车道线</b>。</p>
+    <p class='explain'>{overlay_legend}</p>
   </div>
   <div>
     <p class='explain'><b>可走线对比：</b>{line_verdict}</p>
@@ -3677,6 +4167,18 @@ def perception_config_ui():
         + num("seg_traversable_pixel", thr["seg_traversable_pixel"], "分割可走像素阈值")
         + "</div></div>"
     )
+    backend = str(config.get("road_backend") or "twinlite")
+    options = "".join(
+        f"<option value='{html.escape(item)}'{' selected' if item == backend else ''}>{html.escape(item)}</option>"
+        for item in ("off", "twinlite", "mc5")
+    )
+    backend_block = (
+        "<div class='card'><h2>路面模型</h2>"
+        "<p class='muted'>实验切换：twinlite=驾驶可走区+车道线叠图；mc5=CamVid 人/车可走区；off=不跑。"
+        "换模型不改 App 架构，只换这一项。下次打开 App 才加载新模型。</p>"
+        f"<label class='num'>road_backend<select id='road_backend'>{options}</select></label>"
+        "</div>"
+    )
 
     script = """<script>
 function val(id){return parseFloat(document.getElementById(id).value);}
@@ -3695,7 +4197,8 @@ async function saveConfig(){
       seg_near_caution_ratio:val('seg_near_caution_ratio'),
       seg_side_caution_ratio:val('seg_side_caution_ratio'),
       seg_traversable_pixel:val('seg_traversable_pixel')
-    }
+    },
+    road_backend: document.getElementById('road_backend').value
   };
   try{
     const resp = await fetch('/diagnostics/perception-config/bump',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(updates)});
@@ -3715,6 +4218,7 @@ async function saveConfig(){
         + script
         + roi_block
         + thr_block
+        + backend_block
         + "<div class='card'><button onclick='saveConfig()'>保存并升级版本</button>"
         "<div id='cfgStatus' class='status' style='display:none'></div></div>"
         + f"<p class='muted'>存储位置：{html.escape(str(config_store_path()))}</p>"

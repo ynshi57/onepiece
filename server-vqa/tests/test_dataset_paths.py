@@ -80,6 +80,9 @@ def test_committed_camvid_manifests_are_portable():
         "camvid-manifest.jsonl",
         "camvid-manifest-walk.jsonl",
         "camvid-manifest-drive.jsonl",
+        "camvid-manifest-test.jsonl",
+        "camvid-manifest-walk-test.jsonl",
+        "camvid-manifest-drive-test.jsonl",
     ):
         text = (repo / "docs" / "datasets" / name).read_text(encoding="utf-8")
         assert "/Users/bayes" not in text

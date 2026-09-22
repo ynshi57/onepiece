@@ -46,17 +46,16 @@ struct PerceptionConfig: Equatable, Sendable {
     /// binary model routed walkers onto the road). Binary (C<=2) models ignore it.
     var role: PerceptionRole = .pedestrian
     /// Staged rollout switch for the N=5 role-conditioned segmentation model.
-    /// Defaults to FALSE: the live app keeps the real-time-proven binary segmenter
-    /// until a real-device latency budget for mc5 is signed off (罗根). Flipping
-    /// this (via OTA config after sign-off) makes the app load the bundled mc5
-    /// model and derive the walkable region per `role`. Off = zero behavior change.
+    /// Defaults to FALSE: the live app does **not** run the old binary Fast-SCNN
+    /// (it mixed road+sidewalk into one green blob and was the latency hog).
+    /// Flipping this (OTA after ANE sign-off) loads bundled mc5 and derives the
+    /// walkable region per `role`. Off = no traversable-region forward pass.
     var useMulticlassSegmentation: Bool = false
-    /// Whether the dedicated lane-marking segmenter runs on the live device path.
-    /// Defaults to TRUE now that the model is bundled: it is a cheap (~single-digit
-    /// ms) second forward and is display-only (informational lane overlay; it never
-    /// gates a traversability decision), so shipping it on is low-risk. OTA can turn
-    /// it off if a real device shows a latency problem (罗根 to confirm the budget).
     var useLaneSegmentation: Bool = true
+    /// Swap-point for the road-surface model. `twinlite` is the experimental App
+    /// overlay (BDD drivable + lanes). `mc5` is the CamVid role-conditioned head.
+    /// `off` runs neither.
+    var roadBackend: RoadBackendID = .twinlite
 
     /// Single source of default values. ROIs reuse the engine constants so there
     /// is exactly one place defining the shipping defaults.
@@ -74,7 +73,8 @@ struct PerceptionConfig: Equatable, Sendable {
         ),
         role: .pedestrian,
         useMulticlassSegmentation: false,
-        useLaneSegmentation: true
+        useLaneSegmentation: true,
+        roadBackend: .twinlite
     )
 }
 
@@ -114,6 +114,8 @@ struct PerceptionConfigWire: Codable, Equatable {
     var use_multiclass_segmentation: Bool?
     /// Optional switch for the dedicated lane segmenter; absent → true (bundled).
     var use_lane_segmentation: Bool?
+    /// Optional road-surface backend id; absent → twinlite (experimental App default).
+    var road_backend: String?
 }
 
 enum PerceptionConfigError: Error, CustomStringConvertible, Equatable {
@@ -177,6 +179,16 @@ extension PerceptionConfig {
             role = .pedestrian
         }
 
+        let parsedBackend: RoadBackendID
+        if let raw = wire.road_backend {
+            guard let parsed = RoadBackendID(rawValue: raw) else {
+                throw PerceptionConfigError.outOfRange("road_backend=\(raw) is not one of off|twinlite|mc5")
+            }
+            parsedBackend = parsed
+        } else {
+            parsedBackend = .twinlite
+        }
+
         self.init(
             version: wire.version,
             nearROI: try rect(wire.roi.near, "near"),
@@ -191,7 +203,8 @@ extension PerceptionConfig {
             ),
             role: role,
             useMulticlassSegmentation: wire.use_multiclass_segmentation ?? false,
-            useLaneSegmentation: wire.use_lane_segmentation ?? true
+            useLaneSegmentation: wire.use_lane_segmentation ?? true,
+            roadBackend: parsedBackend
         )
     }
 

@@ -341,7 +341,15 @@ if let probe = makeBlankPixelBuffer() {
 }
 
 let rows = readManifestRows(args.manifest)
-var outputLines: [String] = []
+let planned = args.limit > 0 ? min(args.limit, rows.count) : rows.count
+var outputHandle: FileHandle?
+if let outPath = args.out {
+    FileManager.default.createFile(atPath: outPath, contents: Data(), attributes: nil)
+    outputHandle = FileHandle(forWritingAtPath: outPath)
+    if outputHandle == nil {
+        fail("cannot open output for writing: \(outPath)")
+    }
+}
 var predicted = 0
 var missingImage = 0
 var decodeErrors = 0
@@ -454,20 +462,20 @@ for row in rows {
           let jsonLine = String(data: data, encoding: .utf8) else {
         continue
     }
-    outputLines.append(jsonLine)
-    predicted += 1
-}
-
-let payload = outputLines.joined(separator: "\n") + (outputLines.isEmpty ? "" : "\n")
-if let outPath = args.out {
-    do {
-        try payload.write(toFile: outPath, atomically: true, encoding: .utf8)
-    } catch {
-        fail("cannot write output: \(outPath): \(error)")
+    let lineData = Data((jsonLine + "\n").utf8)
+    if let handle = outputHandle {
+        handle.write(lineData)
+    } else {
+        FileHandle.standardOutput.write(lineData)
     }
-} else {
-    FileHandle.standardOutput.write(Data(payload.utf8))
+    predicted += 1
+    if predicted == 1 || predicted % 5 == 0 || predicted == planned {
+        FileHandle.standardError.write(Data(
+            "harness progress: predicted=\(predicted)/\(planned)\n".utf8
+        ))
+    }
 }
+outputHandle?.closeFile()
 
 FileHandle.standardError.write(Data(
     "harness done: predicted=\(predicted) missing_image=\(missingImage) decode_errors=\(decodeErrors)\n".utf8

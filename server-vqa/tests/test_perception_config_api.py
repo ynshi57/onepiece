@@ -67,6 +67,7 @@ def test_config_editor_ui_renders(client):
     assert resp.status_code == 200
     assert "保存并升级版本" in resp.text
     assert "near_blocked_area" in resp.text
+    assert "road_backend" in resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +610,56 @@ def test_optional_harness_model_flags_injects_lane_model(tmp_path, monkeypatch):
         "--lane-model", str(lane),
         "--lane-polyline-model", str(ufld),
     ]
+
+
+def test_optional_harness_model_flags_injects_seg5_for_role_eval(tmp_path, monkeypatch):
+    from app.diagnostic_api import _optional_harness_model_flags, _seg5_model_path
+
+    monkeypatch.setenv("VQASEE_MODELS_DIR", str(tmp_path))
+    assert "--seg-model" not in _optional_harness_model_flags()
+    flags = _optional_harness_model_flags(eval_role="vehicle")
+    seg5 = _seg5_model_path()
+    assert seg5 is not None
+    assert flags[-2:] == ["--seg-model", str(seg5)]
+
+
+def test_harness_eta_for_drive_mc5_exceeds_old_900s_cap():
+    from app.diagnostic_api import _format_duration, _harness_eta_seconds
+
+    seconds = _harness_eta_seconds(701, "vehicle")
+    assert seconds > 900
+    assert "分钟" in _format_duration(seconds) or "小时" in _format_duration(seconds)
+
+
+def test_finalize_dead_harness_records_completed_run(tmp_path, monkeypatch):
+    from app import diagnostic_api
+
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text('{"frame_id":"f1","image_path":"x.png"}\n', encoding="utf-8")
+    out = tmp_path / "out.jsonl"
+    out.write_text('{"frame_id":"f1","prediction":{}}\n', encoding="utf-8")
+    exit_path = tmp_path / "exit"
+    exit_path.write_text("0\n", encoding="utf-8")
+    lock = tmp_path / "lock.json"
+    meta = tmp_path / "meta.json"
+    monkeypatch.setattr(diagnostic_api, "_harness_lock_path", lambda _m: lock)
+    monkeypatch.setattr(diagnostic_api, "_harness_out_path", lambda _m: out)
+    monkeypatch.setattr(diagnostic_api, "_harness_meta_path", lambda _m: meta)
+    lock.write_text(json.dumps({
+        "pid": 99999999,
+        "manifest": str(manifest),
+        "expected": 1,
+        "config_version": 1,
+        "config_hash": "abc",
+        "exit_path": str(exit_path),
+        "stderr_path": str(tmp_path / "no-stderr.log"),
+    }), encoding="utf-8")
+    result = diagnostic_api._finalize_dead_harness(manifest)
+    assert result is not None
+    assert result["status"] == "ok"
+    assert result["predicted"] == 1
+    assert not lock.exists()
+    assert meta.is_file()
 
 
 def test_harness_run_lock_reports_running_and_clears_stale(tmp_path, monkeypatch):

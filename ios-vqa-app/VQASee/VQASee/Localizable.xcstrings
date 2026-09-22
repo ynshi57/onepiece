@@ -62,6 +62,9 @@
     "relay pairing token (only for Relay mode)" : {
 
     },
+    "v%lld" : {
+
+    },
     "worker id" : {
 
     },
@@ -399,6 +402,25 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fast 3B"
+          }
+        }
+      }
+    },
+    "感知配置：内置默认" : {
+
+    },
+    "感知配置：已应用远程 v%lld" : {
+
+    },
+    "感知配置版本" : {
+
+    },
+    "感知配置获取失败，已使用内置默认 v%lld（%@）" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "感知配置获取失败，已使用内置默认 v%1$lld（%2$@）"
           }
         }
       }
@@ -1121,6 +1143,9 @@
           }
         }
       }
+    },
+    "配置无效" : {
+
     },
     "音频会话切换失败：%@" : {
       "extractionState" : "stale",

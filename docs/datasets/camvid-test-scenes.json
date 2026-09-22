@@ -1,0 +1,176 @@
+{
+  "dataset": "camvid",
+  "purpose": "iteration-test",
+  "note": "四种官方行车序列各抽 3 张（头/中/尾时段里最有信息量的一帧），用于日常算法迭代。全量 701 仍是发布回归门。",
+  "full_count": 701,
+  "test_count": 12,
+  "per_scene": 3,
+  "scenes": [
+    {
+      "id": "0001TP",
+      "label": "低光城市街道",
+      "summary": "最暗、近处车辆最多，城市峡谷，引导线容易被大车挤走人行道。",
+      "full_count": 124,
+      "samples": [
+        {
+          "stem": "0001TP_006690",
+          "situation": "near_traffic",
+          "situation_label": "近处车辆占道",
+          "brightness": 46.3,
+          "vehicle_near": 0.267,
+          "sidewalk_near": 0.152,
+          "lane": 0.007,
+          "person": 0.004
+        },
+        {
+          "stem": "0001TP_008430",
+          "situation": "near_traffic",
+          "situation_label": "近处车辆占道",
+          "brightness": 60.3,
+          "vehicle_near": 0.357,
+          "sidewalk_near": 0.012,
+          "lane": 0.004,
+          "person": 0.03
+        },
+        {
+          "stem": "0001TP_009240",
+          "situation": "near_traffic",
+          "situation_label": "近处车辆占道",
+          "brightness": 59.9,
+          "vehicle_near": 0.474,
+          "sidewalk_near": 0.1,
+          "lane": 0.007,
+          "person": 0.034
+        }
+      ]
+    },
+    {
+      "id": "0006R0",
+      "label": "开阔明亮车道",
+      "summary": "最亮、路面占比最高，适合看畅通车道和标线。",
+      "full_count": 101,
+      "samples": [
+        {
+          "stem": "0006R0_f00960",
+          "situation": "curb_sidewalk",
+          "situation_label": "路沿/人行道",
+          "brightness": 158.2,
+          "vehicle_near": 0.002,
+          "sidewalk_near": 0.198,
+          "lane": 0.007,
+          "person": 0.0
+        },
+        {
+          "stem": "0006R0_f02550",
+          "situation": "near_traffic",
+          "situation_label": "近处车辆占道",
+          "brightness": 141.0,
+          "vehicle_near": 0.281,
+          "sidewalk_near": 0.001,
+          "lane": 0.004,
+          "person": 0.003
+        },
+        {
+          "stem": "0006R0_f03450",
+          "situation": "near_traffic",
+          "situation_label": "近处车辆占道",
+          "brightness": 138.8,
+          "vehicle_near": 0.243,
+          "sidewalk_near": 0.012,
+          "lane": 0.037,
+          "person": 0.001
+        }
+      ]
+    },
+    {
+      "id": "0016E5",
+      "label": "混合街区",
+      "summary": "帧数最多，行人出现最频繁，街道更挤。",
+      "full_count": 305,
+      "samples": [
+        {
+          "stem": "0016E5_04530",
+          "situation": "near_traffic",
+          "situation_label": "近处车辆占道",
+          "brightness": 101.0,
+          "vehicle_near": 0.248,
+          "sidewalk_near": 0.013,
+          "lane": 0.008,
+          "person": 0.01
+        },
+        {
+          "stem": "0016E5_06630",
+          "situation": "near_traffic",
+          "situation_label": "近处车辆占道",
+          "brightness": 67.5,
+          "vehicle_near": 0.41,
+          "sidewalk_near": 0.005,
+          "lane": 0.004,
+          "person": 0.001
+        },
+        {
+          "stem": "0016E5_08047",
+          "situation": "near_traffic",
+          "situation_label": "近处车辆占道",
+          "brightness": 80.6,
+          "vehicle_near": 0.131,
+          "sidewalk_near": 0.21,
+          "lane": 0.018,
+          "person": 0.024
+        }
+      ]
+    },
+    {
+      "id": "Seq05VD",
+      "label": "人行道偏多的街道",
+      "summary": "人行道/路沿占比最高、近处车辆最少，适合看路沿界面。",
+      "full_count": 171,
+      "samples": [
+        {
+          "stem": "Seq05VD_f01080",
+          "situation": "near_traffic",
+          "situation_label": "近处车辆占道",
+          "brightness": 105.4,
+          "vehicle_near": 0.135,
+          "sidewalk_near": 0.216,
+          "lane": 0.03,
+          "person": 0.007
+        },
+        {
+          "stem": "Seq05VD_f02820",
+          "situation": "junction_lanes",
+          "situation_label": "路口/车道标线",
+          "brightness": 106.9,
+          "vehicle_near": 0.114,
+          "sidewalk_near": 0.283,
+          "lane": 0.042,
+          "person": 0.004
+        },
+        {
+          "stem": "Seq05VD_f04080",
+          "situation": "near_traffic",
+          "situation_label": "近处车辆占道",
+          "brightness": 121.3,
+          "vehicle_near": 0.243,
+          "sidewalk_near": 0.033,
+          "lane": 0.009,
+          "person": 0.001
+        }
+      ]
+    }
+  ],
+  "stems": [
+    "0001TP_006690",
+    "0001TP_008430",
+    "0001TP_009240",
+    "0006R0_f00960",
+    "0006R0_f02550",
+    "0006R0_f03450",
+    "0016E5_04530",
+    "0016E5_06630",
+    "0016E5_08047",
+    "Seq05VD_f01080",
+    "Seq05VD_f02820",
+    "Seq05VD_f04080"
+  ]
+}

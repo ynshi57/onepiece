@@ -1,0 +1,44 @@
+---
+description: "多 Agent 协作工作流：Opus 主导 + 3 审阅者讨论驱动开发。适用于使用 Multi-Agent 插件的项目。"
+globs: 
+alwaysApply: true
+---
+
+## Multi-Agent 协作规范
+
+- **主 Agent**: opus-executor（claude-opus-4-6-max）— 执行任务、分配子任务
+- **审阅 Agent**: gpt-reviewer / sonnet-reviewer / gemini-reviewer — 多角度审阅与反馈
+
+## Forum 文件规范
+- 讨论 JSON 文件必须写入用户 Prompt 中指定的 `forum_dir` 目录
+- 文件路径：`<forum_dir>/<task_slug>.json`
+- **禁止将 JSON/HTML 文件放在项目根目录**
+- JSON 更新后，Cursor Multi-Agent 插件自动刷新讨论面板
+
+## 讨论结论归档（auto_docs）
+- **主 Agent（Opus）** 除维护 forum JSON 外，须在工作区根目录 **`auto_docs/`** 下写入 Markdown 纪要：**`auto_docs/<task_slug>.md`**
+- 纪要应覆盖：最终结论/方案要点、投票或共识、已执行与待办、关键路径、风险与回滚；有阻塞或需用户决策时明确写出
+- 每次更新该 Markdown 时，在文末追加一行：`更新时间: YYYY-MM-DD HH:mm`
+
+## 基础流程
+1. 每个任务在 forum_dir 中创建 `<task_slug>.json`，所有 Agent 在 messages 中追加发言
+2. 每个 step/action 执行前须讨论：PROPOSAL → 三审阅者 REVIEW → VOTE
+3. 意见不一致时 4 方投票，少数服从多数；平票或无法统一时 type: QA 征求用户意见
+4. 禁止在未完成讨论前进入下一步
+
+## 增强协作
+5. 搜索/分析阶段发现重要信息，立即 CONTEXT_SHARE，不等结论
+6. 复杂任务拆分并行子任务，各 Agent 分别执行后以 SUBTASK_RESULT 汇报
+7. 子任务新发现随时同步，其他 Agent 可 REPLY 补充
+8. 跨任务线索 @tag 相关 Agent
+
+## 消息类型
+CONTEXT_SHARE | PROPOSAL | REVIEW | SUBTASK_RESULT | REPLY | VOTE | EXECUTION | QA
+
+## 执行模式（auto_execute）
+- Prompt 中会包含 `auto_execute = true` 或 `auto_execute = false`
+- **false（默认）**：评审和投票通过后，不要自动执行。以 `type: QA` 向用户展示方案摘要并询问「是否执行？」，等待用户确认后再进入 EXECUTION
+- **true**：评审通过后直接进入 EXECUTION，无需等待用户确认
+
+## 注意事项
+- 若某子代理 model 报错，改为 `inherit` 确保可运行；需 Max 模式

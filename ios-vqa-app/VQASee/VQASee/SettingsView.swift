@@ -92,7 +92,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Text("请先开启 iPhone 个人热点，并让 Mac 连接该热点；Mac 上运行后端后，App 会自动发现并连接。")
+                    Text("请让 iPhone 与 Mac 连同一 Wi‑Fi。Mac 上运行 bash ./start_backend.sh 后，App 会自动发现并连接。")
                         .font(Theme.Typography.caption)
                         .foregroundStyle(.secondary)
                 }

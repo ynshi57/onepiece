@@ -169,10 +169,9 @@ final class LocalVisionAnalyzer {
     private var previousFingerprint: [Double]?
     private let perceptionRunner: LocalPerceptionCoreMLRunner
     private let monocularDepthRunner: LocalMonocularDepthRunner
-    private let segmentationRunner: LocalTraversabilitySegmentationRunner
-    /// Dedicated lane-marking segmenter (T4). Optional and injected: nil on the
-    /// live device path (no extra forward pass until a latency budget is signed
-    /// off), non-nil on the harness so the lane channel is emitted + scored.
+    private let roadBackend: RoadSurfaceBackend?
+    /// Dedicated CamVid lane-pixel model. Skipped when TwinLiteNet already
+    /// provides a lane map (one adaptor, one lane source).
     let laneRunner: LocalLaneSegmentationRunner?
     /// Product lane geometry runner (UFLDv2). Kept injected/staged because current
     /// UFLDv2 weights are large; harness can evaluate them before live rollout.
@@ -187,17 +186,9 @@ final class LocalVisionAnalyzer {
     init(config: PerceptionConfig = .default) {
         self.perceptionRunner = LocalPerceptionCoreMLRunner()
         self.monocularDepthRunner = LocalMonocularDepthRunner()
-        // Staged rollout: load the N=5 role-conditioned segmenter only when the
-        // config flag is set (post real-device latency sign-off); otherwise keep
-        // the real-time-proven binary model. The multiclass sampler + config.role
-        // do the rest once mc5 is active.
-        self.segmentationRunner = config.useMulticlassSegmentation
-            ? LocalTraversabilitySegmentationRunner(modelName: "VQASeeTraversabilitySeg5")
-            : LocalTraversabilitySegmentationRunner()
-        // Dedicated lane-marking channel now ships bundled: load it on the live path
-        // when enabled (cheap, display-only) so the camera overlay can draw the real
-        // detected lanes instead of the old hardcoded diagonal placeholder.
-        self.laneRunner = config.useLaneSegmentation ? LocalLaneSegmentationRunner() : nil
+        self.roadBackend = RoadSurfaceBackends.make(config: config)
+        let skipExtraLane = config.roadBackend == .twinlite
+        self.laneRunner = (!skipExtraLane && config.useLaneSegmentation) ? LocalLaneSegmentationRunner() : nil
         self.lanePolylineRunner = nil
         self.config = config
         self.emitTraversableGrid = false
@@ -218,10 +209,11 @@ final class LocalVisionAnalyzer {
     ) {
         self.perceptionRunner = LocalPerceptionCoreMLRunner(bundle: modelBundle)
         self.monocularDepthRunner = LocalMonocularDepthRunner(bundle: modelBundle)
-        // A caller (the harness) may inject an explicit segmenter — e.g. the N=5
-        // multiclass model compiled outside the bundle — to score a role-conditioned
-        // walkable region; otherwise load the bundled model by name.
-        self.segmentationRunner = segmentationRunner ?? LocalTraversabilitySegmentationRunner(bundle: modelBundle)
+        self.roadBackend = RoadSurfaceBackends.make(
+            config: config,
+            bundle: modelBundle,
+            mc5Runner: segmentationRunner
+        )
         self.laneRunner = laneRunner
         self.lanePolylineRunner = lanePolylineRunner
         self.config = config
@@ -231,8 +223,8 @@ final class LocalVisionAnalyzer {
     /// Apply a new perception config at runtime (e.g. after an OTA config fetch).
     /// ROI, thresholds and `role` are consumed per-frame, so they take effect
     /// immediately (a walker→driver role switch re-derives the region live).
-    /// `useMulticlassSegmentation` is the exception: it selects which Core ML model
-    /// is LOADED, decided at analyzer construction (app launch / config load). A
+    /// `roadBackend` / `useMulticlassSegmentation` select which Core ML model is
+    /// LOADED, decided at analyzer construction (app launch / config load). A
     /// runtime flip only takes effect next launch — surfaced here so it is not a
     /// silent no-op; the OTA path persists the config and the app rebuilds the
     /// analyzer on next start.
@@ -278,20 +270,29 @@ final class LocalVisionAnalyzer {
             .analyze(pixelBuffer: pixelBuffer, orientation: orientation)
             .merging(visionHuman: human)
         timings.yoloMs = Self.elapsedMs(since: yoloStart)
-        let segStart = DispatchTime.now()
-        if let segmentation = segmentationRunner.analyzeDetailed(pixelBuffer: pixelBuffer, orientation: orientation, config: config, emitGrid: emitTraversableGrid) {
-            if let segmentationCue = segmentation.cue {
-                perception.segmentationCues = segmentationCue
+        if let roadBackend {
+            let segStart = DispatchTime.now()
+            if let maps = roadBackend.infer(
+                pixelBuffer: pixelBuffer,
+                orientation: orientation,
+                config: config,
+                emitGrid: emitTraversableGrid || roadBackend.id == .twinlite
+            ) {
+                perception.guidancePath = maps.guidancePath
+                if let grid = maps.traversableGrid {
+                    perception.traversableGrid = grid
+                }
+                if let lane = maps.laneGrid {
+                    perception.laneGrid = lane
+                }
+                if let cues = maps.segmentationCues {
+                    perception.segmentationCues = cues
+                }
+                timings.segmentationMs = roadBackend.lastInferenceMs ?? Self.elapsedMs(since: segStart)
             }
-            perception.guidancePath = segmentation.guidancePath
-            perception.traversableGrid = segmentation.traversableGrid
-            timings.segmentationMs = Self.elapsedMs(since: segStart)
         }
-        // Dedicated lane-marking channel (T4). Separate model / second forward pass.
-        // Runs whenever a lane runner is present: the bundled model on the live
-        // device path (config.useLaneSegmentation, default on) or the harness-injected
-        // one. Produces a real lane raster; never fabricates a lane when it finds none.
-        if laneRunner != nil || lanePolylineRunner != nil {
+        // Extra CamVid lane pixels only when the adaptor did not already emit lanes.
+        if (laneRunner != nil || lanePolylineRunner != nil), perception.laneGrid == nil {
             let laneStart = DispatchTime.now()
             if let laneGrid = laneRunner?.analyze(pixelBuffer: pixelBuffer, orientation: orientation) {
                 perception.laneGrid = laneGrid

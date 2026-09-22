@@ -215,8 +215,8 @@ profile_models() {
   # the .pth and traces the graph before coremltools converts it). It is not in
   # any requirements*.txt because it is only needed for model conversion, so it
   # must be installed here or the segmentation step aborts on a fresh Mac.
-  log "安装模型转换依赖 (torch + huggingface_hub[cli] + coremltools + onnx)"
-  if ! pip install -U torch "huggingface_hub[cli]" coremltools onnx; then
+  log "安装模型转换依赖 (torch + torchvision + huggingface_hub[cli] + coremltools + onnx)"
+  if ! pip install -U torch torchvision "huggingface_hub[cli]" coremltools onnx; then
     add_summary "FAIL|models|模型转换依赖安装失败"
     deactivate 2>/dev/null || true
     return 1
@@ -287,6 +287,10 @@ profile_models() {
   fi
   if [ -d ios-vqa-app/VQASee/VQASee/VQASeeLaneSegmentation.mlmodelc ]; then
     add_summary "OK|models|车道分割模型在位（随仓库提交，端上默认开，OTA use_lane_segmentation 可关）"
+  fi
+  add_summary "INFO|models|TwinLiteNet 实验路面模型：python deploy/ios/convert_twinlite_coreml.py → xcrun coremlcompiler compile ~/.cache/vqasee/models/VQASeeTwinLiteNet.mlpackage ~/.cache/vqasee/models/twinlite-compiled → 拷到 ios-vqa-app/VQASee/VQASee/VQASeeTwinLiteNet.mlmodelc。live 默认 road_backend=twinlite（实验叠图，不是行人可走区）。换模型只改 PerceptionConfig.roadBackend / RoadSurfaceBackend，不改 analyzer。"
+  if [ -d ios-vqa-app/VQASee/VQASee/VQASeeTwinLiteNet.mlmodelc ]; then
+    add_summary "OK|models|TwinLiteNet 实验路面模型在位（~1MB，live 默认开，OTA road_backend 可切 mc5/off）"
   fi
   deactivate 2>/dev/null || true
   return 0

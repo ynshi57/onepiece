@@ -38,9 +38,10 @@ struct CameraRiskOverlay: View {
         GeometryReader { proxy in
             ZStack {
                 if isActive {
+                    drivableAreaOverlay(in: proxy.size)
+                    laneMarkingOverlay(in: proxy.size)
                     pathGuidanceOverlay(in: proxy.size)
                     roadCueOverlay(in: proxy.size)
-                    laneMarkingOverlay(in: proxy.size)
                     riskRegionOverlay(in: proxy.size)
                     objectOverlay(in: proxy.size)
                     cueChips
@@ -103,33 +104,38 @@ struct CameraRiskOverlay: View {
 
     private func pathGuidanceOverlay(in size: CGSize) -> some View {
         Canvas { context, _ in
-            let guidance = signal.pathGuidance
-            if shouldDrawGuidanceCorridor, let corridor = guidance.guidanceCorridor {
-                let polygon = guidanceCorridorPath(from: corridor, in: size)
-                let color = guidance.nearPathStatus.overlayColor
-                context.fill(polygon, with: .color(color.opacity(guidance.nearPathStatus == .candidateOpen ? 0.08 : 0.20)))
-                context.stroke(
-                    polygon,
-                    with: .color(color.opacity(0.86)),
-                    style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [12, 8])
-                )
-
-                var centerLine = Path()
-                centerLine.move(to: CGPoint(x: size.width * 0.5, y: size.height * 0.90))
-                centerLine.addLine(to: CGPoint(x: size.width * 0.5, y: size.height * 0.50))
-                context.stroke(
-                    centerLine,
-                    with: .color(color.opacity(0.62)),
-                    style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [7, 7])
-                )
+            if let line = signal.guidancePath?.primary, line.points.count >= 2 {
+                var halo = Path()
+                var stroke = Path()
+                for (index, point) in line.points.enumerated() {
+                    let view = CGPoint(x: size.width * point.x, y: size.height * (1 - point.y))
+                    if index == 0 {
+                        halo.move(to: view)
+                        stroke.move(to: view)
+                    } else {
+                        halo.addLine(to: view)
+                        stroke.addLine(to: view)
+                    }
+                }
+                context.stroke(halo, with: .color(.white.opacity(0.85)), style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
+                context.stroke(stroke, with: .color(Color(red: 10/255, green: 132/255, blue: 1)), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
             } else {
-                drawSubtleNearPathReference(in: &context, size: size)
+                let guidance = signal.pathGuidance
+                if shouldDrawGuidanceCorridor, let corridor = guidance.guidanceCorridor {
+                    let polygon = guidanceCorridorPath(from: corridor, in: size)
+                    let color = guidance.nearPathStatus.overlayColor
+                    context.fill(polygon, with: .color(color.opacity(guidance.nearPathStatus == .candidateOpen ? 0.08 : 0.20)))
+                    context.stroke(
+                        polygon,
+                        with: .color(color.opacity(0.86)),
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round, dash: [12, 8])
+                    )
+                } else {
+                    drawSubtleNearPathReference(in: &context, size: size)
+                }
             }
 
-            // The left/right front ROI attention-zone rectangles were removed —
-            // they were the discrete three-box signal the platform retired. The
-            // guidance corridor + obstacle (blocked/uncertain) regions remain.
-            for rect in guidance.uncertainRegions {
+            for rect in signal.pathGuidance.uncertainRegions {
                 let viewRect = overlayRect(forNormalizedRect: rect, in: size)
                 let path = Path(roundedRect: viewRect, cornerRadius: 16)
                 context.fill(path, with: .color(.gray.opacity(0.20)))
@@ -138,10 +144,29 @@ struct CameraRiskOverlay: View {
         }
     }
 
-    /// Draw the REAL detected lane markings from the dedicated lane segmenter's
-    /// grid (row 0 = top, matching the camera image), as translucent yellow cells.
-    /// This replaces the old hardcoded diagonal placeholder as the truthful lane
-    /// display; absent grid (model off / found nothing) simply draws nothing.
+    private func drivableAreaOverlay(in size: CGSize) -> some View {
+        Canvas { context, _ in
+            guard let grid = signal.traversableGrid,
+                  grid.cols > 0, grid.rows > 0,
+                  grid.cells.count == grid.cols * grid.rows else { return }
+            let cellW = size.width / CGFloat(grid.cols)
+            let cellH = size.height / CGFloat(grid.rows)
+            let color = Color(red: 180/255, green: 40/255, blue: 40/255).opacity(0.32)
+            for r in 0..<grid.rows {
+                let rowBase = r * grid.cols
+                for c in 0..<grid.cols where grid.cells[rowBase + c] != 0 {
+                    let rect = CGRect(
+                        x: CGFloat(c) * cellW, y: CGFloat(r) * cellH,
+                        width: cellW + 0.5, height: cellH + 0.5
+                    )
+                    context.fill(Path(rect), with: .color(color))
+                }
+            }
+        }
+    }
+
+    /// Draw detected lane-marking cells (row 0 = top). Green matches the
+    /// diagnostic TwinLite overlay; absent grid draws nothing.
     private func laneMarkingOverlay(in size: CGSize) -> some View {
         Canvas { context, _ in
             guard let lane = signal.laneGrid,
@@ -149,7 +174,7 @@ struct CameraRiskOverlay: View {
                   lane.cells.count == lane.cols * lane.rows else { return }
             let cellW = size.width / CGFloat(lane.cols)
             let cellH = size.height / CGFloat(lane.rows)
-            let color = Color.yellow.opacity(0.55)
+            let color = Color(red: 40/255, green: 220/255, blue: 80/255).opacity(0.55)
             for r in 0..<lane.rows {
                 let rowBase = r * lane.cols
                 for c in 0..<lane.cols where lane.cells[rowBase + c] != 0 {

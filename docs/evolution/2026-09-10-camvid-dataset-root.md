@@ -34,6 +34,7 @@
 - `pytest server-vqa/tests`（含 `test_dataset_paths.py`、stale-path 图片服务、默认根）
 - 下载后确认 `dataset/camvid/CamVid_RGB` 有图，且 remap 能打开 committed jsonl 里的第一帧
 - 真身感知 `predicted=0` 且路径落在 `docs/datasets/dataset/camvid/`：根因是 harness 二进制早于路径修复，且只在二进制缺失时才重编。已改为源码更新后自动重编，启动前把图片路径解析成真实文件
+- drive 评估紫线走人行道：一键跑未注入 `role=vehicle` 和多类分割，二值模型把马路∪人行道都当可走，公交车一挡中心线就挤到人行道。已改为按 manifest `role` 覆盖配置并注入 Seg5
 
 ## 影响面
 

@@ -26,7 +26,21 @@ def test_defaults_match_ios_constants():
 def test_to_dict_has_stable_keys_and_hash():
     config = pc.default_config()
     payload = config.to_dict()
-    assert set(payload.keys()) == {"version", "updated_at", "hash", "roi", "thresholds"}
+    assert set(payload.keys()) == {
+        "version",
+        "updated_at",
+        "hash",
+        "roi",
+        "thresholds",
+        "role",
+        "use_multiclass_segmentation",
+        "use_lane_segmentation",
+        "road_backend",
+    }
+    assert payload["role"] == "pedestrian"
+    assert payload["use_multiclass_segmentation"] is False
+    assert payload["use_lane_segmentation"] is True
+    assert payload["road_backend"] == "twinlite"
     assert set(payload["roi"].keys()) == {"near", "left", "right"}
     assert set(payload["roi"]["near"].keys()) == {"x", "y", "w", "h"}
     assert set(payload["thresholds"].keys()) == {
@@ -57,6 +71,8 @@ def test_round_trip_from_dict():
         {"thresholds": {"near_blocked_area": 1.5}},  # out of range
         {"thresholds": {"bogus_key": 0.5}},  # unknown key
         {"version": 0},  # bad version
+        {"role": "walker"},  # not pedestrian|vehicle
+        {"road_backend": "ufld"},  # not off|twinlite|mc5
     ],
 )
 def test_invalid_configs_raise(mutation):
@@ -67,6 +83,10 @@ def test_invalid_configs_raise(mutation):
         base["thresholds"].update(mutation["thresholds"])
     if "version" in mutation:
         base["version"] = mutation["version"]
+    if "role" in mutation:
+        base["role"] = mutation["role"]
+    if "road_backend" in mutation:
+        base["road_backend"] = mutation["road_backend"]
     with pytest.raises(pc.ConfigValidationError):
         pc.config_from_dict(base)
 
@@ -101,6 +121,32 @@ def test_bump_and_save_increments_version_and_persists(tmp_path, monkeypatch):
     again = pc.bump_and_save({"roi": {"near": {"x": 0.2, "y": 0.0, "w": 0.5, "h": 0.5}}})
     assert again.version == 3
     assert again.near_roi.x == 0.2
+
+
+def test_config_round_trip_preserves_vehicle_role():
+    payload = pc.default_config().to_dict()
+    payload["role"] = "vehicle"
+    payload["use_multiclass_segmentation"] = True
+    restored = pc.config_from_dict(payload)
+    assert restored.role == "vehicle"
+    assert restored.use_multiclass_segmentation is True
+    assert restored.content_hash() != pc.default_config().content_hash()
+
+
+def test_config_round_trip_preserves_road_backend():
+    payload = pc.default_config().to_dict()
+    payload["road_backend"] = "mc5"
+    restored = pc.config_from_dict(payload)
+    assert restored.road_backend == "mc5"
+    assert restored.content_hash() != pc.default_config().content_hash()
+
+
+def test_bump_and_save_road_backend(tmp_path, monkeypatch):
+    store = tmp_path / "cfg.json"
+    monkeypatch.setenv("VQASEE_PERCEPTION_CONFIG_PATH", str(store))
+    updated = pc.bump_and_save({"road_backend": "off"})
+    assert updated.version == 2
+    assert updated.road_backend == "off"
 
 
 def test_bump_and_save_rejects_invalid_without_writing(tmp_path, monkeypatch):

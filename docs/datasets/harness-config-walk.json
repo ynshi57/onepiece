@@ -1,6 +1,8 @@
 {
   "version": 1,
   "role": "pedestrian",
+  "use_multiclass_segmentation": true,
+  "road_backend": "mc5",
   "roi": {
     "near": {"x": 0.25, "y": 0.00, "w": 0.50, "h": 0.58},
     "left": {"x": 0.00, "y": 0.05, "w": 0.42, "h": 0.62},

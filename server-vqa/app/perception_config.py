@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 CONFIG_SCHEMA_VERSION = 1
+VALID_ROLES = ("pedestrian", "vehicle")
+VALID_ROAD_BACKENDS = ("off", "twinlite", "mc5")
 
 
 class ConfigValidationError(ValueError):
@@ -85,10 +87,31 @@ class PerceptionConfig:
     left_roi: ROI = field(default_factory=lambda: DEFAULT_LEFT_ROI)
     right_roi: ROI = field(default_factory=lambda: DEFAULT_RIGHT_ROI)
     thresholds: Thresholds = field(default_factory=Thresholds)
+    # Wire keys match PerceptionConfig.swift: pedestrian|vehicle. Live default
+    # does not run the retired binary segmenter; mc5 only when the flag is on.
+    role: str = "pedestrian"
+    use_multiclass_segmentation: bool = False
+    use_lane_segmentation: bool = True
+    # Swap-point for the on-device road-surface model. Live App default is the
+    # TwinLiteNet experimental overlay (BDD drivable + lanes). mc5 is CamVid
+    # role-conditioned traversable. off runs neither.
+    road_backend: str = "twinlite"
 
     def validate(self) -> None:
         if not isinstance(self.version, int) or self.version < 1:
             raise ConfigValidationError(f"version must be an int >= 1, got {self.version!r}")
+        if self.role not in VALID_ROLES:
+            raise ConfigValidationError(
+                f"role={self.role!r} is not one of {'|'.join(VALID_ROLES)}"
+            )
+        if not isinstance(self.use_multiclass_segmentation, bool):
+            raise ConfigValidationError("use_multiclass_segmentation must be a boolean")
+        if not isinstance(self.use_lane_segmentation, bool):
+            raise ConfigValidationError("use_lane_segmentation must be a boolean")
+        if self.road_backend not in VALID_ROAD_BACKENDS:
+            raise ConfigValidationError(
+                f"road_backend={self.road_backend!r} is not one of {'|'.join(VALID_ROAD_BACKENDS)}"
+            )
         self.near_roi.validate("near")
         self.left_roi.validate("left")
         self.right_roi.validate("right")
@@ -103,6 +126,10 @@ class PerceptionConfig:
                 "right": asdict(self.right_roi),
             },
             "thresholds": asdict(self.thresholds),
+            "role": self.role,
+            "use_multiclass_segmentation": self.use_multiclass_segmentation,
+            "use_lane_segmentation": self.use_lane_segmentation,
+            "road_backend": self.road_backend,
         }
 
     def content_hash(self) -> str:
@@ -143,6 +170,14 @@ def config_from_dict(data: dict[str, Any]) -> PerceptionConfig:
         if key not in default_thresholds:
             raise ConfigValidationError(f"unknown threshold key: {key}")
         merged_thresholds[key] = float(value)
+    role = data.get("role", "pedestrian")
+    if not isinstance(role, str):
+        raise ConfigValidationError(f"role must be a string, got {role!r}")
+    use_mc = data.get("use_multiclass_segmentation", False)
+    use_lane = data.get("use_lane_segmentation", True)
+    road_backend = data.get("road_backend", "twinlite")
+    if not isinstance(road_backend, str):
+        raise ConfigValidationError(f"road_backend must be a string, got {road_backend!r}")
     config = PerceptionConfig(
         version=int(data.get("version", 1)),
         updated_at=str(data.get("updated_at", "")),
@@ -150,6 +185,10 @@ def config_from_dict(data: dict[str, Any]) -> PerceptionConfig:
         left_roi=_roi_from_dict("left", roi.get("left", asdict(DEFAULT_LEFT_ROI))),
         right_roi=_roi_from_dict("right", roi.get("right", asdict(DEFAULT_RIGHT_ROI))),
         thresholds=Thresholds(**merged_thresholds),
+        role=role,
+        use_multiclass_segmentation=use_mc,
+        use_lane_segmentation=use_lane,
+        road_backend=road_backend,
     )
     config.validate()
     return config
@@ -191,6 +230,10 @@ def save_config(config: PerceptionConfig) -> Path:
         left_roi=config.left_roi,
         right_roi=config.right_roi,
         thresholds=config.thresholds,
+        role=config.role,
+        use_multiclass_segmentation=config.use_multiclass_segmentation,
+        use_lane_segmentation=config.use_lane_segmentation,
+        road_backend=config.road_backend,
     )
     path = config_store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -204,9 +247,11 @@ def save_config(config: PerceptionConfig) -> Path:
 def bump_and_save(updates: dict[str, Any]) -> PerceptionConfig:
     """Apply partial updates to the active config, bump the version, save.
 
-    ``updates`` may contain ``roi`` (any of near/left/right) and ``thresholds``
-    (any subset). The new version is ``current.version + 1``. Validation runs
-    before anything is written; on failure nothing is saved.
+    ``updates`` may contain ``roi`` (any of near/left/right), ``thresholds``
+    (any subset), ``role``, ``use_multiclass_segmentation``,
+    ``use_lane_segmentation``, and ``road_backend``. The new version is
+    ``current.version + 1``. Validation runs before anything is written; on
+    failure nothing is saved.
     """
     current = load_active_config()
     merged = current.to_dict()
@@ -221,6 +266,9 @@ def bump_and_save(updates: dict[str, Any]) -> PerceptionConfig:
         if not isinstance(updates["thresholds"], dict):
             raise ConfigValidationError("updates.thresholds must be an object")
         merged["thresholds"].update(updates["thresholds"])
+    for key in ("role", "use_multiclass_segmentation", "use_lane_segmentation", "road_backend"):
+        if key in updates:
+            merged[key] = updates[key]
     merged["version"] = current.version + 1
     new_config = config_from_dict(merged)
     save_config(new_config)

@@ -1,0 +1,67 @@
+{
+  "task_slug": "local-perception-gap",
+  "forum_dir": "auto_docs",
+  "main_agent": "Opus",
+  "reviewers": [
+    "GPT",
+    "Sonnet",
+    "Gemini"
+  ],
+  "auto_execute": false,
+  "messages": [
+    {
+      "agent": "Opus",
+      "type": "CONTEXT_SHARE",
+      "time": "2026-09-21 11:47",
+      "content": "用户：乔布斯，你和队员一起深度分析目前 VQASee 本地感知层提供的能力和不达标的地方，什么原因，总结出核心几条。范围=端上 LocalVisionAnalyzer 栈，不含 Qwen。验收仍是四项：车道线 / 角色可走区 / 障碍 / 实时性。"
+    },
+    {
+      "agent": "Opus",
+      "type": "PROPOSAL",
+      "time": "2026-09-21 11:47",
+      "content": "乔布斯方向：不写长清单，压成 4 条（对应四项核心），每条写清「现在能给用户什么 / 过不了哪扇门 / 根因一句」。证据：shipping 开关 useMulticlassSegmentation=false、lanePolylineRunner=nil；YOLO 已 bundle；mc5 384 已 bundle 但未翻转；UFLD 城市看图失败且 155MB；TwinLiteNet 仅诊断台 12 帧未过门；Mac 分割才是延迟大头、ANE 未签。请 GPT(代码事实)/Sonnet(架构)/Gemini(评测/延迟) REVIEW 后 VOTE 这 4 条是否够当产品结论。"
+    },
+    {
+      "agent": "GPT",
+      "type": "REVIEW",
+      "time": "2026-09-21 11:48",
+      "content": "态度：有条件同意。子代理额度不足，按 GPT 清单核对代码：shipping 默认 useMulticlassSegmentation=false、lanePolylineRunner=nil、YOLO 有、车道像素开关 true。4 条必须把「实验室/harness」和「用户打开 App」切开，否则会把 mc5 0.096 和 UFLD 解码器说成已上线。障碍召回 0.663 不能说成障碍已闭环。"
+    },
+    {
+      "agent": "Sonnet",
+      "type": "REVIEW",
+      "time": "2026-09-21 11:48",
+      "content": "态度：有条件同意。架构上是四条并行管线（YOLO框、二值可走色块、车道像素栅格、中线），没有融合成司机看的一张图。引导线仍是可走区中线，不是占用车道几何。思余侧：用户看见的是色块+走廊，不是两条边夹一条蓝线。4 条够用，不要再加第五条「诊断台」。"
+    },
+    {
+      "agent": "Gemini",
+      "type": "REVIEW",
+      "time": "2026-09-21 11:48",
+      "content": "态度：有条件同意。必须单列「shipping vs harness」。Mac 分割 p95 170ms / mc5 586ms 不是 iPhone 数。UFLD 155MB 与城市看图失败是两件独立不达标。TwinLiteNet 只证明诊断台实验，不能写进能力清单的「已有」。"
+    },
+    {
+      "agent": "GPT",
+      "type": "VOTE",
+      "time": "2026-09-21 11:48",
+      "content": "赞成 4 条，前提是每条标明 live / lab。"
+    },
+    {
+      "agent": "Sonnet",
+      "type": "VOTE",
+      "time": "2026-09-21 11:48",
+      "content": "赞成 4 条。"
+    },
+    {
+      "agent": "Gemini",
+      "type": "VOTE",
+      "time": "2026-09-21 11:48",
+      "content": "赞成 4 条，横断根因写成 shipping 未翻转 + 车道表示错误 + ANE 未签。"
+    },
+    {
+      "agent": "Opus",
+      "type": "VOTE",
+      "time": "2026-09-21 11:48",
+      "content": "4 票赞成。乔布斯按 live/lab 切开写 4 条。"
+    }
+  ]
+}

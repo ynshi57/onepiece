@@ -63,7 +63,7 @@ final class NearbyServerBrowser: NSObject, NetServiceBrowserDelegate, NetService
     ) {
         pendingServices.append(service)
         service.delegate = self
-        service.resolve(withTimeout: 5)
+        service.resolve(withTimeout: 8)
     }
 
     func netServiceBrowser(
@@ -82,8 +82,13 @@ final class NearbyServerBrowser: NSObject, NetServiceBrowserDelegate, NetService
     }
 
     func netServiceDidResolveAddress(_ sender: NetService) {
-        let path = Self.path(from: sender.txtRecordData()) ?? "/ws/signaling"
-        let host = Self.preferredHost(for: sender)
+        let path = BonjourTXTRecord.path(from: sender.txtRecordData()) ?? "/ws/signaling"
+        let host = BonjourTXTRecord.preferredHost(
+            txtRecordData: sender.txtRecordData(),
+            addresses: sender.addresses,
+            hostName: sender.hostName,
+            serviceName: sender.name
+        )
         guard let url = URL(string: "ws://\(host):\(sender.port)\(path)") else {
             return
         }
@@ -103,32 +108,4 @@ final class NearbyServerBrowser: NSObject, NetServiceBrowserDelegate, NetService
         }
     }
 
-    /// Prefer a numeric IPv4 address (more reliable across routers where `.local`
-    /// mDNS resolution is flaky) and fall back to the `.local` hostname.
-    private static func preferredHost(for service: NetService) -> String {
-        if let addresses = service.addresses {
-            for address in addresses {
-                if let ipv4 = SockaddrParser.ipv4String(fromSockaddr: address) {
-                    return ipv4
-                }
-            }
-        }
-        let rawHost = service.hostName ?? "\(service.name).local"
-        return rawHost.hasSuffix(".") ? String(rawHost.dropLast()) : rawHost
-    }
-
-    private static func path(from txtRecordData: Data?) -> String? {
-        guard let txtRecordData else {
-            return nil
-        }
-        let dictionary = NetService.dictionary(fromTXTRecord: txtRecordData)
-        guard
-            let data = dictionary["path"],
-            let path = String(data: data, encoding: .utf8),
-            path.hasPrefix("/")
-        else {
-            return nil
-        }
-        return path
-    }
 }

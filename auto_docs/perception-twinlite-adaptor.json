@@ -1,0 +1,69 @@
+{
+  "task_slug": "perception-twinlite-adaptor",
+  "forum_dir": "auto_docs",
+  "main_agent": "Opus",
+  "reviewers": ["GPT", "Sonnet", "Gemini"],
+  "auto_execute": true,
+  "messages": [
+    {
+      "agent": "Opus",
+      "type": "PROPOSAL",
+      "time": "2026-09-21 12:20",
+      "content": "乔布斯：可以上 App，但是实验叠图，不是产品默认可走区。12 帧没过门，TwinLite DA 是 BDD 驾驶可走，不是行人行道。用户要看真机效果 + 工程 adaptor，避免以后换模型改 analyzer/overlay。方案：1) RoadSurfaceBackend 协议，analyzer/overlay 只吃 RoadSurfaceMaps。2) live 默认 road_backend=twinlite，Core ML ~1MB。3) 红 DA + 绿车道像素 + 蓝中线（有真实 GuidancePath 就不画假梯形）。4) walk/drive harness 显式 road_backend=mc5，评测不被 TwinLite 污染。5) 换模型 = 新 Backend + 一个 enum case + OTA 键。auto_execute：用户已要求做 adaptor 并上 App。"
+    },
+    {
+      "agent": "Opus",
+      "type": "CONTEXT_SHARE",
+      "time": "2026-09-21 12:32",
+      "content": "Core ML 已转好：input image 640×360 RGB /255，da_logits+lane_logits (1,2,360,640)，mlmodelc ~1.0MB 在 VQASeeTwinLiteNet.mlmodelc。影响面：PerceptionConfig 默认变 twinlite；缺 road_backend 的旧 JSON 也会解码成 twinlite。harness-config-walk/drive 必须写 mc5。OTA road_backend 启动期加载，apply() 当场不换模型。"
+    },
+    {
+      "agent": "Opus",
+      "type": "EXECUTION",
+      "time": "2026-09-21 12:35",
+      "content": "已接线：RoadSurface.swift 协议+TwinLite/Mc5；LocalVisionAnalyzer 走 adaptor；CameraRiskOverlay 画 DA/车道/真实中线；Python road_backend + 诊断台下拉；pbxproj explicitFileTypes；setup_mac 校验。请 GPT/Sonnet/Gemini REVIEW 后 VOTE。"
+    },
+    {
+      "agent": "GPT",
+      "type": "REVIEW",
+      "time": "2026-09-21 12:42",
+      "content": "态度：有条件同意。子代理额度不足，按代码清单核对：analyzer 只写 maps.guidancePath/traversableGrid/laneGrid/segmentationCues，换模型不必改 analyze 主循环。off 已改为真正 off（不再 useMulticlass 偷跑 mc5）。风险：缺 road_backend 的旧 OTA JSON 会解码成 twinlite；apply() 不热加载模型，必须下次启动。walk/drive JSON 和 _overlay_harness_config_for_manifest 已锁 mc5。App 真机未 Xcode 编译。"
+    },
+    {
+      "agent": "Sonnet",
+      "type": "REVIEW",
+      "time": "2026-09-21 12:42",
+      "content": "态度：有条件同意。协议是换模型点。overlay 有 GuidancePath 就画真线，否则才回落假梯形。TwinLite 不填 segmentationCues，避免把驾驶 DA 喂给行人 caution。mc5 cue 已从 adaptor 传回。红区不是可以走。App 未看真机画面。"
+    },
+    {
+      "agent": "Gemini",
+      "type": "REVIEW",
+      "time": "2026-09-21 12:42",
+      "content": "态度：同意实验上 App。评测面：walk/drive 显式 mc5，不会被 live 默认 twinlite 带偏。Mac 墙钟不能当 ANE。产品口径必须写实验叠图，12 帧没过门。"
+    },
+    {
+      "agent": "GPT",
+      "type": "VOTE",
+      "time": "2026-09-21 12:42",
+      "content": "有条件赞成。"
+    },
+    {
+      "agent": "Sonnet",
+      "type": "VOTE",
+      "time": "2026-09-21 12:42",
+      "content": "有条件赞成。"
+    },
+    {
+      "agent": "Gemini",
+      "type": "VOTE",
+      "time": "2026-09-21 12:42",
+      "content": "赞成。"
+    },
+    {
+      "agent": "Opus",
+      "type": "VOTE",
+      "time": "2026-09-21 12:42",
+      "content": "赞成实验上 App + adaptor。验证：harness swift build 绿；pytest 112 passed。真机画面待 Xcode。"
+    }
+  ]
+}

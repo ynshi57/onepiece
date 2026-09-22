@@ -86,6 +86,77 @@ enum SockaddrParser {
     }
 }
 
+/// Timing knobs for LAN backend auto-discovery (Bonjour + /24 health sweep).
+enum BackendDiscoveryTimings {
+    /// How long `startStreaming` waits for Bonjour to auto-fill an address.
+    static let bonjourWaitSeconds: Double = 10
+    /// Poll interval while waiting for Bonjour resolution.
+    static let bonjourPollIntervalSeconds: Double = 0.2
+    /// Per-host timeout when probing `GET /health` during a subnet sweep.
+    static let healthProbeTimeoutSeconds: Double = 0.8
+    /// Max concurrent health probes per batch during a subnet sweep.
+    static let maxConcurrentHealthProbes = 24
+}
+
+/// Parses Bonjour TXT records and picks the most reliable host for WebSocket connect.
+enum BonjourTXTRecord {
+    static func dictionary(from txtRecordData: Data?) -> [String: String] {
+        guard let txtRecordData else {
+            return [:]
+        }
+        let raw = NetService.dictionary(fromTXTRecord: txtRecordData)
+        var out: [String: String] = [:]
+        for (key, data) in raw {
+            if let value = String(data: data, encoding: .utf8) {
+                out[key] = value
+            }
+        }
+        return out
+    }
+
+    static func path(from txtRecordData: Data?) -> String? {
+        guard let path = dictionary(from: txtRecordData)["path"], path.hasPrefix("/") else {
+            return nil
+        }
+        return path
+    }
+
+    /// Prefer explicit `ip` from TXT (Mac advertises Wi‑Fi address), then sockaddr
+    /// IPv4, then the `.local` hostname.
+    static func preferredHost(
+        txtRecordData: Data?,
+        addresses: [Data]?,
+        hostName: String?,
+        serviceName: String
+    ) -> String {
+        if let ip = dictionary(from: txtRecordData)["ip"], isUsableIPv4(ip) {
+            return ip
+        }
+        if let addresses {
+            for address in addresses {
+                if let ipv4 = SockaddrParser.ipv4String(fromSockaddr: address) {
+                    return ipv4
+                }
+            }
+        }
+        let rawHost = hostName ?? "\(serviceName).local"
+        return rawHost.hasSuffix(".") ? String(rawHost.dropLast()) : rawHost
+    }
+
+    private static func isUsableIPv4(_ ip: String) -> Bool {
+        let parts = ip.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else {
+            return false
+        }
+        for part in parts {
+            guard let value = Int(part), (0...255).contains(value) else {
+                return false
+            }
+        }
+        return parts[0] != "127"
+    }
+}
+
 /// Plans the fallback host sweep used when Bonjour fails to resolve a Mac backend.
 ///
 /// Auto-discovery relies on Bonjour (`_vqasee._tcp`), but that silently finds

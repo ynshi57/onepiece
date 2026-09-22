@@ -128,3 +128,20 @@
 - C1：Core ML 输出与 PyTorch 数值一致（同输入 max abs diff 在容差内）。
 - C2：UFLDv2 在 CamVid 帧上输出**成条的车道线**（肉眼 + 与真值车道方向一致），显著优于旧像素块。
 - C3：端上画出车道线折线；真机 p50 在延迟预算内（罗根签字）。
+
+## 图 18 接线（2026-09-20 · 离线 CamVid）
+
+团队已裁定「要线不要像素块」，但图 18 一直走 CamVid Lane 涂色关联 + `pavement_edge_walls` 喷边。本轮把 **UFLD 同一套表示**接到产品预览，不新训、不 bundle、不改 App。
+
+- 模块：`server-vqa/app/lane_rails.py`。涂料轨优先 UFLDv2 CULane ResNet18（`~/.cache/vqasee/models/ufldv2_culane_res18.pth`，PyTorch 推理，不再只认 Core ML）。解码走 `deploy/ios/decode_ufldv2_lanes.py`。官方 CULane `exist>num_row/2` 在 CamVid 上把 01TP 的 26 个行锚点整轨扔掉；离线图 18 用 `exist_min=8` 让模型点出线。一条 UFLD 实例若在行上急拐，只保留最长那段，丢掉跨路焊弦。
+- 占用一对：优先 **涂料-涂料**（不再让牙子票数压过模型轨）。牙子仍补 UFLD 只出一根的弯道（06R0）。
+- 对照帧（乔布斯看过图 18，**未过门**）：
+  - `0001TP_008430`：`paint_source=ufld`。GT 教师的 Z 折没了。左黄只有近场一小段（模型在 y≈643 才稳住左轨，更远的 275px 跳点被丢掉）；右黄贴 SEAT 一侧；蓝线夹在两轨之间但很短。CULane 城市场域差，不是再调阈值能补到骑行者的。
+  - `0006R0_f00960`：UFLD 只出近处右牙子；左虚线仍靠教师合并（`ufld+gt`）。蓝线沿右车道弯，看起来可用。左白实线模型没认出来。
+- C3 仍阻塞：未 bundle、ANE 未测。离线已能跑 pth，不依赖 mlpackage。
+
+## 无标注下一步（2026-09-21 · 乔布斯）
+
+CULane 城市帧未过看图门后，不退回 GT，也不重跑已否的 CurveLanes。改用 TwinLiteNet BDD 预训练（`twinlite_net.py`，RGB only）。
+
+01TP 图 18 / 18c **未过门**（近处可行驶红团，绿线斜杠）。06R0 弯道轨部分像，整体仍未过「各种街景」。本机无 CUDA/MPS，城市实例微调停在 GPU 阻塞。默认占用轨未切换。
