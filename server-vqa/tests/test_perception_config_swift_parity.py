@@ -15,6 +15,7 @@ from app import perception_config as pc
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SWIFT_CONFIG = REPO_ROOT / "ios-vqa-app" / "VQASee" / "VQASee" / "PerceptionConfig.swift"
+SWIFT_ENGINE = REPO_ROOT / "ios-vqa-app" / "VQASee" / "VQASee" / "LocalPerception.swift"
 
 
 def test_swift_config_file_exists():
@@ -29,12 +30,14 @@ def test_wire_threshold_keys_present_in_swift():
         assert key in swift, f"threshold wire key '{key}' missing from PerceptionConfig.swift"
 
 
-def test_wire_roi_shape_present_in_swift():
+def test_python_payload_has_no_roi_product_key():
+    payload = pc.default_config().to_dict()
+    assert "roi" not in payload
     swift = SWIFT_CONFIG.read_text(encoding="utf-8")
-    # ROIWire fields and the near/left/right set.
-    for token in ("var x: Double", "var y: Double", "var w: Double", "var h: Double",
-                  "var near:", "var left:", "var right:"):
-        assert token in swift, f"ROI wire token '{token}' missing from PerceptionConfig.swift"
+    assert "var roi: ROISet?" in swift
+    engine = SWIFT_ENGINE.read_text(encoding="utf-8")
+    assert "nearPathROI" not in engine
+    assert "nearPathStatus" not in engine
 
 
 def test_wire_role_and_model_switches_present_in_swift():
@@ -46,22 +49,4 @@ def test_wire_role_and_model_switches_present_in_swift():
 def test_default_threshold_values_match_swift_literals():
     swift = SWIFT_CONFIG.read_text(encoding="utf-8")
     t = pc.default_config().thresholds
-    for literal in (str(t.near_blocked_area), str(t.side_blocked_area),
-                    str(t.seg_near_caution_ratio), str(t.seg_side_caution_ratio),
-                    str(t.seg_traversable_pixel)):
-        assert literal in swift, f"default threshold literal '{literal}' not found in Swift defaults"
-
-
-def test_default_roi_values_match_swift_engine_constants():
-    """Swift default ROIs come from LocalPathGuidanceEngine constants; verify those
-    literals equal the Python defaults so the two stay in lock-step."""
-    engine = (REPO_ROOT / "ios-vqa-app" / "VQASee" / "VQASee" / "LocalPerception.swift").read_text(encoding="utf-8")
-    cfg = pc.default_config()
-    # near: x=0.25 y=0.00 w=0.50 h=0.58
-    assert "CGRect(x: 0.25, y: 0.00, width: 0.50, height: 0.58)" in engine
-    assert "CGRect(x: 0.00, y: 0.05, width: 0.42, height: 0.62)" in engine
-    assert "CGRect(x: 0.58, y: 0.05, width: 0.42, height: 0.62)" in engine
-    # And Python agrees.
-    assert (cfg.near_roi.x, cfg.near_roi.w) == (0.25, 0.50)
-    assert (cfg.left_roi.w, cfg.left_roi.h) == (0.42, 0.62)
-    assert cfg.right_roi.x == 0.58
+    assert str(t.seg_traversable_pixel) in swift

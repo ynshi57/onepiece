@@ -84,10 +84,9 @@ def test_scores_perfect_predictions(tmp_path):
     assert report["prediction_source"] == "ios_coreml_offline_harness"
 
 
-def test_gate_without_guidance_or_region_baseline_fails_loud(tmp_path):
-    """The legacy ROI-status gate is retired. If the caller asks to gate but only
-    ROI predictions exist (no guidance/region baseline), the tool must fail LOUD
-    (EXIT_NO_PREDICTIONS) instead of silently "passing" on a retired signal."""
+def test_gate_without_region_baseline_fails_loud(tmp_path):
+    """If the caller asks to gate but no region baseline exists, the tool must fail
+    LOUD (EXIT_NO_PREDICTIONS) instead of silently passing."""
     baseline_dir = tmp_path / "baselines"
     manifest = tmp_path / "m.jsonl"
     good = tmp_path / "good.jsonl"
@@ -95,8 +94,7 @@ def test_gate_without_guidance_or_region_baseline_fails_loud(tmp_path):
     _write_jsonl(good, [_pred("f1", "blocked"), _pred("f2", "caution")])
     env = {"VQASEE_EVAL_BASELINE_DIR": str(baseline_dir)}
 
-    # Saving produces no ROI baseline anymore (retired); no guidance/region either
-    # because these predictions carry no line/grid.
+    # Saving produces no baseline when predictions carry no traversable_grid.
     save = _run(["--manifest", str(manifest), "--predictions", str(good), "--baseline", "ios-clean"], env)
     assert save.returncode == 0, save.stderr
     payload = json.loads(save.stdout)
@@ -105,101 +103,8 @@ def test_gate_without_guidance_or_region_baseline_fails_loud(tmp_path):
 
     gated = _run(["--manifest", str(manifest), "--predictions", str(good), "--gate", "ios-clean"], env)
     assert gated.returncode == 3, (gated.returncode, gated.stderr, gated.stdout)
-    assert "no guidance/region baseline" in gated.stderr
+    assert "no region baseline" in gated.stderr
 
-
-# --- Guidance line (traversable path) evaluation -------------------------------
-
-def _line_path(xs):
-    """Straight-ish vertical line at lateral positions xs (bottom->up)."""
-    ys = [i / (len(xs) - 1) * 0.6 for i in range(len(xs))]
-    return {
-        "status": "ok",
-        "coverage": 1.0,
-        "source": "test",
-        "lines": [{
-            "kind": "primary",
-            "confidence": 1.0,
-            "points": [{"x": x, "y": y, "half_width": 0.1} for x, y in zip(xs, ys)],
-            "risk_segments": [],
-        }],
-    }
-
-
-def _manifest_with_gt_line(frame_id, xs):
-    row = dict(MANIFEST_ROWS[0])
-    row = {"frame_id": frame_id, "ground_truth": MANIFEST_ROWS[0]["ground_truth"],
-           "ground_truth_path": _line_path(xs)}
-    return row
-
-
-def test_guidance_line_report_present(tmp_path):
-    manifest = tmp_path / "m.jsonl"
-    preds = tmp_path / "p.jsonl"
-    _write_jsonl(manifest, [_manifest_with_gt_line("f1", [0.5, 0.5, 0.5])])
-    p = _pred("f1", "blocked")
-    p["guidance_path"] = _line_path([0.5, 0.5, 0.5])  # perfect match
-    _write_jsonl(preds, [p])
-
-    result = _run(["--manifest", str(manifest), "--predictions", str(preds)], {})
-    assert result.returncode == 0, result.stderr
-    gl = json.loads(result.stdout)["guidance_line"]
-    assert gl["both_ok"] == 1
-    assert gl["mean_deviation"] == 0.0
-    assert gl["hit_rate"] == 1.0
-    assert gl["false_go_frames"] == 0
-
-
-def test_guidance_gate_blocks_false_go_regression(tmp_path):
-    baseline_dir = tmp_path / "baselines"
-    manifest = tmp_path / "m.jsonl"
-    clean = tmp_path / "clean.jsonl"
-    regressed = tmp_path / "bad.jsonl"
-    _write_jsonl(manifest, [_manifest_with_gt_line("f1", [0.5, 0.5, 0.5])])
-
-    good = _pred("f1", "blocked")
-    good["guidance_path"] = _line_path([0.5, 0.5, 0.5])
-    _write_jsonl(clean, [good])
-
-    # Regressed: prediction claims a path while GT is insufficient -> false_go.
-    bad = _pred("f1", "blocked")
-    bad["guidance_path"] = _line_path([0.5, 0.5, 0.5])
-    bad_manifest = tmp_path / "bad_m.jsonl"
-    bad_gt = {"frame_id": "f1", "ground_truth": MANIFEST_ROWS[0]["ground_truth"],
-              "ground_truth_path": {"status": "insufficient", "coverage": 0.0, "source": "t", "lines": []}}
-    _write_jsonl(bad_manifest, [bad_gt])
-    _write_jsonl(regressed, [bad])
-
-    env = {"VQASEE_EVAL_BASELINE_DIR": str(baseline_dir)}
-    save = _run(["--manifest", str(manifest), "--predictions", str(clean), "--baseline", "gl"], env)
-    assert save.returncode == 0, save.stderr
-    gated = _run(["--manifest", str(bad_manifest), "--predictions", str(regressed), "--gate", "gl"], env)
-    payload = json.loads(gated.stdout)
-    assert payload["guidance_gate"]["passed"] is False
-    assert gated.returncode == 4
-
-
-def test_guidance_gate_passes_when_line_matches(tmp_path):
-    """Positive path: gating an unchanged (matching) guidance line against its own
-    baseline passes and exits 0 — the guidance line is now the authoritative gate."""
-    baseline_dir = tmp_path / "baselines"
-    manifest = tmp_path / "m.jsonl"
-    clean = tmp_path / "clean.jsonl"
-    _write_jsonl(manifest, [_manifest_with_gt_line("f1", [0.5, 0.5, 0.5])])
-    good = _pred("f1", "blocked")
-    good["guidance_path"] = _line_path([0.5, 0.5, 0.5])
-    _write_jsonl(clean, [good])
-
-    env = {"VQASEE_EVAL_BASELINE_DIR": str(baseline_dir)}
-    save = _run(["--manifest", str(manifest), "--predictions", str(clean), "--baseline", "gl"], env)
-    assert save.returncode == 0, save.stderr
-    gated = _run(["--manifest", str(manifest), "--predictions", str(clean), "--gate", "gl"], env)
-    assert gated.returncode == 0, gated.stderr
-    payload = json.loads(gated.stdout)
-    assert payload["guidance_gate"]["passed"] is True
-
-
-# --- Role-conditioned region evaluation (walk role: sidewalk vs road) ----------
 
 def _grid(cells_rows):
     """Build a wire grid from a list of rows of 0/1."""
@@ -208,6 +113,27 @@ def _grid(cells_rows):
     flat = [int(v) for row in cells_rows for v in row]
     return {"cols": cols, "rows": rows, "cells": flat}
 
+
+def test_region_gate_passes_when_grid_matches(tmp_path):
+    baseline_dir = tmp_path / "baselines"
+    manifest = tmp_path / "m.jsonl"
+    clean = tmp_path / "clean.jsonl"
+    grid = _grid([[1, 0], [1, 0]])
+    _write_jsonl(manifest, [{"frame_id": "f1", "ground_truth": MANIFEST_ROWS[0]["ground_truth"], "traversable_grid": grid}])
+    good = _pred("f1", "blocked")
+    good["traversable_grid"] = grid
+    _write_jsonl(clean, [good])
+
+    env = {"VQASEE_EVAL_BASELINE_DIR": str(baseline_dir)}
+    save = _run(["--manifest", str(manifest), "--predictions", str(clean), "--baseline", "rg"], env)
+    assert save.returncode == 0, save.stderr
+    gated = _run(["--manifest", str(manifest), "--predictions", str(clean), "--gate", "rg"], env)
+    assert gated.returncode == 0, gated.stderr
+    payload = json.loads(gated.stdout)
+    assert payload["region_gate"]["passed"] is True
+
+
+# --- Role-conditioned region evaluation (walk role: sidewalk vs road) ----------
 
 def test_role_manifest_quantifies_road_as_sidewalk_defect(tmp_path):
     """With a walk-role manifest (sidewalk=primary, road=caution) the tool must

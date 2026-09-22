@@ -1,34 +1,5 @@
 import SwiftUI
 
-private extension LocalPathStatus {
-    var overlayColor: Color {
-        switch self {
-        case .candidateOpen:
-            return .cyan
-        case .caution:
-            return Theme.riskWarning
-        case .blocked:
-            return Theme.riskDanger
-        case .unknown:
-            return .gray
-        }
-    }
-
-    var overlayLabel: String {
-        switch self {
-        case .candidateOpen:
-            return "通行候选区"
-        case .caution:
-            return "通行区域需注意"
-        case .blocked:
-            return "通行区域疑似被占用"
-        case .unknown:
-            return "通行区域信息不足"
-        }
-    }
-}
-
-
 struct CameraRiskOverlay: View {
     let signal: LocalPerceptionSignal
     let mode: AssistanceMode
@@ -93,8 +64,7 @@ struct CameraRiskOverlay: View {
 
     private var shouldDrawGuidanceCorridor: Bool {
         let guidance = signal.pathGuidance
-        if guidance.nearPathStatus == .candidateOpen
-            && guidance.blockedRegions.isEmpty
+        if guidance.blockedRegions.isEmpty
             && guidance.uncertainRegions.isEmpty
             && guidance.reasons.contains(.yoloOnly) {
             return false
@@ -123,8 +93,8 @@ struct CameraRiskOverlay: View {
                 let guidance = signal.pathGuidance
                 if shouldDrawGuidanceCorridor, let corridor = guidance.guidanceCorridor {
                     let polygon = guidanceCorridorPath(from: corridor, in: size)
-                    let color = guidance.nearPathStatus.overlayColor
-                    context.fill(polygon, with: .color(color.opacity(guidance.nearPathStatus == .candidateOpen ? 0.08 : 0.20)))
+                    let color = guidance.blockedRegions.isEmpty ? Color.blue : Color.orange
+                    context.fill(polygon, with: .color(color.opacity(guidance.blockedRegions.isEmpty ? 0.08 : 0.20)))
                     context.stroke(
                         polygon,
                         with: .color(color.opacity(0.86)),

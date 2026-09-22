@@ -276,12 +276,11 @@ enum LocalDepthCapabilityDetector {
 }
 
 struct LocalSegmentationCueSignal: Sendable, Equatable {
-    var nearPathTraversableRatio: Double? = nil
-    var leftFrontTraversableRatio: Double? = nil
-    var rightFrontTraversableRatio: Double? = nil
+    /// Whole-frame traversable sample ratio. Not a three-zone ROI product signal.
+    var traversableRatio: Double? = nil
 
     var hasCoverage: Bool {
-        nearPathTraversableRatio != nil || leftFrontTraversableRatio != nil || rightFrontTraversableRatio != nil
+        traversableRatio != nil
     }
 }
 
@@ -337,10 +336,6 @@ struct LaneGrid: Sendable, Equatable {
 }
 
 struct LocalPathGuidanceSignal: Sendable, Equatable {
-    var nearPathStatus: LocalPathStatus = .unknown
-    var leftFrontStatus: LocalPathStatus = .unknown
-    var rightFrontStatus: LocalPathStatus = .unknown
-    var focusDirection: LocalVisionDirection = .unknown
     var confidence: Double = 0
     /// Normalized Vision-style rects (origin lower-left). They are candidates,
     /// not navigation permissions.
@@ -353,10 +348,6 @@ struct LocalPathGuidanceSignal: Sendable, Equatable {
     var segmentationCues = LocalSegmentationCueSignal()
 
     static let empty = LocalPathGuidanceSignal(
-        nearPathStatus: .unknown,
-        leftFrontStatus: .unknown,
-        rightFrontStatus: .unknown,
-        focusDirection: .unknown,
         confidence: 0,
         guidanceCorridor: nil,
         blockedRegions: [],
@@ -369,38 +360,27 @@ struct LocalPathGuidanceSignal: Sendable, Equatable {
 }
 
 enum LocalPathGuidanceEngine {
-    static let nearPathROI = CGRect(x: 0.25, y: 0.00, width: 0.50, height: 0.58)
-    static let leftFrontROI = CGRect(x: 0.00, y: 0.05, width: 0.42, height: 0.62)
-    static let rightFrontROI = CGRect(x: 0.58, y: 0.05, width: 0.42, height: 0.62)
-
     static func evaluate(
         perception: LocalPerceptionSignal,
         isTooDark: Bool,
         isLikelyCovered: Bool,
         depthCapability: LocalPathCapability = LocalDepthCapabilityDetector.currentDepthCapability(),
         segmentationCues: LocalSegmentationCueSignal = LocalSegmentationCueSignal(),
-        config: PerceptionConfig = .default
+        config _: PerceptionConfig = .default
     ) -> LocalPathGuidanceSignal {
-        let nearPathROI = config.nearROI
-        let leftFrontROI = config.leftROI
-        let rightFrontROI = config.rightROI
         let segmentationCapability: LocalPathCapability = segmentationCues.hasCoverage ? .active : .unsupported
         var reasons: [LocalPathReason] = [
             depthCapability == .hardwareAvailableButInactive ? .depthHardwareAvailableButInactive : .depthUnsupported,
             segmentationCapability == .active ? .segmentationActive : .segmentationUnsupported,
             .yoloOnly,
         ]
+        let riskObjects = perception.objects.filter { $0.kind.isPriorityRisk }
+        let blocked = riskObjects.compactMap(\.normalizedBoundingBox)
         if isLikelyCovered {
             reasons.append(.likelyCovered)
             return LocalPathGuidanceSignal(
-                nearPathStatus: .unknown,
-                leftFrontStatus: .unknown,
-                rightFrontStatus: .unknown,
-                focusDirection: .unknown,
                 confidence: 0.2,
-                guidanceCorridor: nearPathROI,
-                blockedRegions: [],
-                uncertainRegions: [nearPathROI],
+                uncertainRegions: blocked.isEmpty ? [CGRect(x: 0.15, y: 0.0, width: 0.70, height: 0.55)] : [],
                 reasons: reasons,
                 depthCapability: depthCapability,
                 segmentationCapability: segmentationCapability,
@@ -410,119 +390,27 @@ enum LocalPathGuidanceEngine {
         if isTooDark {
             reasons.append(.lowLight)
             return LocalPathGuidanceSignal(
-                nearPathStatus: .unknown,
-                leftFrontStatus: .unknown,
-                rightFrontStatus: .unknown,
-                focusDirection: .unknown,
                 confidence: 0.28,
-                guidanceCorridor: nearPathROI,
-                blockedRegions: [],
-                uncertainRegions: [nearPathROI],
+                uncertainRegions: [CGRect(x: 0.15, y: 0.0, width: 0.70, height: 0.55)],
                 reasons: reasons,
                 depthCapability: depthCapability,
                 segmentationCapability: segmentationCapability,
                 segmentationCues: segmentationCues
             )
         }
-
-        let riskObjects = perception.objects.filter { $0.kind.isPriorityRisk }
-        let nearObjects = riskObjects.filter { intersects($0.normalizedBoundingBox, nearPathROI) }
-        let leftObjects = riskObjects.filter { intersects($0.normalizedBoundingBox, leftFrontROI) }
-        let rightObjects = riskObjects.filter { intersects($0.normalizedBoundingBox, rightFrontROI) }
-
-        if !nearObjects.isEmpty { reasons.append(.objectInNearPath) }
-        if !leftObjects.isEmpty { reasons.append(.objectInLeftFront) }
-        if !rightObjects.isEmpty { reasons.append(.objectInRightFront) }
+        if !riskObjects.isEmpty { reasons.append(.objectInNearPath) }
         if perception.depthCues.nearDrop == .possible || perception.depthCues.nearestObstacleDirection != .unknown {
             reasons.append(.depthNearObstacle)
         }
-
-        var nearStatus = status(for: nearObjects, blockedThreshold: config.thresholds.nearBlockedArea)
-        var leftStatus = status(for: leftObjects, blockedThreshold: config.thresholds.sideBlockedArea)
-        var rightStatus = status(for: rightObjects, blockedThreshold: config.thresholds.sideBlockedArea)
-        if perception.depthCues.nearDrop == .possible || perception.depthCues.nearestObstacleDirection == .center {
-            nearStatus = maxSeverity(nearStatus, .caution)
-        }
-        if perception.depthCues.nearestObstacleDirection == .left {
-            leftStatus = maxSeverity(leftStatus, .caution)
-        }
-        if perception.depthCues.nearestObstacleDirection == .right {
-            rightStatus = maxSeverity(rightStatus, .caution)
-        }
-        if let ratio = segmentationCues.nearPathTraversableRatio, ratio < config.thresholds.segNearCautionRatio {
-            nearStatus = maxSeverity(nearStatus, .caution)
-            reasons.append(.segmentationNearBlocked)
-        }
-        if let ratio = segmentationCues.leftFrontTraversableRatio, ratio < config.thresholds.segSideCautionRatio {
-            leftStatus = maxSeverity(leftStatus, .caution)
-        }
-        if let ratio = segmentationCues.rightFrontTraversableRatio, ratio < config.thresholds.segSideCautionRatio {
-            rightStatus = maxSeverity(rightStatus, .caution)
-        }
-        let focus = focusDirection(near: nearObjects, left: leftObjects, right: rightObjects, depth: perception.depthCues.nearestObstacleDirection)
-        let confidence = max(
-            riskObjects.map(\.confidence).max() ?? 0.55,
-            nearStatus == .candidateOpen ? 0.55 : 0
-        )
-        let blocked = riskObjects.compactMap(\.normalizedBoundingBox)
-
+        let confidence = max(riskObjects.map(\.confidence).max() ?? 0.55, blocked.isEmpty ? 0.55 : 0)
         return LocalPathGuidanceSignal(
-            nearPathStatus: nearStatus,
-            leftFrontStatus: leftStatus,
-            rightFrontStatus: rightStatus,
-            focusDirection: focus,
             confidence: min(confidence, 1.0),
-            guidanceCorridor: nearPathROI,
             blockedRegions: blocked,
-            uncertainRegions: [],
             reasons: Array(reasons.prefix(8)),
             depthCapability: depthCapability,
             segmentationCapability: segmentationCapability,
             segmentationCues: segmentationCues
         )
-    }
-
-    private static func status(for objects: [LocalPerceptionObject], blockedThreshold: Double) -> LocalPathStatus {
-        guard !objects.isEmpty else {
-            return .candidateOpen
-        }
-        if objects.contains(where: { object in
-            object.confidence >= blockedThreshold && (object.normalizedBoundingBox?.area ?? 0.04) >= 0.018
-        }) {
-            return .blocked
-        }
-        return .caution
-    }
-
-    private static func maxSeverity(_ lhs: LocalPathStatus, _ rhs: LocalPathStatus) -> LocalPathStatus {
-        func rank(_ status: LocalPathStatus) -> Int {
-            switch status {
-            case .candidateOpen: return 0
-            case .unknown: return 1
-            case .caution: return 2
-            case .blocked: return 3
-            }
-        }
-        return rank(lhs) >= rank(rhs) ? lhs : rhs
-    }
-
-    private static func focusDirection(
-        near: [LocalPerceptionObject],
-        left: [LocalPerceptionObject],
-        right: [LocalPerceptionObject],
-        depth: LocalVisionDirection
-    ) -> LocalVisionDirection {
-        if !near.isEmpty { return .center }
-        if depth != .unknown { return depth }
-        let leftScore = left.map(\.confidence).max() ?? 0
-        let rightScore = right.map(\.confidence).max() ?? 0
-        if leftScore == 0 && rightScore == 0 { return .unknown }
-        return leftScore >= rightScore ? .left : .right
-    }
-
-    private static func intersects(_ rect: CGRect?, _ roi: CGRect) -> Bool {
-        guard let rect else { return false }
-        return rect.intersection(roi).area > 0.006 || roi.contains(CGPoint(x: rect.midX, y: rect.midY))
     }
 }
 
@@ -619,12 +507,12 @@ struct LocalPerceptionSignal: Sendable, Equatable {
 
 extension LocalPathGuidanceSignal {
     var backendContext: String {
-        guard nearPathStatus != .unknown || !reasons.isEmpty else {
+        guard !blockedRegions.isEmpty || !reasons.isEmpty else {
             return ""
         }
-        var parts = ["本地通行区域：近处\(nearPathStatus.chineseLabel)"]
-        if focusDirection != .unknown {
-            parts.append("关注\(focusDirection.chineseLabel)")
+        var parts: [String] = []
+        if !blockedRegions.isEmpty {
+            parts.append("本地障碍框 \(blockedRegions.count)")
         }
         switch depthCapability {
         case .unsupported:
@@ -711,8 +599,7 @@ final class LocalPerceptionCoreMLRunner {
         var loadedModel: VNCoreMLModel?
         for modelName in modelNames {
             guard let modelURL = bundle.url(forResource: modelName, withExtension: "mlmodelc"),
-                  let mlModel = try? MLModel(contentsOf: modelURL),
-                  let visionModel = try? VNCoreMLModel(for: mlModel)
+                  let visionModel = CoreMLPlatformLoader.visionModel(at: modelURL)
             else {
                 continue
             }

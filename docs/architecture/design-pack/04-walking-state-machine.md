@@ -1,6 +1,8 @@
 # 04 — 走路模式状态机
 
-受众：产品、iOS、后端。
+受众：产品、iOS。现行规定见 [`docs/CURRENT.md`](../../CURRENT.md)。
+
+走路首先是**看路**：本地 TwinLite + YOLO 出画面。Qwen 不是这一阶段的主路径。
 
 ## 状态机
 

@@ -8,28 +8,15 @@ from typing import Iterable
 import numpy as np
 from PIL import Image
 
-from app.path_roi import (
-    LEFT_ROI,
-    NEAR_ROI,
-    RIGHT_ROI,
-    focus_direction,
-    roi_coverage,
-    status_from_coverage,
-)
+from app.region_grid import downsample_mask_to_grid, grid_to_wire
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 __all__ = [
     "IMAGE_EXTENSIONS",
-    "NEAR_ROI",
-    "LEFT_ROI",
-    "RIGHT_ROI",
     "iter_images",
     "find_mask",
     "load_mask",
-    "roi_coverage",
-    "status_from_coverage",
-    "focus_direction",
     "row_for_image",
     "create_manifest_from_folders",
 ]
@@ -66,26 +53,18 @@ def row_for_image(*, image_path: Path, images_dir: Path, mask_path: Path | None,
         "scene_tags": scene_tags,
     }
     if mask_path is None:
-        row["ground_truth"] = {"near_path_status": "unknown", "left_front_status": "unknown", "right_front_status": "unknown", "focus_direction": "unknown"}
+        row["ground_truth"] = {}
         row["ground_truth_source"] = "missing_mask"
         return row
     mask = load_mask(mask_path, threshold=threshold)
-    near_cov = roi_coverage(mask, NEAR_ROI)
-    left_cov = roi_coverage(mask, LEFT_ROI)
-    right_cov = roi_coverage(mask, RIGHT_ROI)
-    near_status = status_from_coverage(near_cov)
-    left_status = status_from_coverage(left_cov)
-    right_status = status_from_coverage(right_cov)
-    row["ground_truth"] = {
-        "near_path_status": near_status,
-        "left_front_status": left_status,
-        "right_front_status": right_status,
-        "focus_direction": focus_direction(near_status, left_status, right_status),
-    }
+    gt_cells = downsample_mask_to_grid(np.asarray(mask, dtype=bool))
+    coverage = float(np.mean(np.asarray(mask, dtype=bool)))
+    row["ground_truth"] = {}
     row["ground_truth_source"] = "traversability_mask"
+    row["traversable_grid"] = grid_to_wire(gt_cells)
     row["mask"] = mask_path.name
     row["mask_path"] = str(mask_path.resolve())
-    row["mask_coverage"] = {"near_path": near_cov, "left_front": left_cov, "right_front": right_cov}
+    row["mask_coverage"] = {"frame": round(coverage, 4)}
     return row
 
 

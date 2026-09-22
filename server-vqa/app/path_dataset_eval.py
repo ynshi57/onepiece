@@ -90,6 +90,7 @@ def evaluate_path_guidance(
     false_blocks: list[str] = []
     missing_predictions: list[str] = []
     labeled = 0
+    three_zone_labeled = 0
     exact_status_matches = 0
     exact_direction_matches = 0
     unknown_predictions = 0
@@ -97,7 +98,8 @@ def evaluate_path_guidance(
     for row in manifest_rows:
         frame_id = _frame_id(row)
         truth = _path_payload(row, "ground_truth")
-        if not truth:
+        has_region_grid = isinstance(row.get("traversable_grid"), dict)
+        if not truth and not has_region_grid:
             continue
         labeled += 1
         scene = str(row.get("split") or row.get("scene") or "unknown")
@@ -107,6 +109,13 @@ def evaluate_path_guidance(
         if not prediction:
             missing_predictions.append(frame_id)
             prediction = {}
+
+        has_three_zone = any(
+            field in truth for field in ("near_path_status", "left_front_status", "right_front_status")
+        )
+        if not has_three_zone:
+            continue
+        three_zone_labeled += 1
 
         for field in ["near_path_status", "left_front_status", "right_front_status"]:
             expected = _clean_status(truth.get(field))
@@ -127,13 +136,13 @@ def evaluate_path_guidance(
         if expected_direction == actual_direction:
             exact_direction_matches += 1
 
-    total_status_fields = labeled * 3
+    total_status_fields = three_zone_labeled * 3
     return {
         "frame_count": len(manifest_rows),
         "labeled_frames": labeled,
         "scene_counts": dict(scene_counts),
         "status_accuracy": round(exact_status_matches / total_status_fields, 4) if total_status_fields else None,
-        "focus_direction_accuracy": round(exact_direction_matches / labeled, 4) if labeled else None,
+        "focus_direction_accuracy": round(exact_direction_matches / three_zone_labeled, 4) if three_zone_labeled else None,
         "unknown_prediction_rate": round(unknown_predictions / total_status_fields, 4) if total_status_fields else None,
         "risk_miss_count": len(risk_misses),
         "false_block_count": len(false_blocks),
@@ -165,7 +174,7 @@ def recommendations(
 ) -> list[str]:
     recs: list[str] = []
     if not labeled:
-        return ["Add ground_truth labels before evaluating path guidance."]
+        return ["Add traversable_grid or ground_truth labels before evaluating path guidance."]
     if missing_predictions:
         recs.append("Run LocalPathGuidanceSignal on all labeled frames; some frames have no predictions.")
     if risk_misses:

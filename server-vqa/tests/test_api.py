@@ -596,8 +596,8 @@ def test_read_manifest_eval_role_maps_drive_and_walk(tmp_path):
 
     overlaid = _overlay_harness_config_for_manifest(default_config().to_dict(), "vehicle")
     assert overlaid["role"] == "vehicle"
-    assert overlaid["use_multiclass_segmentation"] is True
-    assert overlaid["road_backend"] == "mc5"
+    assert overlaid["use_multiclass_segmentation"] is False
+    assert overlaid["road_backend"] == "twinlite"
 
 
 def test_ios_harness_ui_drive_manifest_states_vehicle_role():
@@ -667,6 +667,8 @@ def test_ios_harness_ui_test_manifest_quotes_small_runtime_not_full_701():
     assert resp.status_code == 200
     assert "机动车评估" in resp.text
     assert "日常迭代 test 集" in resp.text
+    assert "TwinLiteNet" in resp.text
+    assert "多类分割" not in resp.text
     assert "35–45 分钟" not in resp.text
     assert "701 帧在 Intel" not in resp.text
 
@@ -985,10 +987,6 @@ def _write_capability_baselines(
     region_false_go=0,
     region_miss=83,
     scored=701,
-    hit=0.85,
-    line_false_go=0,
-    missed_line=10,
-    frames=701,
     include_role=False,
     road_as_primary=0.807,
     primary_recall=0.639,
@@ -1107,25 +1105,6 @@ def _write_capability_baselines(
         ),
         encoding="utf-8",
     )
-    (baseline_dir / "camvid-ios-guidance.json").write_text(
-        _json.dumps(
-            {
-                "name": "camvid-ios-guidance",
-                "source": "ios_coreml_offline_harness_guidance",
-                "metrics": {
-                    "hit_rate": hit,
-                    "pred_coverage": 0.85,
-                    "mean_deviation": 0.09,
-                    "false_go_frames": line_false_go,
-                    "missed_path_frames": missed_line,
-                    "frames": frames,
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
 def test_diagnostics_overview_shows_capability_verdict(monkeypatch, tmp_path):
     baseline_dir = tmp_path / "baselines"
     _write_capability_baselines(baseline_dir)
@@ -1136,7 +1115,8 @@ def test_diagnostics_overview_shows_capability_verdict(monkeypatch, tmp_path):
     text = response.text
     # Leads with the single capability verdict, not scattered eval cards.
     assert "iPhone 本地感知能力总览" in text
-    assert "看得准" in text and "画得对" in text and "安全侧" in text
+    assert "看得准" in text and "安全侧" in text
+    assert "画得对" not in text
     assert "IoU 0.77" in text
     # Verdict must reflect the safe-but-conservative state and name the fix owner.
     assert "偏保守" in text
@@ -1166,7 +1146,6 @@ def test_capability_snapshot_flags_regression_vs_baseline(monkeypatch, tmp_path)
         _json.dumps(
             {
                 "region": {"mean_iou": 0.70},
-                "guidance_line": {"hit_rate": 0.85},
             }
         ),
         encoding="utf-8",

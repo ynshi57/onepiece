@@ -1,8 +1,8 @@
 # VQASee 研发架构图
 
-Date: 2026-08-07
+Date: 2026-09-22 按 CURRENT 重写开篇。
 
-面向受众：iOS、后端、模型服务、测试与部署研发人员。
+面向研发。现行产品现状见 [`docs/CURRENT.md`](../CURRENT.md)。
 
 ## 1. 总体架构图
 
@@ -13,7 +13,7 @@ flowchart LR
     subgraph ios["iOS 前端"]
         ui["体验与交互层<br/>SwiftUI<br/>ContentView / AssistanceScreen<br/>ModeBar / AnswerPanel / SettingsView"]
         capture["设备采集层<br/>AVFoundation CameraCapture<br/>CoreLocation GPS<br/>SpeechRecognition<br/>Apple Vision OCR"]
-        localVision["本地感知层<br/>LocalVisionAnalyzer<br/>Apple Vision 人形检测<br/>YOLO11nObject Core ML<br/>LocalPerceptionSignal"]
+        localVision["本地感知层<br/>YOLO11n · TwinLite 路面/车道"]
         feedback["反馈策略层<br/>CameraRiskOverlay<br/>VoiceFeedbackPolicy / SpeechGate<br/>AVSpeechSynthesizer"]
         transport["传输与发现层<br/>Networking WebSocket<br/>BonjourDiscovery<br/>Direct WS / Relay WS"]
         recorder["诊断闭环<br/>DiagnosticCaptureRecorder<br/>JPEG + manifest.jsonl"]

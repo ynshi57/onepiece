@@ -1,8 +1,8 @@
 # VQASee 架构图与场景流程图
 
-Date: 2026-08-07
+Date: 2026-09-22 按 CURRENT 重写开篇。旧 8/7 叙事作废。
 
-> 产品定位：VQASee 是语音优先的视觉风险辅助系统，服务行人、骑行者、驾驶者、低视力用户和注意力可能分散的人。它提醒风险、边界、物体和不确定性；不承诺“可以走/可以开”，不替代用户观察或驾驶责任。
+> 产品定位：视觉引导优先，语音辅助确认。TwinLite 是 live 路面默认。不承诺可以走/可以开。详见 [`docs/CURRENT.md`](../CURRENT.md)。
 
 ## 1. 总体系统架构
 
@@ -15,9 +15,10 @@ graph TD
         PREVIEW[全屏 CameraPreview]
         LOCAL[LocalVisionAnalyzer]
         YOLO[YOLO11nObject Core ML]
-        VISION[Apple Vision<br/>人形检测/OCR]
+        TWIN[TwinLiteNet 路面/车道]
+        VISION[Apple Vision]
         SIGNAL[LocalPerceptionSignal]
-        OVERLAY[CameraRiskOverlay<br/>框/标签/边界 cue]
+        OVERLAY[CameraRiskOverlay · 线/区/框]
         VOICE[VoiceFeedbackPolicy<br/>即时语音/抑制原因]
         REC[DiagnosticCaptureRecorder<br/>本机诊断录制]
         WS[WebSocket Transport]
@@ -29,15 +30,17 @@ graph TD
         QWEN[Qwen / llama-server]
         FUSION[Fusion + Response Schema]
         OFFLINE[Offline Diagnostic Analyzer]
-        ROAD[RoadBoundary Prototype<br/>未来: YOLOPv2/HybridNets/Depth]
+        ROAD[TwinLite live · mc5/UFLDv2 下一阶段]
     end
 
     CAM --> PREVIEW
     CAM --> LOCAL
     LOCAL --> VISION
     LOCAL --> YOLO
+    LOCAL --> TWIN
     VISION --> SIGNAL
     YOLO --> SIGNAL
+    TWIN --> SIGNAL
     SIGNAL --> OVERLAY
     SIGNAL --> VOICE
     SIGNAL --> REC

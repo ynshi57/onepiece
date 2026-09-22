@@ -36,6 +36,8 @@ from app.case_store import (
     dataset_key_from_manifest,
     failure_label as case_failure_label,
     frame_failure_types,
+    _grid_cells,
+    guidance_payloads,
     list_cases,
     load_case,
     set_status as case_set_status,
@@ -52,8 +54,6 @@ from app.open_dataset_adapters import (
     camvid_traversable_colors,
     _camvid_traversability_mask,
 )
-from app.guidance_path import GuidancePath, GuidancePathError
-from app.guidance_path_eval import evaluate_guidance_paths
 from app.region_grid import evaluate_region_grids
 from app.path_dataset_eval import evaluate_path_guidance, load_jsonl
 from app.path_dataset_import import create_manifest_from_folders
@@ -256,7 +256,6 @@ def delete_label(session_id: str, label_index: int) -> dict:
 # gate-protected baselines (the authoritative current level) and turn them into a
 # plain-language verdict + trend so the landing page can lead with that answer.
 CAPABILITY_REGION_BASELINE = "camvid-ios-region"
-CAPABILITY_GUIDANCE_BASELINE = "camvid-ios-guidance"
 CAPABILITY_ROLE_BASELINE = "camvid-ios-role"
 CAPABILITY_DRIVE_BASELINE = "camvid-ios-drive"
 CAPABILITY_LANE_BASELINE = "camvid-ios-lane"
@@ -290,20 +289,13 @@ def _capability_snapshot() -> dict:
     fabricating a fake score (no silent pass).
     """
     region_b = load_baseline(CAPABILITY_REGION_BASELINE)
-    guidance_b = load_baseline(CAPABILITY_GUIDANCE_BASELINE)
-    missing = []
     if not region_b:
-        missing.append("可走区域")
-    if not guidance_b:
-        missing.append("引导线")
-    if missing:
         return {
             "available": False,
-            "reason": "尚无「" + "/".join(missing) + "」能力基线。请先在数据集上跑一次「iPhone 真身评估」并保存基线，这里才能给出定级。",
+            "reason": "尚无「可走区域」能力基线。请先在数据集上跑一次「iPhone 真身评估」并保存基线，这里才能给出定级。",
         }
 
     region = region_b.get("metrics", {}) if isinstance(region_b.get("metrics"), dict) else {}
-    guidance = guidance_b.get("metrics", {}) if isinstance(guidance_b.get("metrics"), dict) else {}
 
     def _f(d: dict, k: str) -> float:
         try:
@@ -323,13 +315,6 @@ def _capability_snapshot() -> dict:
     region_false_go = _i(region, "region_false_go_frames")
     region_miss = _i(region, "region_miss_frames")
     scored = _i(region, "scored")
-    hit = _f(guidance, "hit_rate")
-    coverage = _f(guidance, "pred_coverage")
-    deviation = _f(guidance, "mean_deviation")
-    line_false_go = _i(guidance, "false_go_frames")
-    missed_line = _i(guidance, "missed_path_frames")
-    frames = _i(guidance, "frames")
-
     # Role-conditioned (walk) baseline is optional: it measures against a DIFFERENT
     # truth definition (sidewalk=walkable, road=caution), so we surface it as its own
     # honest section rather than folding it into the binary-GT `safe` verdict.
@@ -396,7 +381,7 @@ def _capability_snapshot() -> dict:
             "scored": _i(om, "scored"),
         }
 
-    safe = region_false_go == 0 and line_false_go == 0
+    safe = region_false_go == 0
     if iou >= 0.85:
         level = "优"
     elif iou >= 0.70:
@@ -411,18 +396,16 @@ def _capability_snapshot() -> dict:
     if safe and conservative:
         summary = f"当前「{level}·偏保守但安全」：敢报的基本准，但该说能走的地方它常常没说。"
     elif safe:
-        summary = f"当前「{level}·稳」：可走区域和引导线都准，且不冒进。"
+        summary = f"当前「{level}·稳」：可走区域准，且不冒进。"
     else:
-        summary = f"当前「{level}·有冒进风险」：存在把不可走当可走 / 无路硬画的帧，需优先修安全侧。"
+        summary = f"当前「{level}·有冒进风险」：存在把不可走当可走的帧，需优先修安全侧。"
 
     # Weakness → next step (owner is 全麦 for model recall).
     weakness_bits = []
     if region_miss:
         weakness_bits.append(f"{region_miss}/{scored} 帧漏可走（召回 {recall:.0%}）")
-    if missed_line:
-        weakness_bits.append(f"{missed_line}/{frames} 帧漏引导线")
     if not safe:
-        weakness_bits.append(f"区域误判可走 {region_false_go} 帧 / 引导线硬画 {line_false_go} 帧")
+        weakness_bits.append(f"区域误判可走 {region_false_go} 帧")
     if weakness_bits:
         weakness = "，".join(weakness_bits) + "。建议用真机帧微调提升召回（全麦），Phase 2 已在留出集证明可将漏报降到 0。"
     else:
@@ -433,22 +416,18 @@ def _capability_snapshot() -> dict:
     trend = {"status": "first", "text": "已建立门禁基线：下次「iPhone 真身评估」若退步会被门禁拦住。"}
     if isinstance(report, dict):
         r_live = report.get("region") if isinstance(report.get("region"), dict) else {}
-        g_live = report.get("guidance_line") if isinstance(report.get("guidance_line"), dict) else {}
         d_iou = _f(r_live, "mean_iou") - iou
-        d_hit = _f(g_live, "hit_rate") - hit
         eps = 1e-4
-        if abs(d_iou) < eps and abs(d_hit) < eps:
+        if abs(d_iou) < eps:
             trend = {"status": "flat", "text": "最近一次评估与门禁基线持平：当前即基线，没有退步。"}
         else:
-            parts = []
-            if abs(d_iou) >= eps:
-                parts.append(f"可走区域 IoU {'+' if d_iou >= 0 else ''}{d_iou:.03f}")
-            if abs(d_hit) >= eps:
-                parts.append(f"引导线命中 {'+' if d_hit >= 0 else ''}{d_hit:.03f}")
-            worse = d_iou < -eps or d_hit < -eps
+            worse = d_iou < -eps
             trend = {
                 "status": "down" if worse else "up",
-                "text": ("⚠ 相比基线退步：" if worse else "↑ 相比基线变好：") + "、".join(parts),
+                "text": (
+                    ("⚠ 相比基线退步：" if worse else "↑ 相比基线变好：")
+                    + f"可走区域 IoU {'+' if d_iou >= 0 else ''}{d_iou:.03f}"
+                ),
             }
 
     return {
@@ -467,14 +446,6 @@ def _capability_snapshot() -> dict:
             "region_false_go_frames": region_false_go,
             "region_miss_frames": region_miss,
             "scored": scored,
-        },
-        "guidance": {
-            "hit_rate": hit,
-            "pred_coverage": coverage,
-            "mean_deviation": deviation,
-            "false_go_frames": line_false_go,
-            "missed_path_frames": missed_line,
-            "frames": frames,
         },
         "role": role_section,
         "drive": drive_section,
@@ -496,7 +467,6 @@ def _capability_scorecard_html() -> str:
         )
 
     region = snap["region"]
-    guidance = snap["guidance"]
     trend = snap["trend"]
     safe = snap["safe"]
 
@@ -512,24 +482,15 @@ def _capability_scorecard_html() -> str:
         "<p class='explain'>iPhone 分割出的可走区域与 CamVid 真值的像素重合度。精度高=不乱说能走。</p>"
         "</div>"
     )
-    line_card = (
-        "<div class='card'>"
-        "<h2>画得对 · 引导线</h2>"
-        f"<p style='font-size:2rem;font-weight:800'>命中 {_pct(guidance['hit_rate'])}</p>"
-        f"<p class='muted'>横向误差 {guidance['mean_deviation']:.02f} · 覆盖 {_pct(guidance['pred_coverage'])}</p>"
-        f"<p class='muted'>无路硬画 {guidance['false_go_frames']} 帧 · 漏线 {guidance['missed_path_frames']}/{guidance['frames']} 帧</p>"
-        "<p class='explain'>由可走区域推导出的通行引导线，落在真值走廊内的比例。</p>"
-        "</div>"
-    )
     safe_border = "#30d158" if safe else "#ff453a"
     safe_head = "宁可保守不冒进" if safe else "存在冒进帧，需优先修"
-    safe_big = "0 冒进帧" if safe else f"{region['region_false_go_frames'] + guidance['false_go_frames']} 冒进帧"
+    safe_big = "0 冒进帧" if safe else f"{region['region_false_go_frames']} 冒进帧"
     safe_card = (
         f"<div class='card' style='border-color:{safe_border}'>"
         "<h2>安全侧 · 会不会冒进</h2>"
         f"<p style='font-size:2rem;font-weight:800;color:{safe_border}'>{safe_big}</p>"
         f"<p class='muted'>{html.escape(safe_head)}</p>"
-        "<p class='explain'>「冒进」=把不可走当可走、或无路硬画引导线。这是最重要的安全指标。</p>"
+        "<p class='explain'>「冒进」=把不可走当可走。CamVid 线级真值已退役，只看可走区域像素。</p>"
         "</div>"
     )
 
@@ -586,7 +547,7 @@ def _capability_scorecard_html() -> str:
         f"<div class='card' style='border-color:{trend_border}'>"
         "<h2>变好还是变差</h2>"
         f"<p>{html.escape(trend['text'])}</p>"
-        "<p class='explain'>门禁受 <code>guidance</code> + <code>region</code> 两条基线保护；退役的三区状态不再参与门禁。</p>"
+        "<p class='explain'>门禁受 <code>region</code> 可走区域基线保护；CamVid 线级真值与三区状态已退役。</p>"
         "</div>"
     )
     weakness_card = (
@@ -640,7 +601,6 @@ def _capability_scorecard_html() -> str:
         hero
         + "<div class='grid'>"
         + region_card
-        + line_card
         + lane_card
         + obstacle_card
         + safe_card
@@ -738,13 +698,8 @@ def _svg_rect(rect: dict, color: str, opacity: float, dash: str = "") -> str:
     )
 
 
-def _svg_corridor(rect: dict, status: str) -> str:
-    color = {
-        "blocked": "#ff453a",
-        "caution": "#ffd60a",
-        "unknown": "#8e8e93",
-        "candidateOpen": "#64d2ff",
-    }.get(status, "#8e8e93")
+def _svg_corridor(rect: dict, blocked: bool) -> str:
+    color = "#ff453a" if blocked else "#64d2ff"
     try:
         min_y = float(rect.get("y", 0))
         max_y = min_y + float(rect.get("height", 0))
@@ -753,7 +708,7 @@ def _svg_corridor(rect: dict, status: str) -> str:
     bottom_y = (1 - min_y) * 100
     top_y = (1 - min(max_y, 0.62)) * 100
     points = f"30,{bottom_y:.2f} 42,{top_y:.2f} 58,{top_y:.2f} 70,{bottom_y:.2f}"
-    opacity = 0.08 if status == "candidateOpen" else 0.20
+    opacity = 0.20 if blocked else 0.08
     return (
         f"<polygon points='{points}' fill='{color}' fill-opacity='{opacity:.2f}' "
         f"stroke='{color}' stroke-width='1.5' stroke-opacity='0.85' stroke-dasharray='4 3'/>"
@@ -766,12 +721,11 @@ def _path_guidance_svg(path_guidance: dict) -> str:
     if not isinstance(path_guidance, dict) or not path_guidance:
         return "<svg viewBox='0 0 100 100'></svg>"
     parts: list[str] = []
-    status = str(path_guidance.get("near_path_status", "unknown"))
     corridor = path_guidance.get("guidance_corridor")
     blocked = path_guidance.get("blocked_regions") if isinstance(path_guidance.get("blocked_regions"), list) else []
     uncertain = path_guidance.get("uncertain_regions") if isinstance(path_guidance.get("uncertain_regions"), list) else []
-    if corridor and not (status == "candidateOpen" and not blocked and not uncertain):
-        parts.append(_svg_corridor(corridor, status))
+    if corridor and (blocked or uncertain):
+        parts.append(_svg_corridor(corridor, bool(blocked)))
     else:
         parts.append("<line x1='50' y1='88' x2='50' y2='58' stroke='#64d2ff' stroke-width='0.8' stroke-opacity='0.28' stroke-dasharray='3 4'/>")
     for rect in uncertain:
@@ -1056,8 +1010,10 @@ def datasets_ui():
         )
     if full_cards:
         truth_blocks.append(
-            "<details><summary>全量回归（701 帧，Intel Mac 多类分割大约 35–45 分钟）</summary>"
-            "<p class='hint'>发布前或要数字基线时再跑。带角色后缀的是同一批帧按行人/机动车重新判定的可通行真值。</p>"
+            "<details><summary>全量回归（701 帧，Intel Mac TwinLiteNet 实验大约 10–15 分钟）</summary>"
+            "<p class='hint'>发布前或要数字基线时再跑。带角色后缀的是同一批帧按行人/机动车重新判定的可通行真值。"
+            "CamVid 角色 IoU 的 mc5 多类分割已退出日常 harness，需手动加 <code>--seg-model</code> 与 "
+            "<code>road_backend=mc5</code>（Intel Mac 约 35 分钟）。</p>"
             + "".join(full_cards)
             + "</details>"
         )
@@ -2146,6 +2102,7 @@ def dataset_ios_harness_ui(manifest: str, predictions: str = ""):
     manifest_path = Path(manifest).expanduser()
     if not manifest_path.is_file():
         raise HTTPException(status_code=404, detail="manifest_not_found")
+    failed_run = _finalize_dead_harness(manifest_path)
     encoded_manifest = html.escape(manifest)
     default_out = str(_harness_out_path(manifest_path))
     cache = _harness_cache_info(manifest_path)
@@ -2171,15 +2128,18 @@ def dataset_ios_harness_ui(manifest: str, predictions: str = ""):
     if eval_role == "vehicle":
         role_banner = (
             "<div class='status' style='border-color:#ffd60a'>"
-            "<b>这份是机动车评估。</b>真值绿线走车道，人行道不算可行驶。"
-            f"一键跑会用车角色 + 多类分割（{frame_count} 帧，Intel Mac {eta_text}）。"
+            "<b>这份是机动车评估。</b>人行道不算可行驶区。"
+            f"一键跑会用 TwinLiteNet 实验叠图（bundled Core ML，{frame_count} 帧，Intel Mac {eta_text}）。"
+            "CamVid 线级真值已退役；看红/绿/蓝原色叠图请用 "
+            "<a href='/diagnostics/twinlite/ui'>TwinLiteNet 画廊</a>。"
             "</div>"
         )
     elif eval_role == "pedestrian":
         role_banner = (
             "<div class='status'>"
             "<b>这份是行人评估。</b>真值绿线偏人行道，马路是慎行不是首选。"
-            f"一键跑会用行人角色 + 多类分割（{frame_count} 帧，Intel Mac {eta_text}）。"
+            f"一键跑会用 TwinLiteNet 实验叠图（{frame_count} 帧，Intel Mac {eta_text}）。"
+            "TwinLite 是 BDD 驾驶可走区，不能当行人可走真身；mc5 已退出日常 harness。"
             "</div>"
         )
     if is_full:
@@ -2323,8 +2283,18 @@ async function runHarness(force) {{
         f"<h1>用 iPhone 真身评估：{html.escape(manifest_path.name)}</h1>"
     )
 
+    failed_banner = ""
+    if failed_run and failed_run.get("status") == "error":
+        err_reason = html.escape(str(failed_run.get("reason") or "真身感知运行失败"))
+        err_stderr = html.escape(str(failed_run.get("stderr") or ""))
+        failed_banner = (
+            f"<div class='status error'>{err_reason}"
+            + (f"<pre style='margin-top:8px;white-space:pre-wrap'>{err_stderr}</pre>" if err_stderr else "")
+            + "<p class='muted'>上次任务已结束（不是仍在运行）。可再点一次「一键跑」重试。</p></div>"
+        )
+
     if not predictions.strip():
-        return _html_page("iPhone 真身评估", header + steps)
+        return _html_page("iPhone 真身评估", header + failed_banner + steps)
 
     pred_path = Path(predictions).expanduser()
     if not pred_path.is_file():
@@ -2337,12 +2307,6 @@ async function runHarness(force) {{
     manifest_rows = load_jsonl(manifest_path)
     prediction_rows = load_jsonl(pred_path)
     report = evaluate_path_guidance(manifest_rows, prediction_rows)
-
-    # Line-level guidance report — this is what the centerline algorithm actually
-    # moves. The region metrics below are three-zone status and are INDEPENDENT of
-    # the guidance line, so surfacing only region metrics hid every line improvement.
-    guidance_pairs, guidance_skipped = _guidance_pairs(manifest_rows, prediction_rows)
-    guidance_report = evaluate_guidance_paths(guidance_pairs) if guidance_pairs else None
 
     # Region report — "how close is the walkable AREA the iPhone perceives to the
     # annotated truth", scored per-cell on the shared 64x48 grid. This is the axis
@@ -2366,32 +2330,6 @@ async function runHarness(force) {{
         if isinstance(value, float):
             return f"{value:.{digits}f}"
         return str(value)
-
-    if guidance_report is not None:
-        g = guidance_report
-        guidance_cards = (
-            "<div class='callout'><h2>引导线指标（中心线算法影响的就是这一组）</h2>"
-            "<p class='hint'>这一组衡量「可通行引导线」本身：能不能画出线、画得准不准、"
-            "会不会在真值无路处硬画。下面的三区状态指标与引导线无关，所以中心线改动不会动它们。</p>"
-            "<div class='grid'>"
-            + "".join([
-                card("有线可比帧 both_ok", g.get("both_ok"), f"真值与预测都成线的帧（共 {g.get('frames')} 帧）"),
-                card("漏线 missed_path", g.get("missed_path_frames"), "真值有路、预测却没画出线（越低越好）"),
-                card("虚报路 false_go", g.get("false_go_frames"), "真值无路、预测却宣称有路（安全红线，须为 0）"),
-                card("落廊率 hit_rate", num(g.get("hit_rate")), "预测线落在真值走廊内的比例（越高越好）"),
-                card("横向偏差 mean_deviation", num(g.get("mean_deviation")), "与真值线的平均横向误差（越低越好）"),
-                card("越界 over_extension", num(g.get("over_extension")), "预测线尾越过真值自由空间的比例（越低越安全）"),
-            ])
-            + "</div>"
-            + (f"<p class='muted'>另有 {guidance_skipped} 帧因线数据不合法未计入（明确暴露，非静默丢弃）。</p>" if guidance_skipped else "")
-            + "</div>"
-        )
-    else:
-        guidance_cards = (
-            "<div class='callout'><h2>引导线指标</h2>"
-            "<p class='muted'>此 manifest 缺少 ground_truth_path，或预测缺少 guidance_path，"
-            "无法做线级评估。重生成带真值线的 manifest 并重跑真身感知后即可显示。</p></div>"
-        )
 
     if region_report is not None and region_report.get("scored"):
         r = region_report
@@ -2420,7 +2358,7 @@ async function runHarness(force) {{
             "无法做区域评估。重生成带真值网格的 manifest 并重跑真身感知后即可显示。</p></div>"
         )
 
-    cards = region_cards + guidance_cards + "<h2 style='margin-top:1.5rem'>三区状态指标（已退役 · 仅供参考，不再门禁）</h2><div class='grid'>" + "".join([
+    cards = region_cards + "<h2 style='margin-top:1.5rem'>三区状态指标（已退役 · 仅供参考，不再门禁）</h2><div class='grid'>" + "".join([
         card("有标注帧", report.get("labeled_frames"), "参与打分的帧数"),
         card("状态准确率", report.get("status_accuracy"), "近处/左/右三区域状态匹配率"),
         card("方向准确率", report.get("focus_direction_accuracy"), "关注方向是否匹配"),
@@ -2674,14 +2612,18 @@ def _read_manifest_eval_role(manifest_path: Path) -> str | None:
 
 
 def _overlay_harness_config_for_manifest(payload: dict, eval_role: str | None) -> dict:
-    """Force the harness config to match the dataset role. Never silently score
-    a drive GT against the pedestrian default + binary (road∪sidewalk) model."""
+    """Align harness config with the dataset role without forcing mc5.
+
+    Daily iteration uses bundled TwinLiteNet (same experimental App default).
+    mc5 role IoU is opt-in manual only — too slow on Intel Mac and not the
+    current product iteration surface.
+    """
     if not eval_role:
         return payload
     merged = dict(payload)
     merged["role"] = eval_role
-    merged["use_multiclass_segmentation"] = True
-    merged["road_backend"] = "mc5"
+    merged["use_multiclass_segmentation"] = False
+    merged["road_backend"] = "twinlite"
     return config_from_dict(merged).to_dict()
 
 
@@ -2693,10 +2635,10 @@ def _optional_harness_model_flags(*, eval_role: str | None = None) -> list[str]:
     ``VQASeeLaneSegmentation.mlmodelc`` still emits ``lane_grid`` as a debug mask
     for regressions, but it is no longer the product lane-line surface.
 
-    Role-conditioned manifests (walk/drive) also inject the N=5 segmenter so
-    ``config.role`` can derive sidewalk vs carriageway. Missing optional models
-    omit their flags (harness reports no lane channel), never a fabricated lane.
+    mc5 (``--seg-model``) is never injected here: daily harness uses TwinLiteNet
+    via ``road_backend=twinlite``. Full mc5 role regression is manual only.
     """
+    _ = eval_role  # reserved for future opt-in flags; mc5 is not auto-injected.
     flags: list[str] = []
     models_dir = _harness_models_dir()
     lane_mask = models_dir / "VQASeeLaneSegmentation.mlmodelc"
@@ -2705,36 +2647,7 @@ def _optional_harness_model_flags(*, eval_role: str | None = None) -> list[str]:
     lane_polyline = models_dir / "VQASeeLaneUFLDv2.mlmodelc"
     if lane_polyline.is_dir():
         flags += ["--lane-polyline-model", str(lane_polyline)]
-    if eval_role:
-        seg5 = _seg5_model_path()
-        if seg5 is not None:
-            flags += ["--seg-model", str(seg5)]
     return flags
-
-
-def _guidance_pairs(manifest_rows: list[dict], prediction_rows: list[dict]):
-    """Build (frame_id, gt_path, pred_path) triples for line-level scoring.
-
-    Malformed entries are counted as skipped (surfaced in the UI), never silently
-    dropped — a frame missing GT or a well-formed prediction just doesn't score."""
-    preds: dict = {}
-    for row in prediction_rows:
-        fid = row.get("frame_id")
-        if fid is not None and isinstance(row.get("guidance_path"), dict):
-            preds[fid] = row["guidance_path"]
-    pairs = []
-    skipped = 0
-    for row in manifest_rows:
-        fid = row.get("frame_id")
-        gt_raw = row.get("ground_truth_path")
-        pred_raw = preds.get(fid)
-        if fid is None or not isinstance(gt_raw, dict) or pred_raw is None:
-            continue
-        try:
-            pairs.append((fid, GuidancePath.from_dict(gt_raw), GuidancePath.from_dict(pred_raw)))
-        except GuidancePathError:
-            skipped += 1
-    return pairs, skipped
 
 
 def _region_pairs(manifest_rows: list[dict], prediction_rows: list[dict]):
@@ -2802,10 +2715,9 @@ def _active_harness_run(manifest_path: Path) -> dict | None:
         return None
     if _pid_is_running(info.get("pid")):
         return info
-    try:
-        lock.unlink()
-    except OSError:
-        pass
+    finished = _finalize_dead_harness(manifest_path)
+    if finished is not None:
+        return None
     return _active_harness_process(manifest_path)
 
 
@@ -2897,8 +2809,10 @@ def _jsonl_line_count(path: Path) -> int:
 
 
 def _harness_seconds_per_frame(eval_role: str | None) -> float:
-    # Measured on this Intel Mac: binary ~0.8s/frame, mc5 role eval ~3.2s/frame.
-    return 3.2 if eval_role else 0.8
+    # Measured on this Intel Mac: TwinLiteNet bundled Core ML ~1.0s/frame.
+    # mc5 (~3.2s/frame) is manual-only and no longer the default harness path.
+    _ = eval_role
+    return 1.0
 
 
 def _harness_eta_seconds(frame_count: int, eval_role: str | None) -> int:
@@ -2916,8 +2830,8 @@ def _format_duration(seconds: int) -> str:
 def _active_eval_config_payload(manifest_path: Path) -> dict:
     """Active perception config overlaid with the dataset role.
 
-    Drive/walk manifests must hash as vehicle/pedestrian + multiclass, not as the
-    stored pedestrian default — otherwise a finished role run looks stale forever.
+    Drive/walk manifests hash as vehicle/pedestrian + twinlite overlay, not as
+    the stored pedestrian default — otherwise a finished role run looks stale.
     """
     payload = load_active_config().to_dict()
     role = _read_manifest_eval_role(manifest_path)
@@ -2931,7 +2845,7 @@ def _harness_progress_reason(manifest_path: Path, info: dict) -> str:
     remaining = max(0, expected - predicted) if expected else expected
     eta = _format_duration(_harness_eta_seconds(remaining or expected or 1, eval_role))
     started = info.get("started_at", "?")
-    role_note = "多类分割（车/行人角色）" if eval_role else "二值分割"
+    role_note = "TwinLiteNet 实验叠图" if eval_role else "YOLO + 路面模型"
     progress = f"{predicted}/{expected} 帧" if expected else f"已写出 {predicted} 帧"
     return (
         f"真身感知正在运行（pid {info.get('pid')}，开始于 {started}）。"
@@ -2977,13 +2891,18 @@ def _finalize_dead_harness(manifest_path: Path) -> dict | None:
         reason = "真身感知运行失败。"
         if killed or exit_code == 143 or "SIGTERM" in stderr_text:
             reason = (
-                "真身感知被中断（旧逻辑会在 15 分钟时杀掉仍在跑的多类分割任务）。"
+                "真身感知被中断（旧逻辑会在 15 分钟时杀掉仍在跑的长任务）。"
                 "请再点一次重跑；现在会在后台跑完，不再用 15 分钟超时。"
             )
         elif predicted == 0:
             reason = "真身感知结束但未产出预测。"
             if "image_not_found:" in stderr_text:
                 reason = _harness_missing_images_reason(stderr_text)
+            elif "MLIR pass manager failed" in stderr_text or "MPSGraphExecutable" in stderr_text:
+                reason = (
+                    "Core ML 在 Mac GPU（MPSGraph）上编译/运行失败（进程异常退出）。"
+                    "请确认已重新编译 harness（会自动改用 CPU-only）；若仍失败，把 stderr 贴给工程。"
+                )
         return {
             "status": "error",
             "reason": reason,
@@ -3259,17 +3178,6 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
         }
 
     eval_role = _read_manifest_eval_role(manifest_path)
-    if eval_role and _seg5_model_path() is None:
-        return {
-            "status": "error",
-            "capability": "needs_seg5",
-            "reason": (
-                "这份是角色评估（行人/机动车），需要多类分割模型 "
-                "VQASeeTraversabilitySeg5.mlmodelc，才能区分人行道和车道。"
-                "模型应在 ios-vqa-app/VQASee/VQASee/ 或 VQASEE_MODELS_DIR。"
-                "缺少它时不会静默改用二值模型（否则会把车引上人行道）。"
-            ),
-        }
 
     out_path = str(_harness_out_path(manifest_path))
     cmd = [str(harness_bin), "--manifest", str(resolved_manifest), "--out", out_path]
@@ -3485,12 +3393,10 @@ def _guidance_status_ok(path: dict | None) -> bool:
 def _overlay_svg(
     objects: list,
     guidance_path: dict | None = None,
-    gt_path: dict | None = None,
 ) -> str:
     """Build an SVG overlay (viewBox 0..100, stretched to the image) drawing the
-    detected object boxes and (when present) the predicted vs ground-truth
-    guidance lines. The legacy three near/left/right ROI status rectangles were
-    removed — the guidance line + the walkable-region layer are the signals now.
+    detected object boxes and (when present) the predicted guidance line.
+    CamVid line-level ground truth was retired — only iPhone prediction is drawn.
     Vision-normalized coords have origin lower-left, so y is flipped for the
     top-left screen space of an <img>."""
 
@@ -3527,11 +3433,6 @@ def _overlay_svg(
             f"font-size='3.0' font-weight='700'>{html.escape(label)}</text>"
         )
 
-    # The guidance LINE is the primary signal. Ground-truth line (green dashed,
-    # thinner) vs predicted line (purple solid, thicker, with a faint corridor
-    # band). Draw GT first so the prediction sits on top, and label both ends.
-    if gt_path:
-        parts.append(_guidance_line_svg(gt_path, color="#30d158", dashed=True, corridor=False, label="真值", width=1.4))
     if guidance_path:
         parts.append(_guidance_line_svg(guidance_path, color="#bf5af2", dashed=False, corridor=True, label="预测", width=2.4))
 
@@ -3539,42 +3440,29 @@ def _overlay_svg(
     return "".join(parts)
 
 
-_FRAME_REGION_KEYS = ("near_path_status", "left_front_status", "right_front_status")
-
-# Filter definitions for the per-frame viewer: id -> (label, hint). Order here is
-# the order shown in the selector. "all" is implicit and always first.
 _FRAME_FILTERS = {
-    "risk_miss": ("漏报", "真实 注意/占用，却报 可走候选（最危险）"),
-    "false_block": ("误阻挡", "真实 可走，却报 注意/占用（过度保守）"),
-    "mismatch": ("有分歧", "任一区域预测≠真实"),
-    "correct": ("全对", "三区域预测与真实全一致"),
+    "region_miss": ("漏报可走", "真值可走格子，预测不可走"),
+    "region_false_go": ("误判可走", "真值不可走格子，预测可走"),
+    "mismatch": ("有分歧", "区域网格预测≠真实"),
+    "correct": ("全对", "区域网格与真值一致"),
     "no_prediction": ("无预测", "该帧没有对应预测行"),
 }
 
 
 def _frame_flags(gt: dict, prediction: dict) -> set:
-    """Classify one frame into filter buckets from GT vs prediction. Empty
-    prediction -> {"no_prediction"}; otherwise a frame may carry several tags
-    (e.g. both risk_miss and false_block across different regions).
-
-    The safety-relevant buckets (risk_miss / false_block) come from
-    ``case_store.frame_failure_types`` so the UI filters and the case clusters
-    are guaranteed to agree on what counts as a failure."""
     if not prediction:
         return {"no_prediction"}
     flags = set(frame_failure_types(gt, prediction))
-    all_present_equal = True
-    for key in _FRAME_REGION_KEYS:
-        g = gt.get(key)
-        p = prediction.get(key)
-        if g is None or p is None:
-            all_present_equal = False
-            continue
-        if g != p:
-            all_present_equal = False
-            flags.add("mismatch")
-    if all_present_equal:
+    gt_cells = _grid_cells(gt.get("traversable_grid"))
+    pred_cells = _grid_cells(prediction.get("traversable_grid"))
+    if gt_cells is None or pred_cells is None or len(gt_cells) != len(pred_cells):
+        return flags
+    if gt_cells == pred_cells:
         flags.add("correct")
+    elif "region_miss" not in flags and "region_false_go" not in flags:
+        flags.add("mismatch")
+    else:
+        flags.add("mismatch")
     return flags
 
 
@@ -3605,20 +3493,18 @@ def dataset_ios_harness_frames_ui(
     if eval_role == "vehicle":
         overlay_legend = (
             "<b style='color:#bf5af2'>紫实线=iPhone 预测路径</b> · "
-            "<b style='color:#30d158'>绿虚线=车道真值（机动车）</b>；"
             "蓝虚框=检测物体；<b style='color:#30d158'>绿色叠层=车可通行区（不含人行道）</b>；"
             "<b style='color:#ffd60a'>黄色实线=iPhone 车道折线</b> · "
-            "<b style='color:#ffd60a'>黄块=旧像素车道调试层</b> · "
-            "<b style='color:#0a84ff'>蓝色=真值车道线</b>。"
+            "<b style='color:#ffd60a'>黄块=像素车道调试层</b>。"
+            " CamVid 线/车道真值已退役；红绿蓝 TwinLite 原色见 "
+            "<a href='/diagnostics/twinlite/ui'>TwinLite 画廊</a>。"
         )
     else:
         overlay_legend = (
             "<b style='color:#bf5af2'>紫实线=iPhone 预测路径</b> · "
-            "<b style='color:#30d158'>绿虚线=真值路径</b>（主信号，越贴合越准）；"
             "蓝虚框=检测物体；<b style='color:#30d158'>绿色叠层=可走区域</b>；"
             "<b style='color:#ffd60a'>黄色实线=iPhone 车道折线</b> · "
-            "<b style='color:#ffd60a'>黄块=旧像素车道调试层</b> · "
-            "<b style='color:#0a84ff'>蓝色=真值车道线</b>。"
+            "<b style='color:#ffd60a'>黄块=像素车道调试层</b>。"
         )
 
     # Classify every frame once so we can both filter and show per-category counts
@@ -3626,8 +3512,7 @@ def dataset_ios_harness_frames_ui(
     flags_by_index: list = []
     counts = {key: 0 for key in _FRAME_FILTERS}
     for row in manifest_rows:
-        gt = row.get("ground_truth", {}) or {}
-        pred = (pred_index.get(str(row.get("frame_id", ""))) or {}).get("prediction", {}) or {}
+        gt, pred = guidance_payloads(row, pred_index.get(str(row.get("frame_id", ""))) or {})
         flags = _frame_flags(gt, pred)
         flags_by_index.append(flags)
         for key in flags:
@@ -3662,10 +3547,8 @@ def dataset_ios_harness_frames_ui(
         prediction = pred_row.get("prediction", {}) or {}
         objects = pred_row.get("objects", []) or []
         pred_guidance = pred_row.get("guidance_path") if isinstance(pred_row.get("guidance_path"), dict) else None
-        gt_guidance = row.get("ground_truth_path") if isinstance(row.get("ground_truth_path"), dict) else None
 
-        # Translucent CamVid traversable-region layer, from the SAME mask that the
-        # green GT line was traced from. Lets the user see the line's provenance.
+        # Optional CamVid traversable-region tint (toggle in page chrome).
         label_path = str(row.get("label_path") or "")
         role = str(row.get("role") or "").strip().lower()
         if role == "drive":
@@ -3707,12 +3590,6 @@ def dataset_ios_harness_frames_ui(
                 f"<img class='pred-mask' decoding='async' "
                 f"src='{pred_lane_debug_uri}' alt='旧像素车道调试层'>"
             )
-        gt_lane_uri = _lane_grid_png_datauri(row.get("lane_grid_fine"), (10, 132, 255, 150))
-        if gt_lane_uri:
-            lane_layer += (
-                f"<img class='pred-mask' decoding='async' "
-                f"src='{gt_lane_uri}' alt='CamVid 真值车道线'>"
-            )
         lane_polyline_svg = _lane_polylines_svg(pred_row.get("lane_polylines"))
         if lane_polyline_svg:
             lane_layer += lane_polyline_svg
@@ -3729,30 +3606,22 @@ def dataset_ios_harness_frames_ui(
         else:
             thumb = f"/diagnostics/local-file?path={html.escape(image_path)}&w=560"
             full = f"/diagnostics/local-file?path={html.escape(image_path)}"
-            overlay = _overlay_svg(objects, pred_guidance, gt_guidance)
+            overlay = _overlay_svg(objects, pred_guidance)
             image_block = (
                 f"<a href='{full}' target='_blank'><div class='frame-overlay'>"
                 f"<img loading='lazy' decoding='async' src='{thumb}' alt='{html.escape(frame_id)}'>"
                 f"{mask_layer}{pred_mask_layer}{lane_layer}{overlay}</div></a>"
             )
 
-        # Line-level agreement summary (replaces the retired 3-region status table):
-        # is the predicted walkable line present, and does it match the truth's
-        # presence? This keeps the honest "漏报路径 / 误报路径" signal at the line
-        # level without the coarse near/left/right boxes.
-        gt_line_ok = _guidance_status_ok(gt_guidance)
         pred_line_ok = _guidance_status_ok(pred_guidance)
         if prediction:
-            if gt_line_ok and not pred_line_ok:
-                line_verdict = "<span style='color:#ff453a'>⚠ 漏报路径（真值有可走线，预测无）</span>"
-            elif pred_line_ok and not gt_line_ok:
-                line_verdict = "<span style='color:#ffd60a'>误报路径（真值无可走线，预测有）</span>"
-            elif pred_line_ok and gt_line_ok:
-                line_verdict = "<span style='color:#30d158'>双方均有可走线（看贴合度）</span>"
-            else:
-                line_verdict = "<span class='muted'>双方均无可走线</span>"
+            path_note = (
+                "<span style='color:#30d158'>已画出预测路径</span>"
+                if pred_line_ok
+                else "<span class='muted'>本帧未画出预测路径（insufficient）</span>"
+            )
         else:
-            line_verdict = "<span class='muted'>该帧无预测</span>"
+            path_note = "<span class='muted'>该帧无预测</span>"
 
         obj_labels = ", ".join(
             html.escape(str(o.get("label") or o.get("kind") or "物体")) for o in objects
@@ -3765,7 +3634,7 @@ def dataset_ios_harness_frames_ui(
     <p class='explain'>{overlay_legend}</p>
   </div>
   <div>
-    <p class='explain'><b>可走线对比：</b>{line_verdict}</p>
+    <p class='explain'><b>预测路径：</b>{path_note}</p>
     <p class='explain'>检出物体：{obj_labels}</p>
   </div>
 </div></div>"""
@@ -3828,18 +3697,14 @@ def dataset_ios_harness_frames_ui(
         f"<a href='/diagnostics/datasets/manifest/ui?manifest={encoded_manifest}'>浏览 manifest</a></p>"
         f"<h1>逐帧识别效果：{html.escape(manifest_path.name)}</h1>"
         f"<div class='callout'><p class='hint'>每张图上叠加的是 iPhone 上一模一样的感知代码（YOLO11n Core ML + 通行区域引擎）真实跑出的结果。</p>"
-        f"<p class='hint' style='margin-top:6px'><b>主信号 · 引导线</b>（我们要评的就是它）："
-        f"<span style='color:#bf5af2;font-weight:800'>▬ 紫实线=iPhone 预测路径</span>（带浅色走廊=可走宽度）， "
-        f"<span style='color:#30d158;font-weight:800'>┄ 绿虚线=真值路径</span>（你 CamVid 标注推出的答案）。两条越贴合越准。</p>"
-        f"<p class='hint' style='margin-top:6px'><b>辅助 · 背景</b>："
+        f"<p class='hint' style='margin-top:6px'><b>主信号 · 可走区域</b>："
+        f"<span style='color:#30d158'>绿色叠层</span>=iPhone 感知可走区（TwinLite DA 等）；"
+        f"与 CamVid 真值区域（可开关）逐格比 IoU。"
+        f" CamVid 线级/车道真值已退役，不再画绿虚线或蓝车道层。</p>"
+        f"<p class='hint' style='margin-top:6px'><b>辅助</b>："
+        f"<span style='color:#bf5af2'>紫实线</span>=iPhone 预测路径（有则显示）；"
         f"<span style='color:#64d2ff'>蓝虚框</span>=YOLO 检测物体。"
-        f"（旧的三区状态方块已下线：粗糙、重叠、且不是端上真正消费的信号，"
-        f"通行判断以引导线 + 可走区域为准。）</p>"
-        f"<p class='hint' style='margin-top:6px'><b>绿色可走区域（两块，可分别开关）</b>："
-        f"<span style='color:#30d158'>iPhone 感知区域</span>=端上分割模型真实判定可走的粗网格（默认显示，这就是"
-        f"“iPhone 感知出的绿色可走区域”）；<span style='color:#30d158'>CamVid 真值区域</span>"
-        f"=标注推出的答案（道路+人行道，绿虚线由它取中心线得到）。两块叠着看，就是 iPhone 感知与真值的差距——"
-        f"这正是本闭环要缩小的东西。</p></div>"
+        f" TwinLite 红/绿/蓝原色见 <a href='/diagnostics/twinlite/ui'>TwinLite 画廊</a>。</p></div>"
     )
 
     has_gt_mask = any(row.get("label_path") for row in manifest_rows)
@@ -3894,7 +3759,7 @@ def cases_cluster(manifest: str, predictions: str) -> dict:
     """Cluster this eval run's failing frames into cases (create or update).
 
     This is the AutoTriage-lite entry: read the manifest + harness predictions,
-    bucket risk_miss / false_block frames, and upsert a case per bucket with a
+    bucket region_miss / region_false_go frames, and upsert a case per bucket with a
     deterministic id so re-runs update instead of duplicate."""
     manifest_path = Path(manifest).expanduser()
     if not manifest_path.is_file():
@@ -4121,10 +3986,10 @@ def perception_config_get() -> dict:
 
 @router.post("/perception-config/bump")
 def perception_config_bump(updates: dict = Body(default_factory=dict)) -> dict:
-    """Apply partial ROI/threshold updates, bump the version, persist.
+    """Apply partial threshold / backend updates, bump the version, persist.
 
-    Rejects invalid values (out of range / bad ROI) with a 400 and writes
-    nothing, so a bad edit can never be shipped to devices.
+    Rejects invalid values and retired three-zone ``roi`` writes with a 400
+    and writes nothing, so a bad edit can never be shipped to devices.
     """
     try:
         new_config = bump_and_save(updates or {})
@@ -4136,7 +4001,6 @@ def perception_config_bump(updates: dict = Body(default_factory=dict)) -> dict:
 @router.get("/perception-config/ui", response_class=HTMLResponse)
 def perception_config_ui():
     config = load_active_config().to_dict()
-    roi = config["roi"]
     thr = config["thresholds"]
 
     def num(name: str, value: float, label: str, hint: str = "") -> str:
@@ -4146,24 +4010,8 @@ def perception_config_ui():
             f"<span class='muted'>{html.escape(hint)}</span></label>"
         )
 
-    roi_block = ""
-    for region, cn in (("near", "近处正前"), ("left", "左前"), ("right", "右前")):
-        r = roi[region]
-        roi_block += (
-            f"<div class='card'><h2>{cn} ROI</h2><div class='row'>"
-            + num(f"{region}_x", r["x"], "x")
-            + num(f"{region}_y", r["y"], "y")
-            + num(f"{region}_w", r["w"], "w")
-            + num(f"{region}_h", r["h"], "h")
-            + "</div></div>"
-        )
-
     thr_block = (
         "<div class='card'><h2>阈值</h2><div class='row'>"
-        + num("near_blocked_area", thr["near_blocked_area"], "近处判定占用置信", "越高越不容易报占用")
-        + num("side_blocked_area", thr["side_blocked_area"], "侧向判定占用置信")
-        + num("seg_near_caution_ratio", thr["seg_near_caution_ratio"], "近处可走比例下限")
-        + num("seg_side_caution_ratio", thr["seg_side_caution_ratio"], "侧向可走比例下限")
         + num("seg_traversable_pixel", thr["seg_traversable_pixel"], "分割可走像素阈值")
         + "</div></div>"
     )
@@ -4186,16 +4034,7 @@ async function saveConfig(){
   const status = document.getElementById('cfgStatus');
   status.style.display='block'; status.className='status'; status.textContent='正在校验并升级版本…';
   const updates = {
-    roi: {
-      near:{x:val('near_x'),y:val('near_y'),w:val('near_w'),h:val('near_h')},
-      left:{x:val('left_x'),y:val('left_y'),w:val('left_w'),h:val('left_h')},
-      right:{x:val('right_x'),y:val('right_y'),w:val('right_w'),h:val('right_h')}
-    },
     thresholds:{
-      near_blocked_area:val('near_blocked_area'),
-      side_blocked_area:val('side_blocked_area'),
-      seg_near_caution_ratio:val('seg_near_caution_ratio'),
-      seg_side_caution_ratio:val('seg_side_caution_ratio'),
       seg_traversable_pixel:val('seg_traversable_pixel')
     },
     road_backend: document.getElementById('road_backend').value
@@ -4213,10 +4052,9 @@ async function saveConfig(){
     body = (
         "<p><a href='/diagnostics/ui'>← 感知能力总览</a></p>"
         f"<h1>感知配置（当前 v{config['version']}）</h1>"
-        "<p class='hint'>这些数值控制 iPhone 端“近处/左/右”通行判定的 ROI 与阈值。默认值等于 App 内置常量。"
+        "<p class='hint'>三区 ROI 已退役，不再下发近/左/右框。这里只调分割阈值和路面模型。"
         "先在 iPhone 真身评估里验证候选参数，再回到这里保存并升级版本，iPhone 下次连接自动生效。</p>"
         + script
-        + roi_block
         + thr_block
         + backend_block
         + "<div class='card'><button onclick='saveConfig()'>保存并升级版本</button>"

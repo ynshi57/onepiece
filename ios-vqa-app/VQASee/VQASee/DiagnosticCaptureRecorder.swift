@@ -140,19 +140,13 @@ final class DiagnosticCaptureRecorder {
 
     private static func pathGuidancePayload(_ signal: LocalPathGuidanceSignal) -> [String: Any] {
         var payload: [String: Any] = [
-            "near_path_status": signal.nearPathStatus.rawValue,
-            "left_front_status": signal.leftFrontStatus.rawValue,
-            "right_front_status": signal.rightFrontStatus.rawValue,
-            "focus_direction": signal.focusDirection.rawValue,
             "confidence": signal.confidence,
             "reasons": signal.reasons.map(\.rawValue),
             "depth_capability": signal.depthCapability.rawValue,
             "segmentation_capability": signal.segmentationCapability.rawValue,
             "blocked_region_count": signal.blockedRegions.count,
             "uncertain_region_count": signal.uncertainRegions.count,
-            "near_path_traversable_ratio": signal.segmentationCues.nearPathTraversableRatio as Any,
-            "left_front_traversable_ratio": signal.segmentationCues.leftFrontTraversableRatio as Any,
-            "right_front_traversable_ratio": signal.segmentationCues.rightFrontTraversableRatio as Any,
+            "traversable_ratio": signal.segmentationCues.traversableRatio as Any,
         ]
         if let corridor = signal.guidanceCorridor {
             payload["guidance_corridor"] = rectPayload(corridor)

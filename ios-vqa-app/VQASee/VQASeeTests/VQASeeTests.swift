@@ -1065,8 +1065,7 @@ final class VQASeeTests: XCTestCase {
             depthCapability: .unsupported
         )
 
-        XCTAssertEqual(guidance.nearPathStatus, .blocked)
-        XCTAssertEqual(guidance.focusDirection, .center)
+        XCTAssertFalse(guidance.blockedRegions.isEmpty)
         XCTAssertTrue(guidance.reasons.contains(.objectInNearPath))
         XCTAssertEqual(guidance.depthCapability, .unsupported)
         XCTAssertEqual(guidance.segmentationCapability, .unsupported)
@@ -1080,8 +1079,7 @@ final class VQASeeTests: XCTestCase {
             depthCapability: .unsupported
         )
 
-        XCTAssertEqual(guidance.nearPathStatus, .candidateOpen)
-        XCTAssertEqual(guidance.focusDirection, .unknown)
+        XCTAssertTrue(guidance.blockedRegions.isEmpty)
         XCTAssertTrue(guidance.reasons.contains(.yoloOnly))
     }
 
@@ -1093,16 +1091,11 @@ final class VQASeeTests: XCTestCase {
             depthCapability: .unsupported
         )
 
-        XCTAssertEqual(guidance.nearPathStatus, .unknown)
         XCTAssertTrue(guidance.reasons.contains(.lowLight))
         XCTAssertFalse(guidance.uncertainRegions.isEmpty)
     }
 
-    func testLocalPathGuidanceRightObjectFocusesRightFront() {
-        // Box must sit CLEARLY inside the right-front ROI and clear of the near
-        // corridor (near ROI extends to x=0.75); an object straddling the near
-        // corridor is intentionally focused .center (near dominates focus), so a
-        // right-front focus test must use a purely right-side box.
+    func testLocalPathGuidanceRightObjectRecordsBlockedRegion() {
         let object = LocalPerceptionObject(
             kind: .obstacle,
             direction: .right,
@@ -1118,9 +1111,8 @@ final class VQASeeTests: XCTestCase {
             depthCapability: .unsupported
         )
 
-        XCTAssertEqual(guidance.rightFrontStatus, .blocked)
-        XCTAssertEqual(guidance.focusDirection, .right)
-        XCTAssertTrue(guidance.reasons.contains(.objectInRightFront))
+        XCTAssertEqual(guidance.blockedRegions.count, 1)
+        XCTAssertTrue(guidance.reasons.contains(.objectInNearPath))
     }
 
     func testLocalPerceptionPostProcessorDowngradesSmallVehicleToObstacleCandidate() {
@@ -1372,6 +1364,64 @@ final class VQASeeTests: XCTestCase {
         )
 
         XCTAssertTrue(lanes.isEmpty)
+    }
+
+    // MARK: - UFLD polylines → guidance path (Phase B)
+
+    func testUFLDMidlineFromEgoLanePair() {
+        let left = LanePolyline(
+            laneIndex: 1,
+            source: .rowAnchor,
+            points: [
+                CGPoint(x: 0.40, y: 0.70),
+                CGPoint(x: 0.42, y: 0.85),
+                CGPoint(x: 0.44, y: 1.0),
+            ]
+        )
+        let right = LanePolyline(
+            laneIndex: 2,
+            source: .rowAnchor,
+            points: [
+                CGPoint(x: 0.60, y: 0.70),
+                CGPoint(x: 0.58, y: 0.85),
+                CGPoint(x: 0.56, y: 1.0),
+            ]
+        )
+
+        let path = GuidancePathBuilder.fromUFLDPolylines([left, right])
+        XCTAssertNotNil(path)
+        XCTAssertEqual(path?.status, .ok)
+        XCTAssertEqual(path?.source, "ufld")
+        let points = path?.primary?.points ?? []
+        XCTAssertGreaterThanOrEqual(points.count, 3)
+        XCTAssertEqual(points[0].x, 0.50, accuracy: 0.02)
+        XCTAssertEqual(points[0].y, 0.30, accuracy: 0.02)
+        XCTAssertEqual(points.last?.x ?? 0, 0.50, accuracy: 0.02)
+        XCTAssertEqual(points.last?.y ?? 0, 0.0, accuracy: 0.02)
+    }
+
+    func testUFLDFallsBackToTwinLiteWhenNoPolylines() {
+        let path = GuidancePathBuilder.fromUFLDPolylines([])
+        XCTAssertNil(path)
+    }
+
+    func testUFLDSingleBoundaryOffsetsInward() {
+        let leftOnly = LanePolyline(
+            laneIndex: 1,
+            source: .rowAnchor,
+            points: [
+                CGPoint(x: 0.40, y: 0.70),
+                CGPoint(x: 0.42, y: 0.85),
+                CGPoint(x: 0.44, y: 1.0),
+            ]
+        )
+
+        let path = GuidancePathBuilder.fromUFLDPolylines([leftOnly])
+        XCTAssertNotNil(path)
+        let points = path?.primary?.points ?? []
+        XCTAssertGreaterThanOrEqual(points.count, 3)
+        XCTAssertGreaterThan(points[0].x, 0.40)
+        XCTAssertLessThan(points[0].x, 0.50)
     }
 
 }

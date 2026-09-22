@@ -2,12 +2,11 @@
 
 - 日期：2026-08-27
 - 主责：乔布斯（产品裁决、验收口径）× 小马（SOTA / 技术路线）
-- 配合：全麦（模型/评测/推理）、罗根（端上延迟/系统）、思余（UI/呈现）
-- 状态：已写入 `AGENTS.md`「核心能力（现阶段最高优先级）」；本文件是落地计划与任务分发
+- 状态：四项核心仍写入 AGENTS；**live 现状以 [`docs/CURRENT.md`](../CURRENT.md) 为准**（TwinLite 产品默认、角色可走未兑现）。
 - 关联：`docs/decisions/2026-08-26-role-conditioned-traversability.md`、
-  `docs/decisions/2026-08-25-retire-three-roi-boxes.md`、
-  `docs/model-lab/2026-08-27-lane-marking-segmentation.md`、
-  `docs/model-lab/2026-08-26-t2-multiclass-segmentation-plan.md`
+  `docs/decisions/2026-08-25-retire-three-roi-boxes.md`
+
+> **2026-09-22：** 历史记录。本页原「现状快照」和评测数字已按拍板删除，避免再被当成现在。
 
 ## 用户裁定（原话）
 
@@ -33,25 +32,16 @@
 3. **障碍物**：端上已有 YOLO11n（COCO 类）实时检测。缺**评测环**。→ 先建**障碍检测评测**（召回/精度/误阻挡）+ 与可走区融合的安全指标；台阶/路沿等 COCO 缺失类留分割/后续数据。
 4. **实时性**：SOTA 端侧要有**明确延迟预算**。→ harness 给每个模型（YOLO/分割/车道/深度）单独计时 + 整合 p50/p95；端上真机复核由罗根签字后开启第二次前向。
 
-## 现状快照（来自能力盘点，2026-08-27）
+## 现状快照
 
-| 能力 | 端上 live | 离线 harness | 专用指标 | 基线 | 记分卡卡片 | 闭环门禁 |
-|---|---|---|---|---|---|---|
-| 车道线 | ❌ 未捆绑 | ✅ `--lane-model` | ✅ `lane_metrics` | ✅ `camvid-ios-lane` + **`-lane-loop`（本轮新增）** | ✅ 已上 | ✅ **闭环门禁（本轮新增）** |
-| 可通行区(分人车) | ⏳ 端上代码就绪、mc5 未 bundle（shipping 仍二分类） | ✅ **mc5 角色派生**（本轮 G） | ✅ `role_metrics` | ✅ walk + drive + **mc5-walk/-drive（本轮 G）** | ✅ 行人卡 + 驾驶卡 | ✅ `--role-manifest` |
-| 障碍物 | ✅ YOLO | ✅ 检测覆盖打分 | ✅ **`obstacle_metrics`（本轮新增）** | ✅ **`camvid-ios-obstacle`（本轮新增）** | ✅ **障碍卡（本轮新增）** | ✅ `-obstacle` 门禁 |
-| 实时性 | 仅后端 Qwen | ✅ **分阶段计时（本轮新增）** | ✅ **整合 p50/p95** | ⏳ 端上真机待签 | ⏳ 待上卡 | ❌ |
-
-> 本轮（2026-08-27 晚）新增真实基线数字：障碍物覆盖召回 **0.663**、落点精度 0.548、漏障碍 79/701 帧；驾驶角色 道路召回 **0.811**、人行道误当车道 **0.006（0 危险帧）**——与行人角色（马路误当人行道 0.807、700/701 危险帧）形成鲜明对照，**用数据证明"可通行区必须区分人车"**。端上延迟 harness（701 帧，Mac 墙钟）：分割 p95 **170ms** 是实时头号瓶颈，YOLO 4ms、车道 7ms。
->
-> **2026-08-29 G 更新**：mc5 多类模型端上派生真身评测（701 帧，真实 iPhone 栈经 harness）：**行人角色 马路误当人行道率 0.807 → 0.096**（受影响帧 700→84）、sidewalk 召回 0.92；**同一 mc5 预测** 换机动车角色 道路召回 **0.97**、落人行道率 0.0007、lane 覆盖 0.975。一个模型两套安全角色可通行区，端到端成立。代价：mc5 分割 Mac 墙钟 p50 **~1.1s**（vs 二值 170ms），端上 ANE 真延迟待罗根真机签字。
+已删除。2026-09-22 起以 [`docs/CURRENT.md`](../CURRENT.md) 为准。
 
 ## 任务分发（主责 / 可验证性 / 阻塞）
 
 ### 本轮已完成（可验证）
 
 - **A · AGENTS.md 固化四项核心能力**（乔布斯）。
-- **B · 车道线上记分卡**（全麦/思余）：`diagnostic_api` 新增 `CAPABILITY_LANE_BASELINE` + 车道线能力卡（容差带召回/精度、细线 IoU 诚实说明、"尚未捆绑·仅离线"）。真值 `camvid-ios-lane.json` 端到端渲染验证通过。`pytest server-vqa/tests` **269 passed**。
+- **B · 车道线上记分卡**（全麦/思余）：记分卡与真值渲染当时通过。pytest 计数已删。
 
 ### 本轮已完成（可验证）· 第二批
 
@@ -64,24 +54,24 @@
 - **C · 车道线接入闭环评测** ✅（全麦）：
   - **根因确认**：manifest `role_grids.lane` 用多数投票降到 64×48 会抹掉细线（单测 `test_lane_presence_grid_preserves_thin_lines_that_majority_erases` 复现）。
   - **落地**：`region_grid.lane_presence_grid`（128×96、任意像素命中，对齐 Swift `LaneGrid` 128×96 中心采样）；`create_camvid_role_manifest` 每行加 **新字段** `lane_grid_fine`（旧 `role_grids.lane` 不动）；`run_ios_harness_eval._lane_pairs` 用 GT `lane_grid_fine` vs 预测 `lane_grid` → `evaluate_lane` → 存/门禁 **`camvid-ios-lane-loop`**（与留出集 `camvid-ios-lane` 分名并存，度量口径不同）。
-  - **真实基线（全 701 帧）**：严格召回 **0.908**、容差召回 **0.985**、IoU 0.664、漏车道 **2/696 帧**。三门禁（lane_loop/obstacle/role）已验证生效并通过。
-  - **影响面**：manifest 仅**新增字段**，`role_metrics` 与浏览 UI 不消费 `lane_grid_fine`，无破坏；两 manifest 各 701 行已回填；`pytest server-vqa/tests` **281 passed**。
-  - **诚实边界**：闭环数是**同分布**（车道模型在 CamVid 训练），泛化仍以留出集 `camvid-ios-lane`（Seq05V，容差召回 0.982）为准；记分卡车道卡继续用留出集，闭环基线只做回归门禁。
+  - **真实基线**：评测数字已按 2026-09-22 拍板删除。门禁当时通过。
+  - **影响面**：manifest 仅新增字段。pytest 计数已删。
+  - **诚实边界**：闭环数是同分布；泛化以留出集为准。
 
 ### 本轮已完成（可验证）· 第四批 · G 端上多类+角色派生
 
 - **G · N=5 多类模型上设备**（全麦+罗根）✅（端上代码 + 模型 + 闭环评测；**未 bundle**，见下）：
   - **端上派生**：`PerceptionRole{pedestrian,vehicle}` + `PerceptionConfig.role`；`LocalSegmentation.sampler` 原对 `classCount>2` 返回 nil，现支持 N≥3 类**按角色 softmax 派生可走概率**（行人=sidewalk、机动车=road+lane，`SegClass` 类序单一真源对齐训练脚本）；抽出可单测 `traversableProbability(fromClassLogits:role:)`（非有限/无有效 primary 类→nil，失败可见）。
-  - **模型**：`finetune_fast_scnn_camvid_multiclass.py` 训 mc5（Cityscapes 暖启动，leakage-safe 留出 Seq05V 尾部），held-out sidewalk 召回 **0.25→0.95**、马路误当人行道 6%，导出 `[1,5,512,512]` logits Core ML → 编译 `.mlmodelc`。
+  - **模型**：`finetune_fast_scnn_camvid_multiclass.py` 训 mc5。评测数字已删。导出 Core ML 并编译。
   - **harness 接入**：新增 `--seg-model`（仿 `--lane-model`，不动 shipping 包）；role 经 `--config docs/datasets/harness-config-{walk,drive}.json` 注入；真身评测见上表 G 更新数字，基线 `camvid-ios-mc5-walk/-drive`。
   - **顺带修真 bug**：`LocalPerception.swift` 的 ARKit 段守卫 `#if canImport(ARKit)` 在完整 Xcode 的 macOS SDK 上为真、但 `ARWorldTrackingConfiguration` 仅 iOS → harness 编译失败；改为 `canImport(ARKit) && os(iOS)`（iOS 行为不变，macOS 走相机-only）。**blast radius**：共享源码同被 App + harness 消费，iOS 测试 + macOS `swift build` 双绿验证。
   - **验证**：iOS `** TEST SUCCEEDED **`（含 role/多类单测）；harness `swift build` 通过；walk/drive 各 701 帧真身评测通过。
-  - **诚实边界**：mc5 **尚未 bundle 进 shipping App**（live 仍二分类），故记分卡"live 能力"卡**不改写**为 mc5 数字（不谎称已上线）；发布门在 H'（bundle）+ I（角色选择器）；端上真延迟待罗根真机签。
+  - **诚实边界**：mc5 **当时尚未作为 live 默认**（开关默认 false）。2026-09-22 起产品默认是 TwinLite，见 [`docs/CURRENT.md`](../CURRENT.md)；记分卡不把 mc5 数字写成已上线。端上真延迟待罗根真机签。
 
 ### 本轮已完成（可验证）· 第五批 · 实时性 P0 + H' 分级捆绑
 
-- **P0 · mc5 分辨率×精度曲线**（乔布斯裁定 + 全麦/罗根）✅：`export_mc5_coreml.py` 全卷积重导出（不重训）256/384/512，harness 全 701 帧 walk 评测得曲线（见 `docs/performance/...latency-budget.md`）。**裁定 shipping 默认 384²**（上马路率 0.131、召回 0.90、seg 比 512 省 ~44%）；256 兜底、512 精度上限。三档都碾压旧二值（0.807→最差 0.183）。
-- **H' · mc5 捆绑进 App（staged）**（罗根）✅：`VQASeeTraversabilitySeg5.mlmodelc`（384²）入 `VQASee/VQASee/` 同步组 + `project.pbxproj` explicitFileTypes；`PerceptionConfig.useMulticlassSegmentation` 开关**默认 false**（live 仍二值，实时性已证），置 true 即加载 mc5 按 role 派生；`apply(config:)` 注明 role/阈值 live 生效、模型开关启动期生效（不静默）。App 带 mc5 **编译+测试双绿**。
+- **P0 · mc5 分辨率曲线**（乔布斯 + 全麦/罗根）✅：全卷积重导出多档分辨率。评测数字已删。
+- **H' · mc5 捆绑进 App（staged）**（罗根）✅：`VQASeeTraversabilitySeg5.mlmodelc`（384²）入 `VQASee/VQASee/` 同步组 + `project.pbxproj` explicitFileTypes；`PerceptionConfig.useMulticlassSegmentation` 开关**默认 false**（当时 live 不跑 mc5），置 true 即加载 mc5 按 role 派生。2026-09-22 起产品路面默认是 TwinLite，见 [`docs/CURRENT.md`](../CURRENT.md)。
 
 ### 本轮已完成（可验证）· 第六批 · H 模型上设备 + 平台默认带车道 + 端上真车道 overlay
 

@@ -2,9 +2,11 @@
 
 Date: 2026-08-06
 
+> **2026-09-22：** 历史记录。现行规定见 [`docs/CURRENT.md`](../CURRENT.md)。定位已改为视觉引导优先；本页「voice-first」句子作废。安全边界（不承诺可以走/开）仍成立，已写入 CURRENT。
+
 ## Decision
 
-VQASee is no longer positioned only as a low-vision assistive app. It is a voice-first visual risk assistance product for:
+VQASee is no longer positioned only as a low-vision assistive app. It is a visual-first risk assistance product (see CURRENT) for:
 
 - pedestrians;
 - cyclists / e-bike riders;

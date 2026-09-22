@@ -1,19 +1,18 @@
 import CoreGraphics
 import Foundation
 
-/// Runtime perception configuration: the tunable ROI rectangles and decision
-/// thresholds used by `LocalPathGuidanceEngine` and the segmentation cue reader.
+/// Runtime perception configuration: decision thresholds used by the
+/// segmentation cue reader and road-backend swap.
 ///
 /// This mirrors the server single source of truth in
 /// `server-vqa/app/perception_config.py`. Defaults MUST equal the compiled-in
 /// constants so adopting the config changes nothing until a value is
 /// deliberately tuned and the version bumped. The macOS offline harness and the
 /// OTA path both flow through this same struct.
+///
+/// Three-zone ROI rectangles (near/left/right) are not a product signal
+/// (2026-09-22). Leftover `roi` keys in old OTA payloads are decoded and ignored.
 struct PerceptionThresholds: Equatable, Sendable {
-    var nearBlockedArea: Double
-    var sideBlockedArea: Double
-    var segNearCautionRatio: Double
-    var segSideCautionRatio: Double
     var segTraversablePixel: Double
 }
 
@@ -37,9 +36,6 @@ enum PerceptionRole: String, Equatable, Sendable {
 
 struct PerceptionConfig: Equatable, Sendable {
     var version: Int
-    var nearROI: CGRect
-    var leftROI: CGRect
-    var rightROI: CGRect
     var thresholds: PerceptionThresholds
     /// Role the multiclass segmentation derives the traversable surface for.
     /// Defaults to pedestrian (the safety-critical case T1 quantified: the old
@@ -52,23 +48,14 @@ struct PerceptionConfig: Equatable, Sendable {
     /// walkable region per `role`. Off = no traversable-region forward pass.
     var useMulticlassSegmentation: Bool = false
     var useLaneSegmentation: Bool = true
-    /// Swap-point for the road-surface model. `twinlite` is the experimental App
-    /// overlay (BDD drivable + lanes). `mc5` is the CamVid role-conditioned head.
+    /// Swap-point for the road-surface model. `twinlite` is the product default
+    /// (BDD drivable + lanes). `mc5` is the CamVid role-conditioned head.
     /// `off` runs neither.
     var roadBackend: RoadBackendID = .twinlite
 
-    /// Single source of default values. ROIs reuse the engine constants so there
-    /// is exactly one place defining the shipping defaults.
     static let `default` = PerceptionConfig(
         version: 1,
-        nearROI: LocalPathGuidanceEngine.nearPathROI,
-        leftROI: LocalPathGuidanceEngine.leftFrontROI,
-        rightROI: LocalPathGuidanceEngine.rightFrontROI,
         thresholds: PerceptionThresholds(
-            nearBlockedArea: 0.82,
-            sideBlockedArea: 0.86,
-            segNearCautionRatio: 0.35,
-            segSideCautionRatio: 0.30,
             segTraversablePixel: 0.55
         ),
         role: .pedestrian,
@@ -95,16 +82,18 @@ struct PerceptionConfigWire: Codable, Equatable {
         var right: ROIWire
     }
     struct ThresholdsWire: Codable, Equatable {
-        var near_blocked_area: Double
-        var side_blocked_area: Double
-        var seg_near_caution_ratio: Double
-        var seg_side_caution_ratio: Double
         var seg_traversable_pixel: Double
+        /// Leftover three-zone keys; decoded so old payloads still load, then ignored.
+        var near_blocked_area: Double?
+        var side_blocked_area: Double?
+        var seg_near_caution_ratio: Double?
+        var seg_side_caution_ratio: Double?
     }
     var version: Int
     var updated_at: String?
     var hash: String?
-    var roi: ROISet
+    /// Leftover three-zone boxes; ignored. Absent on new payloads.
+    var roi: ROISet?
     var thresholds: ThresholdsWire
     /// Optional for forward/backward compatibility: an older payload without a
     /// role decodes to the pedestrian default; an explicit unknown value is
@@ -114,7 +103,7 @@ struct PerceptionConfigWire: Codable, Equatable {
     var use_multiclass_segmentation: Bool?
     /// Optional switch for the dedicated lane segmenter; absent → true (bundled).
     var use_lane_segmentation: Bool?
-    /// Optional road-surface backend id; absent → twinlite (experimental App default).
+    /// Optional road-surface backend id; absent → twinlite (product default).
     var road_backend: String?
 }
 
@@ -133,40 +122,15 @@ extension PerceptionConfig {
     /// Build a validated runtime config from the wire payload. Validation mirrors
     /// the Python side so an invalid OTA payload is rejected (never silently
     /// clamped) — the caller is expected to fall back to `.default` visibly.
+    /// Leftover `roi` is accepted and discarded.
     init(wire: PerceptionConfigWire) throws {
         guard wire.version >= 1 else {
             throw PerceptionConfigError.outOfRange("version=\(wire.version) must be >= 1")
         }
 
-        func rect(_ roi: PerceptionConfigWire.ROIWire, _ name: String) throws -> CGRect {
-            for (key, value) in [("x", roi.x), ("y", roi.y), ("w", roi.w), ("h", roi.h)] {
-                if !(0.0...1.0).contains(value) {
-                    throw PerceptionConfigError.outOfRange("roi.\(name).\(key)=\(value) not in [0,1]")
-                }
-            }
-            if roi.w <= 0 || roi.h <= 0 {
-                throw PerceptionConfigError.outOfRange("roi.\(name) width/height must be > 0")
-            }
-            if roi.x + roi.w > 1.000001 {
-                throw PerceptionConfigError.outOfRange("roi.\(name) x+w=\(roi.x + roi.w) exceeds 1")
-            }
-            if roi.y + roi.h > 1.000001 {
-                throw PerceptionConfigError.outOfRange("roi.\(name) y+h=\(roi.y + roi.h) exceeds 1")
-            }
-            return CGRect(x: roi.x, y: roi.y, width: roi.w, height: roi.h)
-        }
-
-        let thresholdPairs: [(String, Double)] = [
-            ("near_blocked_area", wire.thresholds.near_blocked_area),
-            ("side_blocked_area", wire.thresholds.side_blocked_area),
-            ("seg_near_caution_ratio", wire.thresholds.seg_near_caution_ratio),
-            ("seg_side_caution_ratio", wire.thresholds.seg_side_caution_ratio),
-            ("seg_traversable_pixel", wire.thresholds.seg_traversable_pixel),
-        ]
-        for (key, value) in thresholdPairs {
-            if !(0.0...1.0).contains(value) {
-                throw PerceptionConfigError.outOfRange("thresholds.\(key)=\(value) not in [0,1]")
-            }
+        let pixel = wire.thresholds.seg_traversable_pixel
+        if !(0.0...1.0).contains(pixel) {
+            throw PerceptionConfigError.outOfRange("thresholds.seg_traversable_pixel=\(pixel) not in [0,1]")
         }
 
         let role: PerceptionRole
@@ -191,15 +155,8 @@ extension PerceptionConfig {
 
         self.init(
             version: wire.version,
-            nearROI: try rect(wire.roi.near, "near"),
-            leftROI: try rect(wire.roi.left, "left"),
-            rightROI: try rect(wire.roi.right, "right"),
             thresholds: PerceptionThresholds(
-                nearBlockedArea: wire.thresholds.near_blocked_area,
-                sideBlockedArea: wire.thresholds.side_blocked_area,
-                segNearCautionRatio: wire.thresholds.seg_near_caution_ratio,
-                segSideCautionRatio: wire.thresholds.seg_side_caution_ratio,
-                segTraversablePixel: wire.thresholds.seg_traversable_pixel
+                segTraversablePixel: pixel
             ),
             role: role,
             useMulticlassSegmentation: wire.use_multiclass_segmentation ?? false,

@@ -23,30 +23,30 @@ def test_runtime_perception_config_defaults_to_v1(client):
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["version"] == 1
-    assert payload["thresholds"]["near_blocked_area"] == 0.82
-    assert set(payload["roi"].keys()) == {"near", "left", "right"}
+    assert payload["thresholds"]["seg_traversable_pixel"] == 0.55
+    assert "roi" not in payload
 
 
 def test_bump_persists_and_runtime_reflects_it(client):
     resp = client.post(
         "/diagnostics/perception-config/bump",
-        json={"thresholds": {"near_blocked_area": 0.7}},
+        json={"thresholds": {"seg_traversable_pixel": 0.7}},
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
     assert body["config"]["version"] == 2
-    assert body["config"]["thresholds"]["near_blocked_area"] == 0.7
+    assert body["config"]["thresholds"]["seg_traversable_pixel"] == 0.7
 
     runtime = client.get("/runtime/perception-config").json()
     assert runtime["version"] == 2
-    assert runtime["thresholds"]["near_blocked_area"] == 0.7
+    assert runtime["thresholds"]["seg_traversable_pixel"] == 0.7
 
 
 def test_invalid_bump_is_rejected_and_not_written(client):
     resp = client.post(
         "/diagnostics/perception-config/bump",
-        json={"thresholds": {"near_blocked_area": 9.0}},
+        json={"thresholds": {"seg_traversable_pixel": 9.0}},
     )
     assert resp.status_code == 400
     # Nothing was written: still default v1.
@@ -66,7 +66,9 @@ def test_config_editor_ui_renders(client):
     resp = client.get("/diagnostics/perception-config/ui")
     assert resp.status_code == 200
     assert "保存并升级版本" in resp.text
-    assert "near_blocked_area" in resp.text
+    assert "seg_traversable_pixel" in resp.text
+    assert "near_blocked_area" not in resp.text
+    assert "近处正前" not in resp.text
     assert "road_backend" in resp.text
 
 
@@ -79,22 +81,14 @@ def _write_manifest(path):
         {
             "frame_id": "f1",
             "image_path": "/does/not/matter.png",
-            "ground_truth": {
-                "near_path_status": "blocked",
-                "left_front_status": "candidateOpen",
-                "right_front_status": "candidateOpen",
-                "focus_direction": "center",
-            },
+            "ground_truth": {},
+            "traversable_grid": {"cols": 2, "rows": 2, "cells": [1, 0, 0, 0]},
         },
         {
             "frame_id": "f2",
             "image_path": "/does/not/matter2.png",
-            "ground_truth": {
-                "near_path_status": "candidateOpen",
-                "left_front_status": "candidateOpen",
-                "right_front_status": "candidateOpen",
-                "focus_direction": "unknown",
-            },
+            "ground_truth": {},
+            "traversable_grid": {"cols": 2, "rows": 2, "cells": [1, 0, 0, 0]},
         },
     ]
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
@@ -149,21 +143,13 @@ def _write_harness_predictions(path):
         {
             "frame_id": "f1",
             "prediction": {
-                "near_path_status": "candidateOpen",  # GT is blocked -> risk miss
-                "left_front_status": "candidateOpen",
-                "right_front_status": "candidateOpen",
-                "focus_direction": "center",
                 "prediction_source": "ios_coreml_offline_harness",
             },
+            "traversable_grid": {"cols": 2, "rows": 2, "cells": [0, 0, 0, 0]},
             "objects": [
                 {"kind": "bus", "label": "公交车", "confidence": 0.98, "direction": "center",
                  "box": {"x": 0.5, "y": 0.2, "w": 0.2, "h": 0.4}},
             ],
-            "roi": {
-                "near": {"x": 0.3, "y": 0.0, "w": 0.4, "h": 0.35},
-                "left": {"x": 0.05, "y": 0.2, "w": 0.3, "h": 0.4},
-                "right": {"x": 0.65, "y": 0.2, "w": 0.3, "h": 0.4},
-            },
         },
         # f2 intentionally omitted to exercise the "no prediction for this frame" path.
     ]
@@ -198,7 +184,7 @@ def test_ios_harness_frames_ui_draws_overlay_and_gt_comparison(client, tmp_path)
     assert "该帧没有对应预测" in text
 
 
-def test_ios_harness_frames_ui_draws_guidance_lines(client, tmp_path):
+def test_ios_harness_frames_ui_draws_predicted_guidance_only(client, tmp_path):
     manifest = tmp_path / "m.jsonl"
     preds = tmp_path / "preds.jsonl"
     line = {
@@ -209,13 +195,11 @@ def test_ios_harness_frames_ui_draws_guidance_lines(client, tmp_path):
             {"x": 0.55, "y": 0.6, "half_width": 0.1},
         ]}],
     }
-    # Manifest frame carries a GT guidance line; image_path under an allowed root.
     manifest.write_text(json.dumps({
         "frame_id": "f1",
         "image_path": "/tmp/vqasee-nonexistent.png",
         "ground_truth": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen",
                           "right_front_status": "candidateOpen", "focus_direction": "center"},
-        "ground_truth_path": line,
     }) + "\n", encoding="utf-8")
     preds.write_text(json.dumps({
         "frame_id": "f1",
@@ -232,15 +216,13 @@ def test_ios_harness_frames_ui_draws_guidance_lines(client, tmp_path):
     )
     assert resp.status_code == 200
     text = resp.text
-    # Both the predicted line (polyline) and its corridor band (polygon) render,
-    # plus the legend explaining the two lines as the primary signal.
     assert "<polyline" in text
     assert "<polygon" in text
     assert "紫实线=iPhone 预测路径" in text
-    assert "绿虚线=真值路径" in text
-    # On-image "预测"/"真值" labels make the line self-explanatory.
+    assert "绿虚线=真值" not in text
+    assert "线级/车道真值已退役" in text
     assert ">预测<" in text
-    assert ">真值<" in text
+    assert ">真值<" not in text
 
 
 def test_camvid_mask_endpoint_renders_traversable_region(client, tmp_path, monkeypatch):
@@ -365,10 +347,10 @@ def test_ios_harness_frames_ui_filters_by_result_category(client, tmp_path):
     assert "只看哪种结果" in all_resp.text
     assert "本类 2 帧" in all_resp.text
 
-    # risk_miss: only f1 qualifies (blocked GT predicted candidateOpen).
+    # region_miss: only f1 qualifies (truth walkable, pred empty).
     # Match the frame-card heading precisely — a loose "f2" substring collides with
     # color hex like #bf5af2 in the legend.
-    rm = client.get("/diagnostics/datasets/ios-harness/frames/ui", params={**base, "filter": "risk_miss"})
+    rm = client.get("/diagnostics/datasets/ios-harness/frames/ui", params={**base, "filter": "region_miss"})
     assert "本类 1 帧" in rm.text
     assert "<h2>f1</h2>" in rm.text and "<h2>f2</h2>" not in rm.text
 
@@ -450,7 +432,7 @@ def test_ios_harness_cache_marked_stale_after_config_bump(client, tmp_path):
         # Fresh initially (cached config v1 == active v1).
         assert diagnostic_api._harness_cache_info(manifest)["fresh"] is True
         # Bump the active config -> cached v1 predictions become stale.
-        bump = client.post("/diagnostics/perception-config/bump", json={"thresholds": {"near_blocked_area": 0.7}})
+        bump = client.post("/diagnostics/perception-config/bump", json={"thresholds": {"seg_traversable_pixel": 0.7}})
         assert bump.status_code == 200
         info = diagnostic_api._harness_cache_info(manifest)
         assert info["fresh"] is False
@@ -499,7 +481,7 @@ def test_ios_harness_cache_uses_content_fingerprint_meta(client, tmp_path):
         _write_manifest(manifest)
         meta["manifest_hash"] = da._sha256_file(manifest)
         meta_path.write_text(json.dumps(meta), encoding="utf-8")
-        client.post("/diagnostics/perception-config/bump", json={"thresholds": {"near_blocked_area": 0.71}})
+        client.post("/diagnostics/perception-config/bump", json={"thresholds": {"seg_traversable_pixel": 0.71}})
         cfg_stale = da._harness_cache_info(manifest)
         assert cfg_stale["fresh"] is False
         assert any("配置" in r for r in cfg_stale["stale_reasons"])
@@ -612,23 +594,22 @@ def test_optional_harness_model_flags_injects_lane_model(tmp_path, monkeypatch):
     ]
 
 
-def test_optional_harness_model_flags_injects_seg5_for_role_eval(tmp_path, monkeypatch):
+def test_optional_harness_model_flags_never_injects_seg5_for_role_eval(tmp_path, monkeypatch):
     from app.diagnostic_api import _optional_harness_model_flags, _seg5_model_path
 
     monkeypatch.setenv("VQASEE_MODELS_DIR", str(tmp_path))
     assert "--seg-model" not in _optional_harness_model_flags()
     flags = _optional_harness_model_flags(eval_role="vehicle")
-    seg5 = _seg5_model_path()
-    assert seg5 is not None
-    assert flags[-2:] == ["--seg-model", str(seg5)]
+    assert _seg5_model_path() is not None
+    assert "--seg-model" not in flags
 
 
-def test_harness_eta_for_drive_mc5_exceeds_old_900s_cap():
+def test_harness_eta_for_drive_twinlite_stays_under_old_mc5_cap():
     from app.diagnostic_api import _format_duration, _harness_eta_seconds
 
     seconds = _harness_eta_seconds(701, "vehicle")
-    assert seconds > 900
-    assert "分钟" in _format_duration(seconds) or "小时" in _format_duration(seconds)
+    assert seconds < 900
+    assert "分钟" in _format_duration(seconds)
 
 
 def test_finalize_dead_harness_records_completed_run(tmp_path, monkeypatch):
@@ -699,7 +680,6 @@ def test_ios_harness_frames_ui_prefers_lane_polylines_and_demotes_grid_debug(cli
         "image_path": "/tmp/vqasee-nonexistent.png",
         "ground_truth": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen",
                           "right_front_status": "candidateOpen", "focus_direction": "center"},
-        "lane_grid_fine": {"cols": 4, "rows": 3, "cells": [0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]},
     }) + "\n", encoding="utf-8")
     preds.write_text(json.dumps({
         "frame_id": "f1",
@@ -722,11 +702,10 @@ def test_ios_harness_frames_ui_prefers_lane_polylines_and_demotes_grid_debug(cli
     assert "iPhone 车道折线" in text
     assert "旧像素车道调试层" in text
     assert "iPhone 感知车道线" not in text
-    assert "CamVid 真值车道线" in text
-    # Legend makes the product/debug split explicit.
+    assert "CamVid 真值车道线" not in text
     assert "黄色实线=iPhone 车道折线" in text
-    assert "黄块=旧像素车道调试层" in text
-    assert "蓝色=真值车道线" in text
+    assert "黄块=像素车道调试层" in text
+    assert "蓝色=真值车道线" not in text
 
 
 def test_region_pairs_only_when_both_grids_present():
@@ -822,7 +801,6 @@ def test_ios_harness_ui_shows_region_iou_metrics(client, tmp_path):
                     "right_front_status": "candidateOpen",
                     "focus_direction": "center",
                 },
-                "ground_truth_path": {"status": "insufficient", "coverage": 0.0, "lines": [], "source": "t"},
             })
             for fid in ("f1", "f2")
         ) + "\n",

@@ -9,9 +9,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from app.dataset_paths import portable_dataset_path
-from app.guidance_path import centerline_from_mask
-from app.path_dataset_import import LEFT_ROI, NEAR_ROI, RIGHT_ROI, focus_direction, roi_coverage, status_from_coverage
-from app.region_grid import downsample_mask_to_grid, grid_to_wire, lane_presence_grid
+from app.region_grid import downsample_mask_to_grid, grid_to_wire
 
 
 BDD_SCENE_TAGS = ["road", "driving", "drivable", "bdd100k"]
@@ -231,21 +229,12 @@ def _rasterize_bdd_drivable_mask(image_path: Path, record: dict[str, Any]) -> np
 
 
 def _row_from_mask(*, image_path: Path, images_dir: Path, mask: np.ndarray, split: str, scene_tags: list[str]) -> dict[str, Any]:
-    near_cov = roi_coverage(mask, NEAR_ROI)
-    left_cov = roi_coverage(mask, LEFT_ROI)
-    right_cov = roi_coverage(mask, RIGHT_ROI)
-    near_status = status_from_coverage(near_cov)
-    left_status = status_from_coverage(left_cov)
-    right_status = status_from_coverage(right_cov)
     rel = image_path.relative_to(images_dir).as_posix()
     # Ground-truth walkable-region grid (same coarse raster the iPhone harness
     # emits), so the loop can score region IoU without re-reading label images.
     gt_cells = downsample_mask_to_grid(np.asarray(mask, dtype=bool))
-    # Derive the line from the same 64x48 grid consumed by the iPhone/evaluator,
-    # not from full-resolution labels. This keeps semantics aligned and avoids
-    # full-res connected-component work when manifests are regenerated.
-    gt_path = centerline_from_mask(gt_cells.astype(bool), source="dataset_mask")
     gt_grid = grid_to_wire(gt_cells)
+    coverage = float(np.mean(np.asarray(mask, dtype=bool)))
     return {
         "frame_id": f"{split}/{image_path.stem}",
         "image": rel,
@@ -254,15 +243,9 @@ def _row_from_mask(*, image_path: Path, images_dir: Path, mask: np.ndarray, spli
         "scene_tags": scene_tags,
         "dataset_source": scene_tags[-1] if scene_tags else "open_dataset",
         "ground_truth_source": "semantic_traversability_mask",
-        "ground_truth": {
-            "near_path_status": near_status,
-            "left_front_status": left_status,
-            "right_front_status": right_status,
-            "focus_direction": focus_direction(near_status, left_status, right_status),
-        },
-        "ground_truth_path": gt_path.to_dict(),
+        "ground_truth": {},
         "traversable_grid": gt_grid,
-        "mask_coverage": {"near_path": near_cov, "left_front": left_cov, "right_front": right_cov},
+        "mask_coverage": {"frame": round(coverage, 4)},
     }
 
 
@@ -371,15 +354,10 @@ def _role_row_from_masks(
     onto the carriageway) without re-reading label images."""
     rel = image_path.relative_to(images_dir).as_posix()
     primary_cells = downsample_mask_to_grid(np.asarray(primary, dtype=bool))
-    gt_path = centerline_from_mask(primary_cells.astype(bool), source="dataset_mask")
     primary_grid = grid_to_wire(primary_cells)
     caution_grid = grid_to_wire(downsample_mask_to_grid(np.asarray(caution, dtype=bool)))
     lane_grid = grid_to_wire(downsample_mask_to_grid(np.asarray(lane, dtype=bool)))
     obstacle_grid = grid_to_wire(downsample_mask_to_grid(np.asarray(obstacle, dtype=bool)))
-    # Finer, any-pixel lane raster (128x96) so thin lanes survive for closed-loop
-    # scoring against the on-device lane grid. Separate NEW field: the coarse
-    # role_grids.lane above is unchanged so existing role consumers are untouched.
-    lane_grid_fine = grid_to_wire(lane_presence_grid(np.asarray(lane, dtype=bool)))
     return {
         "frame_id": f"{split}/{image_path.stem}",
         "image": rel,
@@ -389,7 +367,6 @@ def _role_row_from_masks(
         "dataset_source": "camvid_github",
         "ground_truth_source": "camvid_rgb_semantic_role",
         "role": role,
-        "ground_truth_path": gt_path.to_dict(),
         # Role primary = the surface the iPhone should perceive as walkable/drivable.
         "traversable_grid": primary_grid,
         "role_grids": {
@@ -398,8 +375,6 @@ def _role_row_from_masks(
             "lane": lane_grid,
             "obstacle": obstacle_grid,
         },
-        # Fine lane truth (128x96, any-pixel) for closed-loop lane scoring.
-        "lane_grid_fine": lane_grid_fine,
     }
 
 

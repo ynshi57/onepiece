@@ -30,9 +30,11 @@ def test_create_path_manifest_from_masks_marks_blocked_near_path(tmp_path):
         threshold=0.5,
     )
 
-    assert row["ground_truth"]["near_path_status"] in {"blocked", "caution"}
     assert row["ground_truth_source"] == "traversability_mask"
-    assert row["mask_coverage"]["near_path"] < 0.6
+    assert isinstance(row.get("traversable_grid"), dict)
+    cells = row["traversable_grid"]["cells"]
+    assert any(int(c) == 0 for c in cells)
+    assert row["mask_coverage"]["frame"] < 1.0
 
 
 def test_bdd100k_drivable_adapter_creates_path_manifest(tmp_path):
@@ -69,8 +71,8 @@ def test_bdd100k_drivable_adapter_creates_path_manifest(tmp_path):
     row = rows[0]
     assert row["dataset_source"] == "bdd100k_drivable_area"
     assert row["ground_truth_source"] == "bdd100k_drivable_area_poly2d"
-    assert row["ground_truth"]["near_path_status"] == "candidateOpen"
-    assert row["mask_coverage"]["near_path"] >= 0.6
+    assert any(int(c) > 0 for c in row["traversable_grid"]["cells"])
+    assert row["mask_coverage"]["frame"] > 0
 
 
 def test_camvid_adapter_creates_path_manifest_from_rgb_labels(tmp_path):
@@ -94,12 +96,10 @@ def test_camvid_adapter_creates_path_manifest_from_rgb_labels(tmp_path):
     row = rows[0]
     assert row["dataset_source"] == "camvid_github"
     assert row["ground_truth_source"] == "camvid_rgb_semantic_label"
-    assert row["ground_truth"]["near_path_status"] == "candidateOpen"
+    assert any(int(c) > 0 for c in row["traversable_grid"]["cells"])
     assert row["traversable_classes"] == "walk"
-    # Every row now carries a ground-truth guidance line derived from the mask.
-    from app.guidance_path import GuidancePath
-    gt_path = GuidancePath.from_dict(row["ground_truth_path"])
-    assert gt_path.status in {"ok", "insufficient"}
+    assert "ground_truth_path" not in row
+    assert isinstance(row.get("traversable_grid"), dict)
 
 
 def test_camvid_sidewalk_is_traversable_in_walk_but_not_drive(tmp_path):
@@ -128,11 +128,10 @@ def test_camvid_sidewalk_is_traversable_in_walk_but_not_drive(tmp_path):
         traversable_classes="drive",
     )[0]
 
-    # Sidewalk everywhere -> walkable (candidateOpen) for pedestrians.
-    assert walk["ground_truth"]["near_path_status"] == "candidateOpen"
-    assert walk["mask_coverage"]["near_path"] >= 0.6
-    # Sidewalk is not drivable -> blocked for the vehicle scene.
-    assert drive["ground_truth"]["near_path_status"] == "blocked"
+    # Sidewalk everywhere -> walkable cells for pedestrians.
+    assert any(int(c) > 0 for c in walk["traversable_grid"]["cells"])
+    # Sidewalk is not drivable -> no walkable cells for the vehicle scene.
+    assert all(int(c) == 0 for c in drive["traversable_grid"]["cells"])
 
 
 def test_camvid_traversable_colors_rejects_unknown_mode():

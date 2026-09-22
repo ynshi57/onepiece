@@ -2,7 +2,9 @@
 
 - 日期：2026-08-25
 - 主责：乔布斯（产品裁决）；实现罗根/思余/全麦；影响面按「变更影响面规则」
-- 状态：第一阶段已实现并验证（server + harness + 诊断台 + 设备浮层），深层删除分阶段进行
+- 状态：2026-09-22 拍板深层删除纳入本轮（引擎 / OTA / case）。可见框阶段已完成。现行规定见 [`docs/CURRENT.md`](../CURRENT.md)。
+
+> **2026-09-22：** 历史记录。评测计数已从本页拿掉。
 
 ## 背景 / 用户反馈
 
@@ -46,7 +48,7 @@ app 引导线、可行走区域等并不会消费这三个框吧。」
 
 ## 验证
 
-- `pytest server-vqa/tests` → **236 passed**。
+- **pytest**：当时跑绿（具体计数已按 2026-09-22 拍板从决策正文删除）。
 - `cd ios-vqa-app/perception-harness && swift build` → **Build complete**（覆盖 `LocalPerception` /
   `LocalVisionAnalyzer` / `main.swift` 真身感知核心）。
 - **未验证**：`CameraRiskOverlay.swift` 是纯 App SwiftUI 文件，不在 harness 编译目标里，本机只有
@@ -59,17 +61,14 @@ app 引导线、可行走区域等并不会消费这三个框吧。」
 - 覆盖用户消费路径：诊断台是用户真正看框的地方，已去框并 pytest 断言「三区表消失」；设备浮层已改但需 Xcode 复核。
 - 消除重复：门禁不再同时依赖三套 baseline 的 ROI 那套。
 
-## 未做（分阶段，非本轮范围 / 需重活）
+## 2026-09-22 深层删除（本轮已做）
 
-1. **案例层改锚**：把 `case_store` 的 `risk_miss` / `false_block`（基于三区状态）改为基于区域网格
-   失败（`region_miss` / `region_false_go`）。需同步 `_frame_flags` + `test_case_store` 整体重写。
-2. **删干净 Swift 引擎字段**：从 `LocalPathGuidanceSignal` / `LocalPathGuidanceEngine` 移除
-   `nearPathStatus` 等字段及其 App 消费方（`StreamingViewModel` / `DiagnosticCaptureRecorder`）。
-   需完整 Xcode 编译验证，否则可能静默破坏 App。
-3. **清 manifest 真值 ROI**：`open_dataset_adapters` 停止写 `ground_truth.{near/left/right/focus}`
-   需**重跑 701 帧 harness 重生成 `camvid-manifest.jsonl` + 3 个 baseline**，属数据/模型重活。
-4. **移除 perception-config 的 ROI 编辑器 UI**（高级设置页），并评估 `path_roi.py` /
-   `perception_config.py` 的 ROI schema 是否一并下线。
+1. **案例层改锚**：`case_store` 按区域网格聚类 `region_miss` / `region_false_go`。`_frame_flags` 与测试同步。网格可在行根或 `ground_truth`/`prediction` 里。
+2. **Swift 引擎字段**：`LocalPathGuidanceSignal` 不再带 `nearPathStatus` / `leftFrontStatus` / `rightFrontStatus` / `focusDirection`。障碍用 `blockedRegions`。`DiagnosticCaptureRecorder` 不再写三区状态。
+3. **新 manifest 不再写三区真值**：`open_dataset_adapters` / `path_dataset_import` 只写 `traversable_grid`。磁盘上旧的 701 帧 jsonl 仍可能带旧字段，消费方不再当产品信号。**未重跑 701 帧。**
+4. **OTA schema**：`perception_config.py` / `PerceptionConfig.swift` 去掉 ROI 矩形与三区阈值。加载忽略旧 `roi`；bump 带 `roi` 会 400。诊断台配置页不再编辑三框。
+
+未验证：App SwiftUI（`CameraRiskOverlay` / `DiagnosticCaptureRecorder`）需完整 Xcode `bash deploy/ios/test.sh`。`path_roi.py` 仍留在仓库给旧 eval 信息展示，不再是门禁。
 
 ## 沉淀去向
 

@@ -40,20 +40,17 @@ from typing import Any
 # UI filters and the case clusters can never drift apart.
 # ---------------------------------------------------------------------------
 
-REGION_KEYS = ("near_path_status", "left_front_status", "right_front_status")
+REGION_KEYS = ()  # three-zone ROI retired 2026-09-22; cases cluster on region grids
 
-# Failure types the case layer clusters on today. Guidance-line level failures
-# (missed_path / false_go) are aggregate-only for now and intentionally NOT
-# clustered here yet — see the tech-radar card for the follow-up.
-FAILURE_TYPES = ("risk_miss", "false_block")
+FAILURE_TYPES = ("region_miss", "region_false_go")
 
 _FAILURE_LABEL = {
-    "risk_miss": "漏报风险",
-    "false_block": "误阻挡",
+    "region_miss": "漏报可走",
+    "region_false_go": "误判可走",
 }
 _FAILURE_HINT = {
-    "risk_miss": "真实 注意/占用，却预测 可走候选（最危险）",
-    "false_block": "真实 可走，却预测 注意/占用（过度保守）",
+    "region_miss": "真值可走格子，预测不可走",
+    "region_false_go": "真值不可走格子，预测可走（冒进）",
 }
 
 # Lifecycle state machine. Order encodes normal forward progress; ``reopened``
@@ -77,26 +74,54 @@ _MAX_STORED_FRAME_IDS = 2000
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._:-]+")
 
 
-def frame_failure_types(gt: dict, prediction: dict) -> set[str]:
-    """Return the set of region-level failure types for one frame.
+def _grid_cells(blob: Any) -> list[Any] | None:
+    if not isinstance(blob, dict):
+        return None
+    cells = blob.get("cells")
+    if not isinstance(cells, list) or not cells:
+        return None
+    return cells
 
-    Empty prediction or missing regions never *invent* a failure; a frame only
-    fails when both ground truth and prediction are present and disagree in a
-    safety-relevant way. Mirrors ``diagnostic_api._frame_flags`` exactly for the
-    ``risk_miss`` / ``false_block`` buckets."""
+
+def frame_failure_types(gt: dict, prediction: dict) -> set[str]:
+    """Region-grid failures only. Three-zone ROI statuses are not clustered."""
     if not prediction:
         return set()
+    gt_cells = _grid_cells(gt.get("traversable_grid"))
+    pred_cells = _grid_cells(prediction.get("traversable_grid"))
+    if gt_cells is None or pred_cells is None or len(gt_cells) != len(pred_cells):
+        return set()
+    miss = false_go = False
+    for g, p in zip(gt_cells, pred_cells):
+        g_on = int(g) > 0
+        p_on = int(p) > 0
+        if g_on and not p_on:
+            miss = True
+        if p_on and not g_on:
+            false_go = True
     out: set[str] = set()
-    for key in REGION_KEYS:
-        g = gt.get(key)
-        p = prediction.get(key)
-        if g is None or p is None:
-            continue
-        if g in ("caution", "blocked") and p == "candidateOpen":
-            out.add("risk_miss")
-        elif g == "candidateOpen" and p in ("caution", "blocked"):
-            out.add("false_block")
+    if miss:
+        out.add("region_miss")
+    if false_go:
+        out.add("region_false_go")
     return out
+
+
+def guidance_payloads(manifest_row: dict, pred_row: dict | None) -> tuple[dict, dict]:
+    """Lift traversable_grid from either nested or row-root locations.
+
+    Open-dataset adapters and the iPhone harness emit the grid on the row
+    (``row["traversable_grid"]``). Tests may nest it under ``ground_truth`` /
+    ``prediction``. Case clustering and the viewer must see the same payload.
+    """
+    gt = dict((manifest_row or {}).get("ground_truth") or {})
+    if "traversable_grid" not in gt and isinstance((manifest_row or {}).get("traversable_grid"), dict):
+        gt["traversable_grid"] = manifest_row["traversable_grid"]
+    pred_row = pred_row or {}
+    prediction = dict(pred_row.get("prediction") or {})
+    if "traversable_grid" not in prediction and isinstance(pred_row.get("traversable_grid"), dict):
+        prediction["traversable_grid"] = pred_row["traversable_grid"]
+    return gt, prediction
 
 
 # ---------------------------------------------------------------------------
@@ -167,9 +192,7 @@ def cluster_failures(
         fid = str(row.get("frame_id", ""))
         if not fid:
             continue
-        gt = row.get("ground_truth", {}) or {}
-        pred_row = pred_index.get(fid) or {}
-        prediction = pred_row.get("prediction", {}) or {}
+        gt, prediction = guidance_payloads(row, pred_index.get(fid) or {})
         types = frame_failure_types(gt, prediction)
         for ft in failure_types:
             if ft in types:

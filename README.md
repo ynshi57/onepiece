@@ -37,16 +37,15 @@ VQASee 是一款面向 iPhone 的视觉优先风险辅助与通行路径提示�
 
 | 层 | 作用 | 位置 |
 |---|---|---|
-| **iOS App** | SwiftUI 摄像头应用、语音优先 UI、端侧感知（YOLO11n + 分割 + 深度线索）、引导线、模式栏 | `ios-vqa-app/VQASee` |
+| **iOS App** | SwiftUI 摄像头应用、视觉引导 overlay、端侧感知（YOLO11n + TwinLite 路面）、引导线、模式栏 | `ios-vqa-app/VQASee` |
 | **VQA 后端** | FastAPI 服务：WebSocket 信令、prompt/schema、场景记忆、经 `llama-server` 的 Qwen 3B/7B、fusion 兜底 | `server-vqa/app` |
 | **闭环平台** | 诊断采集、数据集导入、标注、评测、对拍、回归门禁、感知配置 OTA | `server-vqa/app/diagnostic_*` |
 | **离线 harness** | macOS SwiftPM CLI，用**真身** App 感知源码跑基准数据集 | `ios-vqa-app/perception-harness` |
 | **Relay** | 公共 WSS relay，让走蜂窝网的 iPhone 也能连到 Wi-Fi 上的 Mac worker | `relay-server` |
 | **iOS 自动化** | 构建 / 测试 / 归档 / TestFlight 脚本 | `deploy/ios` |
 
-当前产品能力：nearby 自动发现、跨网络 relay、四种模式（`周围` / `行走` /
-`读文字` / `详细`）、语音优先交互与按住说话提问、场景记忆与变化播报、端侧 OCR，
-以及输出**可通行引导线**、由闭环平台验证的端侧感知层。
+当前产品能力：nearby 自动发现、跨网络 relay、端侧 TwinLite 路面与车道、YOLO 障碍框、
+可通行引导线。读文字 / 周围 / 详细问答以后再做。语音用于确认，不是主体验。
 
 ## 系统架构
 
@@ -54,9 +53,9 @@ VQASee 是一款面向 iPhone 的视觉优先风险辅助与通行路径提示�
 flowchart TB
   subgraph Device["iPhone · VQASee (SwiftUI)"]
     CAM["摄像头帧"]
-    LP["端侧感知<br/>YOLO11n · 分割 · 深度线索"]
-    GL["LocalPathGuidanceEngine<br/>→ 可通行引导线"]
-    UI["语音优先 UI<br/>SpeechGate · AVSpeech · 叠加层"]
+    LP["端侧感知<br/>YOLO11n · TwinLite 路面"]
+    GL["引导线 + 车道图"]
+    UI["视觉 overlay<br/>语音辅助确认"]
     CAM --> LP --> GL --> UI
   end
 
@@ -364,7 +363,8 @@ bash deploy/ios/test.sh            # iOS（需完整 Xcode）
 
 产品在 `docs/` 下自我沉淀：
 
-- `docs/decisions/` — 产品/架构决策记录
+- `docs/CURRENT.md` — **现行产品现状（宪法页）**
+- `docs/decisions/` — 历史产品/架构决策记录
 - `docs/evolution/` — 迭代/闭环记录
 - `docs/model-lab/` — 模型与评测经验（如 CamVid 调色板修正、引导线基线）
 - `docs/ui-lab/` — UI 打磨经验

@@ -392,10 +392,6 @@ for row in rows {
     let guidance = signal.perception.pathGuidance
 
     let prediction: [String: Any] = [
-        "near_path_status": guidance.nearPathStatus.rawValue,
-        "left_front_status": guidance.leftFrontStatus.rawValue,
-        "right_front_status": guidance.rightFrontStatus.rawValue,
-        "focus_direction": guidance.focusDirection.rawValue,
         "confidence": guidance.confidence,
         "depth_capability": guidance.depthCapability.rawValue,
         "segmentation_capability": guidance.segmentationCapability.rawValue,
@@ -428,10 +424,8 @@ for row in rows {
     // when insufficient so the platform can see the degrade (never silently drop).
     let guidancePathOut: [String: Any] = (signal.perception.guidancePath ?? GuidancePath.insufficient).toWire()
 
-    // NOTE: the legacy `roi` field (near/left/right decision rectangles) was
-    // removed — the guidance line + traversable_grid are the signals the platform
-    // draws and scores now. The prediction still carries the coarse *_status
-    // values so the case layer can keep clustering until it re-anchors on region.
+    // NOTE: the legacy `roi` field and coarse *_status values were removed —
+    // guidance line + traversable_grid + YOLO blocked_regions are the signals.
     var outRow: [String: Any] = [
         "frame_id": id,
         "prediction": prediction,

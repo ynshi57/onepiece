@@ -1,5 +1,8 @@
 # Visual Guidance First：视觉引导优先的产品定位修正
 
+> **2026-09-22：** 历史记录。现行规定见 [`docs/CURRENT.md`](../CURRENT.md)。评测数字已按拍板从决策正文删除。
+
+
 Date: 2026-08-12
 
 ## 乔布斯裁决

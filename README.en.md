@@ -40,18 +40,17 @@ into the next iteration of the product.
 
 | Layer | What it does | Where |
 |---|---|---|
-| **iOS app** | SwiftUI camera app, voice-first UI, on-device perception (YOLO11n + segmentation + depth cues), guidance line, mode bar | `ios-vqa-app/VQASee` |
+| **iOS app** | SwiftUI camera app, visual overlay, on-device perception (YOLO11n + TwinLite road), guidance line, mode bar | `ios-vqa-app/VQASee` |
 | **VQA backend** | FastAPI service: WebSocket signaling, prompt/schema, scene memory, Qwen 3B/7B via `llama-server`, fusion fallback | `server-vqa/app` |
 | **Closed-loop platform** | Diagnostic capture, dataset import, annotation, evaluation, parity, regression gate, perception-config OTA | `server-vqa/app/diagnostic_*` |
 | **Offline harness** | macOS SwiftPM CLI that runs the **real** app perception source over benchmark datasets | `ios-vqa-app/perception-harness` |
 | **Relay** | Public WSS relay so an iPhone on cellular can reach a Mac worker on Wi-Fi | `relay-server` |
 | **iOS automation** | Build / test / archive / TestFlight scripts | `deploy/ios` |
 
-Product capabilities today: nearby auto-discovery, cross-network relay, four modes
-(`周围` / `行走` / `读文字` / `详细`), voice-first interaction with press-to-talk
-questions, scene memory & change-only reporting, on-device OCR, and an on-device
-perception layer that outputs a **traversable guidance line** validated by the
-closed-loop platform.
+Product capabilities today: nearby auto-discovery, cross-network relay, on-device
+TwinLite road/lanes, YOLO obstacle boxes, and a traversable guidance line.
+Read-text / surroundings / detailed Q&A come later. Voice confirms; it is not the
+main experience.
 
 ## System architecture
 
@@ -59,9 +58,9 @@ closed-loop platform.
 flowchart TB
   subgraph Device["iPhone · VQASee (SwiftUI)"]
     CAM["Camera frames"]
-    LP["Local perception<br/>YOLO11n · Segmentation · Depth cues"]
-    GL["LocalPathGuidanceEngine<br/>→ traversable guidance line"]
-    UI["Voice-first UI<br/>SpeechGate · AVSpeech · overlay"]
+    LP["Local perception<br/>YOLO11n · TwinLite road"]
+    GL["Guidance line + lane map"]
+    UI["Visual overlay<br/>voice confirms"]
     CAM --> LP --> GL --> UI
   end
 
@@ -356,7 +355,8 @@ user-visible state; never delete a test to hide a bug.
 
 The product self-documents under `docs/`:
 
-- `docs/decisions/` — product/architecture decision records
+- `docs/CURRENT.md` — **current product constitution**
+- `docs/decisions/` — dated product/architecture records (CURRENT wins on conflict)
 - `docs/evolution/` — iteration/closed-loop records
 - `docs/model-lab/` — model & eval findings (e.g. CamVid palette fix, guidance-line baseline)
 - `docs/ui-lab/` — UI polish notes

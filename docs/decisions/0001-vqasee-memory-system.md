@@ -9,16 +9,23 @@ VQASee 会持续进行代码修改、模型优化、UI 打磨、产品方案迭�
 建立分层记忆系统：
 
 ```text
+现行产品现状    → docs/CURRENT.md   （宪法页：与 dated 决策冲突时以 CURRENT 为准）
 代码事实        → 代码 / 测试
 长期规则        → AGENTS.md
 可复用工作流    → .agents/skills/
-产品决策        → docs/decisions/
+产品决策记录    → docs/decisions/   （历史裁决；附录，不覆盖 CURRENT）
 迭代记录        → docs/evolution/
 模型经验        → docs/model-lab/
 UI 经验         → docs/ui-lab/
 性能经验        → docs/performance/
+技术雷达        → docs/tech-radar/
+工作纪要        → auto_docs/        （同日以最新且带拍板的为准）
 路线图          → docs/roadmap.md
 ```
+
+正式工作流只认 `.agents/skills/`。非正式草案已删除，不要再从 `docs/` 检索 skill。
+
+2010-08-10 及更早的项目概览对话是历史快照，禁止再当项目知识。
 
 ## 不选择什么
 

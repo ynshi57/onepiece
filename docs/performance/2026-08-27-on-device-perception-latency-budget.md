@@ -56,4 +56,4 @@ mc5（N=5 角色分割）512² 在 Mac 墙钟 ~1.1s，是实时拦路石。Fast-
 - **三档都碾压旧二值**（0.807 → 最差 0.183，降 77%）；分割成本随像素面积近线性（512→256 ≈ 3.8× 提速）。
 - **乔布斯裁定：shipping 默认 384²**——甜点位：上马路率 0.131（比旧降 84%、逼近 512 的 0.096），seg 比 512 省 ~44%。256 作已验证兜底，512 作精度上限。
 - **诚实边界**：以上仍是 Mac 墙钟、非 iPhone ANE；相对排序可信，**绝对端上预算待罗根真机签字**再决定最终 flip 到哪一档。
-- 已 bundle 384 版进 App（`VQASeeTraversabilitySeg5.mlmodelc`），`use_multiclass_segmentation` 开关默认关（live 仍二值），等真机延迟签字后翻转。
+- 已 bundle 384 版进 App（`VQASeeTraversabilitySeg5.mlmodelc`），`use_multiclass_segmentation` 开关默认关（当时 live 不跑 mc5）。2026-09-22 起产品默认是 TwinLite，见 [`docs/CURRENT.md`](../CURRENT.md)。

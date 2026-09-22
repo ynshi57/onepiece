@@ -1,48 +1,28 @@
 # 03 — 模型职责地图
 
-受众：模型工程、产品评审。
-
-## 原则
-
-没有一个模型能负责整个世界。每个模型只负责自己擅长的部分。
+受众：模型工程、产品。现行规定见 [`docs/CURRENT.md`](../../CURRENT.md)。
 
 ```mermaid
 flowchart LR
-    subgraph LocalFast[本地快速感知]
-      V[Apple Vision\nOCR + 人形基础检测]
-      Y[YOLO11nObject\n人 / 车 / 自行车 / 常见物体]
+    subgraph Live[现在 live]
+      Y[YOLO11n · 人 / 车]
+      T[TwinLiteNet · 可走区 + 车道图]
     end
-
-    subgraph Geometry[几何与边界 - 未来]
-      R[道路边界模型\n车道线 / 人行横道 / 路沿 / 可疑通行区域]
-      D[Depth / LiDAR\n台阶 / 坑洞 / 落差]
+    subgraph Staged[已 bundle 未作产品默认]
+      M[mc5 角色可走 · 开关默认关]
     end
-
-    subgraph Semantic[语义层]
-      Q[Qwen / VLM\n解释 / 不确定性 / 语音措辞]
+    subgraph Next[下一阶段]
+      U[UFLDv2 · 几何折线]
+      D[深度 / 边界 · 台阶路沿]
     end
-
-    V --> S[LocalPerceptionSignal]
-    Y --> S
-    R --> S
-    D --> S
-    S --> Q
-    S --> UI[Overlay + 即时语音]
-    Q --> UI
+    Y --> UI[Overlay]
+    T --> UI
 ```
 
-## 职责表
-
-| 能力 | 当前负责人 | 下一步负责人 |
+| 能力 | 现在谁负责 | 不要误会 |
 |---|---|---|
-| OCR 读文字 | Apple Vision | Apple Vision + Qwen 确认 |
-| 人形检测 | Apple Vision | Apple Vision + YOLO |
-| 车辆 / 自行车 / 常见物体 | YOLO11nObject | 更好的检测器 + 真实诊断数据 |
-| 车道线 / 人行横道 / 路沿 | 只有 schema 和 UI 通道 | YOLOPv2 / HybridNets / 语义分割 |
-| 台阶 / 坑洞 / 落差 | 只有 schema 和 UI 通道 | LiDAR / Depth Anything / 深度规则 |
-| 解释与总结 | Qwen | Qwen + 结构化本地感知信号 |
-
-## 诚实边界
-
-当前 UI 可以显示道路和深度线索，但前提是有模型输出这些线索。  
-这不代表 VQASee 已经能稳定识别车道线、人行横道、路沿、台阶或坑洞。
+| 人 / 车 | YOLO11n | 不是台阶 / 路沿 |
+| 路面 + 车道图 | TwinLite | 不分人行道 vs 马路 |
+| 角色可走 | mc5 代码在，live 关 | 承诺未兑现 |
+| 几何车道线 | UFLDv2 未上 live | CamVid 像素不是产品线 |
+| 解释 / 问答 | Qwen | 以后再做，不是主路径 |

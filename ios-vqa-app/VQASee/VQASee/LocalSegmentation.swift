@@ -30,8 +30,7 @@ final class LocalTraversabilitySegmentationRunner {
     init(bundle: Bundle = .main, modelName: String = "VQASeeTraversabilitySegmentation") {
         var loadedModel: VNCoreMLModel?
         if let compiledURL = bundle.url(forResource: modelName, withExtension: "mlmodelc"),
-           let mlModel = try? MLModel(contentsOf: compiledURL),
-           let visionModel = try? VNCoreMLModel(for: mlModel) {
+           let visionModel = CoreMLPlatformLoader.visionModel(at: compiledURL) {
             loadedModel = visionModel
         }
         self.visionModel = loadedModel
@@ -42,8 +41,7 @@ final class LocalTraversabilitySegmentationRunner {
     /// shipping source tree (mirrors the lane runner). Returns nil if it won't load
     /// so the caller can fail loud rather than silently score an empty segmenter.
     init?(compiledModelURL: URL) {
-        guard let mlModel = try? MLModel(contentsOf: compiledModelURL),
-              let visionModel = try? VNCoreMLModel(for: mlModel) else {
+        guard let visionModel = CoreMLPlatformLoader.visionModel(at: compiledModelURL) else {
             return nil
         }
         self.visionModel = visionModel
@@ -278,9 +276,7 @@ final class LocalTraversabilitySegmentationRunner {
             return Double(traversable) / Double(valid)
         }
         return LocalSegmentationCueSignal(
-            nearPathTraversableRatio: coverage(in: config.nearROI),
-            leftFrontTraversableRatio: coverage(in: config.leftROI),
-            rightFrontTraversableRatio: coverage(in: config.rightROI)
+            traversableRatio: coverage(in: CGRect(x: 0, y: 0, width: 1, height: 1))
         )
     }
 }
