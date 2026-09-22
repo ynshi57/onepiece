@@ -258,9 +258,7 @@ def main() -> None:
     lines = Image.fromarray(occupancy.copy())
     draw = ImageDraw.Draw(lines)
     _draw_grid(draw, bev_w, bev_h, note)
-    gt_pts = _project_vision_line(_vision_points(truth.get("ground_truth_path")), width, height, fx, fy, cx, cy, pitch)
     pred_pts = _project_vision_line(_vision_points(pred.get("guidance_path")), width, height, fx, fy, cx, cy, pitch)
-    _draw_polyline(draw, gt_pts, (48, 209, 88), 5, dashed=True)
     _draw_polyline(draw, pred_pts, (191, 90, 242), 5)
     for obj in pred.get("objects") or []:
         if obj.get("kind") not in {"car", "person"}:

@@ -34,7 +34,7 @@ def test_python_payload_has_no_roi_product_key():
     payload = pc.default_config().to_dict()
     assert "roi" not in payload
     swift = SWIFT_CONFIG.read_text(encoding="utf-8")
-    assert "var roi: ROISet?" in swift
+    assert "roi" not in swift
     engine = SWIFT_ENGINE.read_text(encoding="utf-8")
     assert "nearPathROI" not in engine
     assert "nearPathStatus" not in engine

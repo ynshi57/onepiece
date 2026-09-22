@@ -120,8 +120,8 @@ def test_ios_harness_ui_scores_real_predictions(client, tmp_path):
     # Harness predictions must live under an allowed root (/tmp); tmp_path is not.
     preds = "/tmp/vqasee-test-ios-harness-preds.jsonl"
     rows = [
-        {"frame_id": "f1", "prediction": {"near_path_status": "blocked", "left_front_status": "candidateOpen", "right_front_status": "candidateOpen", "focus_direction": "center", "prediction_source": "ios_coreml_offline_harness"}},
-        {"frame_id": "f2", "prediction": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen", "right_front_status": "candidateOpen", "focus_direction": "unknown", "prediction_source": "ios_coreml_offline_harness"}},
+        {"frame_id": "f1", "prediction": {"prediction_source": "ios_coreml_offline_harness"}},
+        {"frame_id": "f2", "prediction": {"prediction_source": "ios_coreml_offline_harness"}},
     ]
     with open(preds, "w", encoding="utf-8") as handle:
         handle.write("\n".join(json.dumps(r) for r in rows) + "\n")
@@ -131,7 +131,6 @@ def test_ios_harness_ui_scores_real_predictions(client, tmp_path):
             params={"manifest": str(manifest), "predictions": preds},
         )
         assert resp.status_code == 200
-        assert "状态准确率" in resp.text
         assert "ios_coreml_offline_harness" in resp.text
     finally:
         import os
@@ -198,15 +197,11 @@ def test_ios_harness_frames_ui_draws_predicted_guidance_only(client, tmp_path):
     manifest.write_text(json.dumps({
         "frame_id": "f1",
         "image_path": "/tmp/vqasee-nonexistent.png",
-        "ground_truth": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen",
-                          "right_front_status": "candidateOpen", "focus_direction": "center"},
+        "ground_truth": {},
     }) + "\n", encoding="utf-8")
     preds.write_text(json.dumps({
         "frame_id": "f1",
-        "prediction": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen",
-                       "right_front_status": "candidateOpen", "focus_direction": "center",
-                       "prediction_source": "ios_coreml_offline_harness"},
-        "roi": {"near": {"x": 0.3, "y": 0.0, "w": 0.4, "h": 0.35}},
+        "prediction": {"prediction_source": "ios_coreml_offline_harness"},
         "guidance_path": line,
     }) + "\n", encoding="utf-8")
 
@@ -293,11 +288,7 @@ def test_ios_harness_frames_ui_overlays_camvid_gt_mask(client, tmp_path, monkeyp
                 "label_path": str(label),
                 "traversable_classes": "walk",
                 "ground_truth": {
-                    "near_path_status": "candidateOpen",
-                    "left_front_status": "candidateOpen",
-                    "right_front_status": "candidateOpen",
-                    "focus_direction": "center",
-                },
+                    },
             }
         )
         + "\n",
@@ -309,10 +300,6 @@ def test_ios_harness_frames_ui_overlays_camvid_gt_mask(client, tmp_path, monkeyp
             {
                 "frame_id": "f1",
                 "prediction": {
-                    "near_path_status": "candidateOpen",
-                    "left_front_status": "candidateOpen",
-                    "right_front_status": "candidateOpen",
-                    "focus_direction": "center",
                     "prediction_source": "ios_coreml_offline_harness",
                 },
             }
@@ -394,8 +381,10 @@ def _write_cached_predictions(manifest_path, config_version=1):
 
     out = diagnostic_api._harness_out_path(manifest_path)
     rows = [
-        {"frame_id": "f1", "prediction": {"near_path_status": "blocked", "config_version": config_version}},
-        {"frame_id": "f2", "prediction": {"near_path_status": "candidateOpen", "config_version": config_version}},
+        {"frame_id": "f1", "prediction": {
+ "config_version": config_version}},
+        {"frame_id": "f2", "prediction": {
+ "config_version": config_version}},
     ]
     out.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     return out
@@ -520,7 +509,7 @@ def test_ios_harness_parity_reports_unsupported_without_onnx(client, tmp_path):
     _write_manifest(manifest)
     preds = "/tmp/vqasee-test-ios-harness-preds2.jsonl"
     with open(preds, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps({"frame_id": "f1", "prediction": {"near_path_status": "blocked"}}) + "\n")
+        handle.write(json.dumps({"frame_id": "f1", "prediction": {"prediction_source": "ios_coreml_offline_harness"}}) + "\n")
     try:
         resp = client.post(
             "/diagnostics/datasets/ios-harness/parity",
@@ -618,7 +607,7 @@ def test_finalize_dead_harness_records_completed_run(tmp_path, monkeypatch):
     manifest = tmp_path / "m.jsonl"
     manifest.write_text('{"frame_id":"f1","image_path":"x.png"}\n', encoding="utf-8")
     out = tmp_path / "out.jsonl"
-    out.write_text('{"frame_id":"f1","prediction":{}}\n', encoding="utf-8")
+    out.write_text('{"frame_id":"f1","prediction": {"prediction_source": "ios_coreml_offline_harness"}}\n', encoding="utf-8")
     exit_path = tmp_path / "exit"
     exit_path.write_text("0\n", encoding="utf-8")
     lock = tmp_path / "lock.json"
@@ -670,22 +659,18 @@ def test_harness_run_lock_reports_running_and_clears_stale(tmp_path, monkeypatch
 
 
 def test_ios_harness_frames_ui_prefers_lane_polylines_and_demotes_grid_debug(client, tmp_path):
-    """Product lane display is geometry-first: UFLDv2 polylines are the iPhone lane
-    output. The old pixel lane_grid may still render for debugging, but it must not
-    be labeled as the product lane line."""
+    """Product lane display is geometry-first: polylines are the yellow strokes.
+    Pixel lane_grid may exist as a hidden debug layer, never the default overlay."""
     manifest = tmp_path / "m.jsonl"
     preds = tmp_path / "preds.jsonl"
     manifest.write_text(json.dumps({
         "frame_id": "f1",
         "image_path": "/tmp/vqasee-nonexistent.png",
-        "ground_truth": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen",
-                          "right_front_status": "candidateOpen", "focus_direction": "center"},
+        "ground_truth": {},
     }) + "\n", encoding="utf-8")
     preds.write_text(json.dumps({
         "frame_id": "f1",
-        "prediction": {"near_path_status": "candidateOpen", "left_front_status": "candidateOpen",
-                       "right_front_status": "candidateOpen", "focus_direction": "center",
-                       "prediction_source": "ios_coreml_offline_harness"},
+        "prediction": {"prediction_source": "ios_coreml_offline_harness"},
         "lane_polylines": [
             {"lane_index": 1, "source": "rowAnchor",
              "points": [{"x": 0.45, "y": 0.42}, {"x": 0.50, "y": 0.70}, {"x": 0.55, "y": 0.98}]}
@@ -700,12 +685,53 @@ def test_ios_harness_frames_ui_prefers_lane_polylines_and_demotes_grid_debug(cli
     assert resp.status_code == 200
     text = resp.text
     assert "iPhone 车道折线" in text
-    assert "旧像素车道调试层" in text
+    assert "hide-lane-grid-debug" in text
+    assert "lane-grid-debug" in text
+    assert "已画出车道折线" in text
+    assert "黄色实线=车道折线" in text
+    assert "黄块=像素车道调试层" not in text
     assert "iPhone 感知车道线" not in text
     assert "CamVid 真值车道线" not in text
-    assert "黄色实线=iPhone 车道折线" in text
-    assert "黄块=像素车道调试层" in text
     assert "蓝色=真值车道线" not in text
+
+
+def test_ios_harness_frames_ui_strokes_lane_grid_when_polylines_missing(client, tmp_path):
+    """TwinLite frames without UFLD still get yellow strokes, not a chessboard."""
+    from app.diagnostic_api import _lane_polylines_from_grid
+
+    cols, rows = 8, 8
+    cells = [0] * (cols * rows)
+    for y in range(3, 8):
+        cells[y * cols + 2] = 1
+        cells[y * cols + 6] = 1
+    derived = _lane_polylines_from_grid({"cols": cols, "rows": rows, "cells": cells})
+    assert len(derived) == 2
+    assert all(lane["source"] == "twinlite_mask" for lane in derived)
+    assert all(len(lane["points"]) >= 3 for lane in derived)
+
+    manifest = tmp_path / "m.jsonl"
+    preds = tmp_path / "preds.jsonl"
+    manifest.write_text(json.dumps({
+        "frame_id": "f-grid",
+        "image_path": "/tmp/vqasee-nonexistent.png",
+        "ground_truth": {},
+    }) + "\n", encoding="utf-8")
+    preds.write_text(json.dumps({
+        "frame_id": "f-grid",
+        "prediction": {"prediction_source": "ios_coreml_offline_harness"},
+        "lane_grid": {"cols": cols, "rows": rows, "cells": cells},
+    }) + "\n", encoding="utf-8")
+
+    resp = client.get(
+        "/diagnostics/datasets/ios-harness/frames/ui",
+        params={"manifest": str(manifest), "predictions": str(preds)},
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    assert "class='lane-polylines'" in text or "lane-polylines" in text
+    assert "hide-lane-grid-debug" in text
+    assert "已画出车道折线" in text
+    assert "本帧没有车道折线" not in text
 
 
 def test_region_pairs_only_when_both_grids_present():
@@ -746,11 +772,7 @@ def test_frames_ui_shows_iphone_perceived_region_by_default(client, tmp_path, mo
             "traversable_classes": "walk",
             "traversable_grid": _grid_wire(3, 4, [(0, 0), (0, 1)]),
             "ground_truth": {
-                "near_path_status": "candidateOpen",
-                "left_front_status": "candidateOpen",
-                "right_front_status": "candidateOpen",
-                "focus_direction": "center",
-            },
+                },
         }) + "\n",
         encoding="utf-8",
     )
@@ -759,10 +781,6 @@ def test_frames_ui_shows_iphone_perceived_region_by_default(client, tmp_path, mo
         json.dumps({
             "frame_id": "f1",
             "prediction": {
-                "near_path_status": "candidateOpen",
-                "left_front_status": "candidateOpen",
-                "right_front_status": "candidateOpen",
-                "focus_direction": "center",
                 "prediction_source": "ios_coreml_offline_harness",
             },
             "traversable_grid": _grid_wire(3, 4, [(0, 0), (1, 1)]),
@@ -796,11 +814,7 @@ def test_ios_harness_ui_shows_region_iou_metrics(client, tmp_path):
                 "frame_id": fid,
                 "traversable_grid": _grid_wire(2, 2, [(0, 0), (0, 1)]),
                 "ground_truth": {
-                    "near_path_status": "candidateOpen",
-                    "left_front_status": "candidateOpen",
-                    "right_front_status": "candidateOpen",
-                    "focus_direction": "center",
-                },
+                    },
             })
             for fid in ("f1", "f2")
         ) + "\n",
@@ -811,7 +825,7 @@ def test_ios_harness_ui_shows_region_iou_metrics(client, tmp_path):
         "\n".join(
             json.dumps({
                 "frame_id": fid,
-                "prediction": {"near_path_status": "candidateOpen", "focus_direction": "center"},
+                "prediction": {"prediction_source": "ios_coreml_offline_harness"},
                 "traversable_grid": _grid_wire(2, 2, [(0, 0), (0, 1)]),
             })
             for fid in ("f1", "f2")

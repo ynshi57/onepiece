@@ -37,11 +37,7 @@ def main() -> int:
     parser.add_argument("manifest", type=Path, help="JSONL manifest with ground_truth (and optional prediction).")
     parser.add_argument("--baseline", required=True, help="Name of the saved baseline to compare against.")
     parser.add_argument("--predictions", type=Path, help="Optional external predictions JSONL keyed by frame_id.")
-    parser.add_argument("--max-status-accuracy-drop", type=float, default=0.02)
-    parser.add_argument("--max-direction-accuracy-drop", type=float, default=0.02)
-    parser.add_argument("--max-risk-miss-increase", type=int, default=0)
-    parser.add_argument("--max-false-block-increase", type=int, default=0)
-    parser.add_argument("--max-unknown-rate-increase", type=float, default=0.05)
+    parser.add_argument("--max-missing-prediction-increase", type=int, default=0)
     args = parser.parse_args()
 
     baseline = load_baseline(args.baseline)
@@ -54,11 +50,7 @@ def main() -> int:
     current = evaluate_path_guidance(manifest_rows, prediction_rows)
 
     thresholds = GateThresholds(
-        max_status_accuracy_drop=args.max_status_accuracy_drop,
-        max_direction_accuracy_drop=args.max_direction_accuracy_drop,
-        max_risk_miss_increase=args.max_risk_miss_increase,
-        max_false_block_increase=args.max_false_block_increase,
-        max_unknown_rate_increase=args.max_unknown_rate_increase,
+        max_missing_prediction_increase=args.max_missing_prediction_increase,
     )
     result = check_regression(current, baseline, thresholds)
     print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2, sort_keys=True))

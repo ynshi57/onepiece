@@ -1,6 +1,5 @@
 import numpy as np
 
-from app.path_roi import path_guidance_from_mask, status_from_coverage
 from app.traversability_predictor import (
     Capability,
     TraversabilityPredictor,
@@ -10,30 +9,22 @@ from app.traversability_predictor import (
 )
 
 
-def test_path_roi_status_thresholds():
-    assert status_from_coverage(None) == "unknown"
-    assert status_from_coverage(0.9) == "candidateOpen"
-    assert status_from_coverage(0.4) == "caution"
-    assert status_from_coverage(0.05) == "blocked"
-
-
-def test_fully_traversable_mask_is_candidate_open():
-    mask = np.ones((100, 100), dtype=bool)
-    guidance = path_guidance_from_mask(mask)
-    assert guidance["near_path_status"] == "candidateOpen"
-    assert guidance["left_front_status"] == "candidateOpen"
-    assert guidance["right_front_status"] == "candidateOpen"
-
-
-def test_blocked_near_center_sets_focus_center():
-    mask = np.ones((100, 100), dtype=bool)
-    # Wipe out the bottom-center near ROI so it is not traversable.
-    mask[55:100, 25:75] = False
+def test_fully_traversable_mask_emits_walkable_grid():
+    mask = np.ones((48, 64), dtype=bool)
     result = prediction_from_traversable_mask(mask)
     prediction = result["prediction"]
-    assert prediction["near_path_status"] in {"caution", "blocked"}
-    assert prediction["focus_direction"] == "center"
+    cells = prediction["traversable_grid"]["cells"]
+    assert any(int(c) > 0 for c in cells)
+    assert result["coverage"]["frame"] == 1.0
     assert prediction["prediction_source"] == "offline_proxy_traversability_onnx"
+
+
+def test_blocked_mask_emits_empty_grid():
+    mask = np.zeros((48, 64), dtype=bool)
+    result = prediction_from_traversable_mask(mask)
+    cells = result["prediction"]["traversable_grid"]["cells"]
+    assert all(int(c) == 0 for c in cells)
+    assert result["coverage"]["frame"] == 0.0
 
 
 def test_probe_capability_reports_unsupported_without_model(tmp_path):
@@ -67,7 +58,7 @@ class _StubPredictor:
     def predict_image(self, image_path):
         if image_path == "MISSING":
             raise FileNotFoundError(image_path)
-        return {"prediction": dict(self._prediction), "coverage": {"near_path": 0.9}}
+        return {"prediction": dict(self._prediction), "coverage": {"frame": 0.9}}
 
 
 def test_predict_manifest_active_predictor_fills_predictions():
@@ -77,10 +68,8 @@ def test_predict_manifest_active_predictor_fills_predictions():
         {"frame_id": "c", "image_path": "MISSING"},  # missing file -> error
     ]
     prediction = {
-        "near_path_status": "candidateOpen",
-        "left_front_status": "candidateOpen",
-        "right_front_status": "candidateOpen",
-        "focus_direction": "unknown",
+        "prediction_source": "offline_proxy_traversability_onnx",
+        "traversable_grid": {"cols": 2, "rows": 2, "cells": [1, 0, 0, 0]},
     }
     result = predict_manifest(rows, _StubPredictor(prediction))
     assert result["capability"]["capability"] == "active"

@@ -19,36 +19,25 @@ TOOL = SERVER_ROOT / "tools" / "run_ios_harness_eval.py"
 MANIFEST_ROWS = [
     {
         "frame_id": "f1",
-        "ground_truth": {
-            "near_path_status": "blocked",
-            "left_front_status": "candidateOpen",
-            "right_front_status": "candidateOpen",
-            "focus_direction": "center",
-        },
+        "traversable_grid": {"cols": 2, "rows": 2, "cells": [1, 0, 0, 0]},
     },
     {
         "frame_id": "f2",
-        "ground_truth": {
-            "near_path_status": "caution",
-            "left_front_status": "candidateOpen",
-            "right_front_status": "candidateOpen",
-            "focus_direction": "unknown",
-        },
+        "traversable_grid": {"cols": 2, "rows": 2, "cells": [0, 1, 0, 0]},
     },
 ]
 
 
-def _pred(frame_id, near):
-    return {
+def _pred(frame_id, *, cells=None):
+    row = {
         "frame_id": frame_id,
         "prediction": {
-            "near_path_status": near,
-            "left_front_status": "candidateOpen",
-            "right_front_status": "candidateOpen",
-            "focus_direction": "center" if near == "blocked" else "unknown",
             "prediction_source": "ios_coreml_offline_harness",
         },
     }
+    if cells is not None:
+        row["traversable_grid"] = {"cols": len(cells[0]), "rows": len(cells), "cells": [v for r in cells for v in r]}
+    return row
 
 
 def _write_jsonl(path, rows):
@@ -72,15 +61,14 @@ def test_scores_perfect_predictions(tmp_path):
     manifest = tmp_path / "m.jsonl"
     preds = tmp_path / "p.jsonl"
     _write_jsonl(manifest, MANIFEST_ROWS)
-    _write_jsonl(preds, [_pred("f1", "blocked"), _pred("f2", "caution")])
+    _write_jsonl(preds, [_pred("f1"), _pred("f2")])
 
     result = _run(["--manifest", str(manifest), "--predictions", str(preds)], {})
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     report = payload["evaluation"]
     assert report["labeled_frames"] == 2
-    assert report["status_accuracy"] == 1.0
-    assert report["risk_miss_count"] == 0
+    assert "status_accuracy" not in report
     assert report["prediction_source"] == "ios_coreml_offline_harness"
 
 
@@ -91,7 +79,7 @@ def test_gate_without_region_baseline_fails_loud(tmp_path):
     manifest = tmp_path / "m.jsonl"
     good = tmp_path / "good.jsonl"
     _write_jsonl(manifest, MANIFEST_ROWS)
-    _write_jsonl(good, [_pred("f1", "blocked"), _pred("f2", "caution")])
+    _write_jsonl(good, [_pred("f1"), _pred("f2")])
     env = {"VQASEE_EVAL_BASELINE_DIR": str(baseline_dir)}
 
     # Saving produces no baseline when predictions carry no traversable_grid.
@@ -119,8 +107,8 @@ def test_region_gate_passes_when_grid_matches(tmp_path):
     manifest = tmp_path / "m.jsonl"
     clean = tmp_path / "clean.jsonl"
     grid = _grid([[1, 0], [1, 0]])
-    _write_jsonl(manifest, [{"frame_id": "f1", "ground_truth": MANIFEST_ROWS[0]["ground_truth"], "traversable_grid": grid}])
-    good = _pred("f1", "blocked")
+    _write_jsonl(manifest, [{"frame_id": "f1", "traversable_grid": grid}])
+    good = _pred("f1")
     good["traversable_grid"] = grid
     _write_jsonl(clean, [good])
 
@@ -154,10 +142,10 @@ def test_role_manifest_quantifies_road_as_sidewalk_defect(tmp_path):
     _write_jsonl(role_manifest, [role_row])
 
     manifest = tmp_path / "m.jsonl"
-    _write_jsonl(manifest, [{"frame_id": "f1", "ground_truth": MANIFEST_ROWS[0]["ground_truth"]}])
+    _write_jsonl(manifest, [{"frame_id": "f1", "traversable_grid": _grid([[1, 0]])}])
 
     preds = tmp_path / "p.jsonl"
-    p = _pred("f1", "caution")
+    p = _pred("f1")
     p["traversable_grid"] = _grid([[1, 1]])  # device calls BOTH sidewalk and road walkable
     _write_jsonl(preds, [p])
 

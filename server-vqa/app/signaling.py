@@ -12,7 +12,6 @@ from app.diagnostic_capture import append_diagnostic_record, save_diagnostic_fra
 from app.frame_metadata import (
     build_frame_metadata_prompt,
     normalize_frame_quality,
-    normalize_walking_roi,
     quality_gate_vqa_payload,
     should_short_circuit_quality,
 )
@@ -111,7 +110,6 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                 legacy_prompt = str(message.get("prompt", ""))
                 effective_mode = mode if mode.strip() else ("risk_observe" if not legacy_prompt.strip() else "")
                 frame_quality = normalize_frame_quality(message.get("frame_quality"))
-                walking_roi = normalize_walking_roi(message.get("walking_roi"))
                 prompt = resolve_prompt(
                     mode=mode,
                     question=question,
@@ -127,7 +125,6 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                 prompt = prompt + build_frame_metadata_prompt(
                     mode=effective_mode,
                     frame_quality=frame_quality,
-                    walking_roi=walking_roi,
                 )
                 # A follow-up frame with prior context and no explicit question is an
                 # incremental "what changed" frame -> allow a shorter, faster answer.
@@ -184,7 +181,6 @@ async def handle_signaling_websocket(websocket: WebSocket) -> None:
                         "fast_response": fast_response,
                         "incremental": incremental,
                         "quality": frame_quality,
-                        "walking_roi_present": walking_roi is not None,
                     }
                 )
                 diagnostic_session_id = str(message.get("diagnostic_session_id", "")).strip()

@@ -12,7 +12,6 @@ from app.diagnostic_capture import append_diagnostic_record, save_diagnostic_fra
 from app.frame_metadata import (
     build_frame_metadata_prompt,
     normalize_frame_quality,
-    normalize_walking_roi,
     quality_gate_vqa_payload,
     should_short_circuit_quality,
 )
@@ -53,7 +52,6 @@ def build_inference_result(message: dict) -> dict:
     legacy_prompt = str(message.get("prompt", ""))
     effective_mode = mode if mode.strip() else ("risk_observe" if not legacy_prompt.strip() else "")
     frame_quality = normalize_frame_quality(message.get("frame_quality"))
-    walking_roi = normalize_walking_roi(message.get("walking_roi"))
     prompt = resolve_prompt(
         mode=mode,
         question=question,
@@ -69,7 +67,6 @@ def build_inference_result(message: dict) -> dict:
     prompt = prompt + build_frame_metadata_prompt(
         mode=effective_mode,
         frame_quality=frame_quality,
-        walking_roi=walking_roi,
     )
     incremental = context is not None and not question.strip()
     fast_response = effective_mode in {"risk_observe", "walking", "surroundings"} and not question.strip()
@@ -133,7 +130,6 @@ def build_inference_result(message: dict) -> dict:
             "fast_response": fast_response,
             "incremental": incremental,
             "quality": frame_quality,
-            "walking_roi_present": walking_roi is not None,
         }
     )
     diagnostic_session_id = str(message.get("diagnostic_session_id", "")).strip()

@@ -135,26 +135,27 @@ struct CameraRiskOverlay: View {
         }
     }
 
-    /// Draw detected lane-marking cells (row 0 = top). Green matches the
-    /// diagnostic TwinLite overlay; absent grid draws nothing.
+    /// Draw lane polylines as strokes. Pixel `laneGrid` is not a product overlay.
     private func laneMarkingOverlay(in size: CGSize) -> some View {
         Canvas { context, _ in
-            guard let lane = signal.laneGrid,
-                  lane.cols > 0, lane.rows > 0,
-                  lane.cells.count == lane.cols * lane.rows else { return }
-            let cellW = size.width / CGFloat(lane.cols)
-            let cellH = size.height / CGFloat(lane.rows)
-            let color = Color(red: 40/255, green: 220/255, blue: 80/255).opacity(0.55)
-            for r in 0..<lane.rows {
-                let rowBase = r * lane.cols
-                for c in 0..<lane.cols where lane.cells[rowBase + c] != 0 {
-                    // +0.5 avoids hairline gaps between adjacent lane cells.
-                    let rect = CGRect(
-                        x: CGFloat(c) * cellW, y: CGFloat(r) * cellH,
-                        width: cellW + 0.5, height: cellH + 0.5
-                    )
-                    context.fill(Path(rect), with: .color(color))
+            let lanes = signal.lanePolylines
+            guard !lanes.isEmpty else { return }
+            let color = Color(red: 255/255, green: 214/255, blue: 10/255)
+            for lane in lanes where lane.points.count >= 2 {
+                var halo = Path()
+                var stroke = Path()
+                for (index, point) in lane.points.enumerated() {
+                    let view = CGPoint(x: size.width * point.x, y: size.height * point.y)
+                    if index == 0 {
+                        halo.move(to: view)
+                        stroke.move(to: view)
+                    } else {
+                        halo.addLine(to: view)
+                        stroke.addLine(to: view)
+                    }
                 }
+                context.stroke(halo, with: .color(.black.opacity(0.45)), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                context.stroke(stroke, with: .color(color), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
             }
         }
     }

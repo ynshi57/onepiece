@@ -110,10 +110,9 @@ def generate_diagnostic_report(
     vehicle_detection_frames: set[str] = set()
     person_detection_frames: set[str] = set()
     qwen_result_frames = 0
-    path_status_counts: Counter[str] = Counter()
+    path_guidance_frames = 0
     depth_capability_counts: Counter[str] = Counter()
     segmentation_capability_counts: Counter[str] = Counter()
-    path_guidance_frames = 0
     for row in rows:
         frame = _text(row.get("backend_saved_frame")) or _text(row.get("frame"))
         if _has_qwen_result(row):
@@ -122,7 +121,6 @@ def generate_diagnostic_report(
         path_guidance = perception.get("path_guidance") if isinstance(perception.get("path_guidance"), dict) else {}
         if path_guidance:
             path_guidance_frames += 1
-            path_status_counts[str(path_guidance.get("near_path_status", "unknown"))] += 1
             depth_capability_counts[str(path_guidance.get("depth_capability", "unknown"))] += 1
             segmentation_capability_counts[str(path_guidance.get("segmentation_capability", "unknown"))] += 1
         for obj in _manifest_objects(row):
@@ -293,7 +291,6 @@ def generate_diagnostic_report(
             "missed_risk_labels": len(missed_risk_labels),
             "output_error_labels": len(output_error_labels),
             "path_guidance_frames": path_guidance_frames,
-            "path_near_status": dict(path_status_counts),
             "path_depth_capability": dict(depth_capability_counts),
             "path_segmentation_capability": dict(segmentation_capability_counts),
         },

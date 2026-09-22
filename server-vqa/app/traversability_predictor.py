@@ -4,8 +4,8 @@ Open datasets (CamVid, BDD100K, ...) ship images + masks but no VQASee
 prediction. The real product predictor (LocalPathGuidanceSignal) only runs
 on-device via Core ML and cannot batch thousands of frames on the Mac. To close
 the evaluation loop offline we run the *same family* of floor/traversability
-segmentation model (Fast-SCNN, exported to ONNX) on the server, then map its
-traversable mask to path-guidance fields via the shared ``path_roi`` logic.
+segmentation model (Fast-SCNN, exported to ONNX) on the server, then downsample
+its traversable mask to the shared ``traversable_grid``.
 
 Honesty rules (aligned with docs/model-lab RGB-only route, Phase 1):
 - This is an OFFLINE PROXY predictor, not the shipping on-device model. Its
@@ -25,7 +25,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from app.path_roi import path_guidance_from_mask
+from app.region_grid import downsample_mask_to_grid, grid_to_wire
 
 # Default place to look for the converted floor-segmentation ONNX model. The
 # conversion pipeline lives in deploy/ios/convert_floor_segmentation_onnx_to_coreml.sh.
@@ -104,16 +104,20 @@ def probe_capability(model_path: str | os.PathLike[str] | None = None) -> Capabi
 
 
 def prediction_from_traversable_mask(mask: np.ndarray) -> dict[str, Any]:
-    """Pure core: binary traversable mask -> path-guidance prediction fields.
+    """Pure core: binary traversable mask -> traversable_grid prediction.
 
     This is deliberately model-independent so it can be tested with synthetic
     masks without onnxruntime or a real model asset.
     """
-    guidance = path_guidance_from_mask(mask)
-    coverage = guidance.pop("coverage", {})
-    prediction = dict(guidance)
-    prediction["prediction_source"] = "offline_proxy_traversability_onnx"
-    return {"prediction": prediction, "coverage": coverage}
+    bool_mask = np.asarray(mask, dtype=bool)
+    grid = downsample_mask_to_grid(bool_mask)
+    coverage = {"frame": round(float(np.mean(bool_mask)), 4)}
+    wire = grid_to_wire(grid)
+    prediction = {
+        "prediction_source": "offline_proxy_traversability_onnx",
+        "traversable_grid": wire,
+    }
+    return {"prediction": prediction, "coverage": coverage, "traversable_grid": wire}
 
 
 class TraversabilityPredictor:

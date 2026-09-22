@@ -15,11 +15,7 @@ def test_export_session_path_manifest_combines_labels_and_prediction(tmp_path):
                 "event": "sent_to_backend",
                 "perception": {
                     "path_guidance": {
-                        "near_path_status": "caution",
-                        "left_front_status": "candidateOpen",
-                        "right_front_status": "candidateOpen",
-                        "focus_direction": "center",
-                    }
+                        }
                 },
             },
             ensure_ascii=False,
@@ -44,7 +40,7 @@ def test_export_session_path_manifest_combines_labels_and_prediction(tmp_path):
     rows = export_session_path_manifest("demo", session_dir)
 
     assert rows[0]["frame_id"] == "demo/frames/frame-0001.jpg"
-    assert rows[0]["ground_truth"]["near_path_status"] == "candidateOpen"
-    assert rows[0]["prediction"]["near_path_status"] == "caution"
+    assert rows[0]["ground_truth"] == {}
+    assert "near_path_status" not in rows[0]["prediction"]
     assert "indoor" in rows[0]["scene_tags"]
     assert manifest_to_jsonl(rows).strip().startswith('{"frame_id"')

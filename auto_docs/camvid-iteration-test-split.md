@@ -2,7 +2,7 @@
 
 ## 最终结论
 
-CamVid 有 **4 种街道场景**（官方四段行车录像）。每种抽 3 张、拉开间隔，得到 12 帧 test 集。诊断台日常迭代跑 test，全量 701 留给发布回归。Intel Mac 多类分割从约 35 分钟降到约 1 分钟。
+CamVid 有 **4 种街道场景**（官方四段行车录像）。每种抽 3 张、拉开间隔，得到 12 帧 test 集。诊断台日常迭代跑 test，全量 701 留给发布回归。日常 harness 用 TwinLiteNet（~1s/帧），mc5 多类分割已退出默认路径。
 
 ## 方案要点
 
@@ -24,7 +24,7 @@ CamVid 有 **4 种街道场景**（官方四段行车录像）。每种抽 3 张
 ## 待办 / 阻塞
 
 - 诊断台当前未在跑：打开 `/diagnostics/datasets/ui`，点 **camvid-manifest-drive-test.jsonl** 的「iPhone 真身评估」即可
-- 本机已冒烟：12 帧 `predicted=12 missing_image=0`，分割约 3s/帧
+- 日常 harness：TwinLiteNet bundled Core ML（mc5 仅手动 `--seg-model` 回归）
 - 全量 701 仍可用于发布前回归，不要当日常迭代集
 
 ## 关键路径
@@ -43,3 +43,5 @@ docs/datasets/camvid-test-scenes.json
 
 更新时间: 2026-09-11 11:00
 更新时间: 2026-09-11 11:52
+
+更新时间: 2026-09-22 09:30

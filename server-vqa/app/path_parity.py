@@ -3,19 +3,14 @@
 The server-side traversability predictor is an offline *proxy* for the real
 on-device LocalPathGuidanceSignal. Its metrics are only trustworthy as a
 relative trend if it does not diverge wildly from what the iPhone actually
-produces. This module compares the two prediction sources on frames they share
+produces. This module compares traversable-grid cells on frames they share
 and raises a drift alert when disagreement exceeds a threshold.
-
-Both inputs are lists of prediction rows keyed by ``frame_id``, each carrying a
-``prediction`` (or ``path_guidance``) dict with the standard path-guidance
-fields.
 """
 
 from __future__ import annotations
 
 from typing import Any, Iterable
 
-PARITY_FIELDS = ("near_path_status", "left_front_status", "right_front_status", "focus_direction")
 DEFAULT_DRIFT_THRESHOLD = 0.20
 
 
@@ -28,8 +23,23 @@ def _prediction(row: dict[str, Any]) -> dict[str, Any]:
     for key in ("prediction", "path_guidance"):
         value = row.get(key)
         if isinstance(value, dict):
-            return value
-    return {}
+            merged = dict(value)
+            break
+    else:
+        merged = {}
+    if "traversable_grid" not in merged and isinstance(row.get("traversable_grid"), dict):
+        merged["traversable_grid"] = row["traversable_grid"]
+    return merged
+
+
+def _grid_cells(pred: dict[str, Any]) -> tuple[Any, ...]:
+    grid = pred.get("traversable_grid")
+    if not isinstance(grid, dict):
+        return ()
+    cells = grid.get("cells")
+    if not isinstance(cells, list):
+        return ()
+    return tuple(int(c) if isinstance(c, (int, float)) else 0 for c in cells)
 
 
 def _lookup(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -47,59 +57,47 @@ def compute_parity(
     *,
     drift_threshold: float = DEFAULT_DRIFT_THRESHOLD,
 ) -> dict[str, Any]:
-    """Compare iOS vs server predictions on shared frames.
-
-    Returns per-field agreement, overall agreement, drift rate, a drift alert
-    flag (drift_rate > threshold), and up to 100 concrete mismatches so a human
-    can inspect where the offline proxy diverges from the device.
-    """
+    """Compare iOS vs server traversable grids on shared frames."""
     ios = _lookup(ios_rows)
     server = _lookup(server_rows)
     shared = sorted(set(ios) & set(server))
 
-    field_matches = {field: 0 for field in PARITY_FIELDS}
-    field_totals = {field: 0 for field in PARITY_FIELDS}
     mismatches: list[dict[str, str]] = []
-    total_fields = 0
-    matched_fields = 0
+    matched_frames = 0
+    compared = 0
 
     for frame_id in shared:
-        ios_pred = ios[frame_id]
-        server_pred = server[frame_id]
-        for field in PARITY_FIELDS:
-            ios_value = str(ios_pred.get(field, "unknown"))
-            server_value = str(server_pred.get(field, "unknown"))
-            field_totals[field] += 1
-            total_fields += 1
-            if ios_value == server_value:
-                field_matches[field] += 1
-                matched_fields += 1
-            else:
-                mismatches.append(
-                    {
-                        "frame_id": frame_id,
-                        "field": field,
-                        "ios": ios_value,
-                        "server": server_value,
-                    }
-                )
+        ios_cells = _grid_cells(ios[frame_id])
+        server_cells = _grid_cells(server[frame_id])
+        if not ios_cells and not server_cells:
+            continue
+        compared += 1
+        if ios_cells == server_cells:
+            matched_frames += 1
+        else:
+            mismatches.append(
+                {
+                    "frame_id": frame_id,
+                    "field": "traversable_grid",
+                    "ios": f"cells={len(ios_cells)}",
+                    "server": f"cells={len(server_cells)}",
+                }
+            )
 
-    overall_agreement = round(matched_fields / total_fields, 4) if total_fields else None
+    overall_agreement = round(matched_frames / compared, 4) if compared else None
     drift_rate = round(1 - overall_agreement, 4) if overall_agreement is not None else None
-    field_agreement = {
-        field: (round(field_matches[field] / field_totals[field], 4) if field_totals[field] else None)
-        for field in PARITY_FIELDS
-    }
     drift_alert = bool(drift_rate is not None and drift_rate > drift_threshold)
 
     return {
         "shared_frames": len(shared),
-        "compared_fields": total_fields,
+        "compared_fields": compared,
         "overall_agreement": overall_agreement,
         "drift_rate": drift_rate,
         "drift_threshold": drift_threshold,
         "drift_alert": drift_alert,
-        "field_agreement": field_agreement,
+        "field_agreement": {
+            "traversable_grid": overall_agreement,
+        },
         "mismatches": mismatches[:100],
         "note": (
             "Server predictor is an offline proxy for on-device LocalPathGuidanceSignal; "

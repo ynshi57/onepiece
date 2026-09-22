@@ -21,6 +21,7 @@ struct RoadSurfaceMaps: Sendable, Equatable {
     var guidancePath: GuidancePath?
     var traversableGrid: TraversableGrid?
     var laneGrid: LaneGrid?
+    var lanePolylines: [LanePolyline] = []
     var segmentationCues: LocalSegmentationCueSignal?
 }
 
@@ -73,16 +74,14 @@ final class TwinLiteNetRoadBackend: RoadSurfaceBackend {
     init(bundle: Bundle = .main, modelName: String = "VQASeeTwinLiteNet") {
         var loaded: VNCoreMLModel?
         if let url = bundle.url(forResource: modelName, withExtension: "mlmodelc"),
-           let mlModel = try? MLModel(contentsOf: url),
-           let visionModel = try? VNCoreMLModel(for: mlModel) {
+           let visionModel = CoreMLPlatformLoader.visionModel(at: url) {
             loaded = visionModel
         }
         self.visionModel = loaded
     }
 
     init?(compiledModelURL: URL) {
-        guard let mlModel = try? MLModel(contentsOf: compiledModelURL),
-              let visionModel = try? VNCoreMLModel(for: mlModel) else {
+        guard let visionModel = CoreMLPlatformLoader.visionModel(at: compiledModelURL) else {
             return nil
         }
         self.visionModel = visionModel
@@ -126,12 +125,47 @@ final class TwinLiteNetRoadBackend: RoadSurfaceBackend {
         }
         _ = emitGrid
         let threshold = config.thresholds.segTraversablePixel
-        let path = GuidancePathBuilder.centerline(
+        let imageWidth = CVPixelBufferGetWidth(pixelBuffer)
+        let imageHeight = CVPixelBufferGetHeight(pixelBuffer)
+        let laneMaskNative = Self.boolMask(
+            width: laneSampler.width,
+            height: laneSampler.height,
+            sample: laneSampler.sample,
+            threshold: LocalLaneSegmentationRunner.laneProbThreshold
+        )
+        let pavementMaskNative = Self.boolMask(
             width: daSampler.width,
             height: daSampler.height,
             sample: daSampler.sample,
-            threshold: threshold,
-            source: "twinlite"
+            threshold: threshold
+        )
+        // Match Python ``infer_twinlite_masks``: infer at net resolution, then nearest
+        // upsample lane/DA to the camera frame before row-anchor rails.
+        let laneMask = Self.upsampleBoolMask(
+            laneMaskNative,
+            srcWidth: laneSampler.width,
+            srcHeight: laneSampler.height,
+            dstWidth: imageWidth,
+            dstHeight: imageHeight
+        )
+        let pavementMask = Self.upsampleBoolMask(
+            pavementMaskNative,
+            srcWidth: daSampler.width,
+            srcHeight: daSampler.height,
+            dstWidth: imageWidth,
+            dstHeight: imageHeight
+        )
+        let path = TwinLiteOccupiedRails.buildGuidancePath(
+            lane: laneMask,
+            pavement: pavementMask,
+            width: imageWidth,
+            height: imageHeight,
+            egoCol: imageWidth / 2
+        )
+        let displayLanes = TwinLiteOccupiedRails.displayPolylines(
+            lane: laneMask,
+            width: imageWidth,
+            height: imageHeight
         )
         let daGrid = Self.boolGrid(
             width: daSampler.width,
@@ -155,6 +189,7 @@ final class TwinLiteNetRoadBackend: RoadSurfaceBackend {
             guidancePath: path,
             traversableGrid: TraversableGrid(cols: daGrid.cols, rows: daGrid.rows, cells: daGrid.cells),
             laneGrid: LaneGrid(cols: laneCells.cols, rows: laneCells.rows, cells: laneCells.cells),
+            lanePolylines: displayLanes,
             segmentationCues: nil
         )
     }
@@ -183,6 +218,43 @@ final class TwinLiteNetRoadBackend: RoadSurfaceBackend {
             return 1.0 / (1.0 + exp(neg - pos))
         }
         return (width, height, sample)
+    }
+
+    private static func upsampleBoolMask(
+        _ mask: [Bool],
+        srcWidth: Int,
+        srcHeight: Int,
+        dstWidth: Int,
+        dstHeight: Int
+    ) -> [Bool] {
+        guard srcWidth > 0, srcHeight > 0, dstWidth > 0, dstHeight > 0 else { return [] }
+        if srcWidth == dstWidth, srcHeight == dstHeight { return mask }
+        var out = [Bool](repeating: false, count: dstWidth * dstHeight)
+        for y in 0..<dstHeight {
+            let sy = min(srcHeight - 1, y * srcHeight / dstHeight)
+            for x in 0..<dstWidth {
+                let sx = min(srcWidth - 1, x * srcWidth / dstWidth)
+                out[y * dstWidth + x] = mask[sy * srcWidth + sx]
+            }
+        }
+        return out
+    }
+
+    private static func boolMask(
+        width: Int,
+        height: Int,
+        sample: (Int, Int) -> Double?,
+        threshold: Double
+    ) -> [Bool] {
+        var cells = [Bool](repeating: false, count: width * height)
+        for y in 0..<height {
+            for x in 0..<width {
+                if let value = sample(x, y), value >= threshold {
+                    cells[y * width + x] = true
+                }
+            }
+        }
+        return cells
     }
 
     private static func boolGrid(

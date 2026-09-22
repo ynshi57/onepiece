@@ -1197,14 +1197,7 @@ final class VQASeeTests: XCTestCase {
             {
               "version": 1,
               \(roleLine)
-              "roi": {
-                "near": {"x": 0.3, "y": 0.6, "w": 0.4, "h": 0.35},
-                "left": {"x": 0.05, "y": 0.4, "w": 0.3, "h": 0.3},
-                "right": {"x": 0.65, "y": 0.4, "w": 0.3, "h": 0.3}
-              },
               "thresholds": {
-                "near_blocked_area": 0.82, "side_blocked_area": 0.86,
-                "seg_near_caution_ratio": 0.35, "seg_side_caution_ratio": 0.30,
                 "seg_traversable_pixel": 0.55
               }
             }
@@ -1229,14 +1222,7 @@ final class VQASeeTests: XCTestCase {
         {
           "version": 2,
           "use_multiclass_segmentation": true,
-          "roi": {
-            "near": {"x": 0.25, "y": 0.00, "w": 0.50, "h": 0.58},
-            "left": {"x": 0.00, "y": 0.05, "w": 0.42, "h": 0.62},
-            "right": {"x": 0.58, "y": 0.05, "w": 0.42, "h": 0.62}
-          },
           "thresholds": {
-            "near_blocked_area": 0.82, "side_blocked_area": 0.86,
-            "seg_near_caution_ratio": 0.35, "seg_side_caution_ratio": 0.30,
             "seg_traversable_pixel": 0.55
           }
         }
@@ -1249,14 +1235,7 @@ final class VQASeeTests: XCTestCase {
         {
           "version": 2,
           "use_lane_segmentation": false,
-          "roi": {
-            "near": {"x": 0.25, "y": 0.00, "w": 0.50, "h": 0.58},
-            "left": {"x": 0.00, "y": 0.05, "w": 0.42, "h": 0.62},
-            "right": {"x": 0.58, "y": 0.05, "w": 0.42, "h": 0.62}
-          },
           "thresholds": {
-            "near_blocked_area": 0.82, "side_blocked_area": 0.86,
-            "seg_near_caution_ratio": 0.35, "seg_side_caution_ratio": 0.30,
             "seg_traversable_pixel": 0.55
           }
         }
@@ -1270,14 +1249,7 @@ final class VQASeeTests: XCTestCase {
             {
               "version": 2,
               "road_backend": "\(backend)",
-              "roi": {
-                "near": {"x": 0.25, "y": 0.00, "w": 0.50, "h": 0.58},
-                "left": {"x": 0.00, "y": 0.05, "w": 0.42, "h": 0.62},
-                "right": {"x": 0.58, "y": 0.05, "w": 0.42, "h": 0.62}
-              },
               "thresholds": {
-                "near_blocked_area": 0.82, "side_blocked_area": 0.86,
-                "seg_near_caution_ratio": 0.35, "seg_side_caution_ratio": 0.30,
                 "seg_traversable_pixel": 0.55
               }
             }
@@ -1364,6 +1336,57 @@ final class VQASeeTests: XCTestCase {
         )
 
         XCTAssertTrue(lanes.isEmpty)
+    }
+
+    func testUFLDPolishRemovesIsolatedRowSpike() {
+        var points: [CGPoint] = []
+        for i in 0..<16 {
+            let t = Double(i) / 15.0
+            var x = 0.30 + 0.10 * t
+            if i == 8 { x = 0.42 }
+            points.append(CGPoint(x: x, y: 0.50 + 0.50 * t))
+        }
+        let polished = UFLDv2LanePolisher.polish(points)
+        XCTAssertGreaterThanOrEqual(polished.count, 8)
+        XCTAssertFalse(polished.contains { abs($0.x - 0.42) < 0.002 })
+        let mid = polished[polished.count / 2].x
+        XCTAssertLessThan(mid, 0.40)
+    }
+
+    func testUFLDPolishLeavesShortPolylineUntouched() {
+        let points = [
+            CGPoint(x: 0.20, y: 0.50),
+            CGPoint(x: 0.22, y: 0.70),
+            CGPoint(x: 0.24, y: 0.90),
+        ]
+        XCTAssertEqual(UFLDv2LanePolisher.polish(points), points)
+    }
+
+    func testUFLDPolishKeepsLongerFragmentAfterIdentityJump() {
+        var points: [CGPoint] = []
+        for i in 0..<10 {
+            points.append(CGPoint(x: 0.52, y: 0.55 + 0.015 * Double(i)))
+        }
+        for i in 0..<24 {
+            points.append(CGPoint(x: 0.32 - 0.004 * Double(i), y: 0.70 + 0.012 * Double(i)))
+        }
+        let polished = UFLDv2LanePolisher.polish(points)
+        let xs = polished.map(\.x)
+        XCTAssertLessThan(xs.max() ?? 1, 0.40)
+        XCTAssertGreaterThan(xs.min() ?? 0, 0.15)
+    }
+
+    func testUFLDPolishSkipsColAnchorLanes() {
+        let col = LanePolyline(
+            laneIndex: 0,
+            source: .colAnchor,
+            points: (0..<16).map { i in
+                let t = Double(i) / 15.0
+                return CGPoint(x: t, y: i == 8 ? 0.80 : 0.40)
+            }
+        )
+        let out = UFLDv2LanePolisher.polishRowEgoLanes([col])
+        XCTAssertEqual(out[0].points, col.points)
     }
 
     // MARK: - UFLD polylines → guidance path (Phase B)

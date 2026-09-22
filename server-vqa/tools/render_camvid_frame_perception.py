@@ -141,12 +141,10 @@ def main() -> None:
 
     lines = rgb.copy()
     draw = ImageDraw.Draw(lines)
-    gt_pts = _vision_line(truth.get("ground_truth_path"), width, height)
     pred_pts = _vision_line(pred.get("guidance_path"), width, height)
-    _draw_line(draw, gt_pts, (48, 209, 88), 7, dashed=True)
     _draw_line(draw, pred_pts, (191, 90, 242), 7)
-    draw.text((20, height - 70), "green dashed = GT    purple = predicted", fill=(255, 255, 255), font=title)
-    _caption(lines, "5 · 从可走区描中心线：脚下往远处串中点").save(out / "05-centerlines.jpg", quality=90)
+    draw.text((20, height - 70), "purple = predicted path (CamVid line GT retired)", fill=(255, 255, 255), font=title)
+    _caption(lines, "5 · iPhone 预测引导线").save(out / "05-centerlines.jpg", quality=90)
 
     boxes = rgb.copy()
     draw = ImageDraw.Draw(boxes)
@@ -164,7 +162,6 @@ def main() -> None:
 
     compose = _overlay_mask(rgb, pred_mask, (191, 90, 242), 0.32)
     draw = ImageDraw.Draw(compose)
-    _draw_line(draw, gt_pts, (48, 209, 88), 6, dashed=True)
     _draw_line(draw, pred_pts, (255, 255, 255), 8)
     _draw_line(draw, pred_pts, (191, 90, 242), 5)
     for obj in pred.get("objects") or []:
@@ -186,7 +183,6 @@ def main() -> None:
     print("walk pred cells", int(walk_cells.sum()), "/", walk_cells.size)
     print("drive guidance", pred.get("guidance_path", {}).get("status"), pred.get("guidance_path", {}).get("coverage"))
     print("walk guidance", walk_pred.get("guidance_path", {}).get("status"), walk_pred.get("guidance_path", {}).get("coverage"))
-    print("gt guidance", truth.get("ground_truth_path", {}).get("status"), truth.get("ground_truth_path", {}).get("coverage"))
     print("objects", [(o.get("kind"), round(float(o.get("confidence") or 0), 3)) for o in pred.get("objects") or []])
     print("wrote", out)
 

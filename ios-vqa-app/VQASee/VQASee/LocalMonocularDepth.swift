@@ -13,8 +13,7 @@ final class LocalMonocularDepthRunner {
     init(bundle: Bundle = .main, modelName: String = "DepthAnythingV2SmallF16") {
         var loadedModel: VNCoreMLModel?
         if let compiledURL = bundle.url(forResource: modelName, withExtension: "mlmodelc"),
-           let mlModel = try? MLModel(contentsOf: compiledURL),
-           let visionModel = try? VNCoreMLModel(for: mlModel) {
+           let visionModel = CoreMLPlatformLoader.visionModel(at: compiledURL) {
             loadedModel = visionModel
         }
         self.visionModel = loadedModel

@@ -24,11 +24,6 @@ from typing import Any
 TRACKED_METRICS = (
     "frame_count",
     "labeled_frames",
-    "status_accuracy",
-    "focus_direction_accuracy",
-    "unknown_prediction_rate",
-    "risk_miss_count",
-    "false_block_count",
     "missing_prediction_count",
 )
 

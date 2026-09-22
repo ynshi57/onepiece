@@ -10,8 +10,7 @@ import Foundation
 /// deliberately tuned and the version bumped. The macOS offline harness and the
 /// OTA path both flow through this same struct.
 ///
-/// Three-zone ROI rectangles (near/left/right) are not a product signal
-/// (2026-09-22). Leftover `roi` keys in old OTA payloads are decoded and ignored.
+/// Three-zone ROI rectangles are not a product signal (2026-09-22).
 struct PerceptionThresholds: Equatable, Sendable {
     var segTraversablePixel: Double
 }
@@ -70,30 +69,12 @@ struct PerceptionConfig: Equatable, Sendable {
 /// Decodable representation of the OTA / harness JSON payload. Keys are
 /// snake_case to match the Python schema byte-for-byte.
 struct PerceptionConfigWire: Codable, Equatable {
-    struct ROIWire: Codable, Equatable {
-        var x: Double
-        var y: Double
-        var w: Double
-        var h: Double
-    }
-    struct ROISet: Codable, Equatable {
-        var near: ROIWire
-        var left: ROIWire
-        var right: ROIWire
-    }
     struct ThresholdsWire: Codable, Equatable {
         var seg_traversable_pixel: Double
-        /// Leftover three-zone keys; decoded so old payloads still load, then ignored.
-        var near_blocked_area: Double?
-        var side_blocked_area: Double?
-        var seg_near_caution_ratio: Double?
-        var seg_side_caution_ratio: Double?
     }
     var version: Int
     var updated_at: String?
     var hash: String?
-    /// Leftover three-zone boxes; ignored. Absent on new payloads.
-    var roi: ROISet?
     var thresholds: ThresholdsWire
     /// Optional for forward/backward compatibility: an older payload without a
     /// role decodes to the pedestrian default; an explicit unknown value is
@@ -122,7 +103,6 @@ extension PerceptionConfig {
     /// Build a validated runtime config from the wire payload. Validation mirrors
     /// the Python side so an invalid OTA payload is rejected (never silently
     /// clamped) — the caller is expected to fall back to `.default` visibly.
-    /// Leftover `roi` is accepted and discarded.
     init(wire: PerceptionConfigWire) throws {
         guard wire.version >= 1 else {
             throw PerceptionConfigError.outOfRange("version=\(wire.version) must be >= 1")

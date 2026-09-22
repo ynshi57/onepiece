@@ -65,10 +65,10 @@ app 引导线、可行走区域等并不会消费这三个框吧。」
 
 1. **案例层改锚**：`case_store` 按区域网格聚类 `region_miss` / `region_false_go`。`_frame_flags` 与测试同步。网格可在行根或 `ground_truth`/`prediction` 里。
 2. **Swift 引擎字段**：`LocalPathGuidanceSignal` 不再带 `nearPathStatus` / `leftFrontStatus` / `rightFrontStatus` / `focusDirection`。障碍用 `blockedRegions`。`DiagnosticCaptureRecorder` 不再写三区状态。
-3. **新 manifest 不再写三区真值**：`open_dataset_adapters` / `path_dataset_import` 只写 `traversable_grid`。磁盘上旧的 701 帧 jsonl 仍可能带旧字段，消费方不再当产品信号。**未重跑 701 帧。**
+3. **新 manifest 不再写三区真值**：`open_dataset_adapters` / `path_dataset_import` 只写 `traversable_grid`。磁盘 jsonl、`path_roi.py`、harness-config 矩形已于 2026-09-22 后续清掉。
 4. **OTA schema**：`perception_config.py` / `PerceptionConfig.swift` 去掉 ROI 矩形与三区阈值。加载忽略旧 `roi`；bump 带 `roi` 会 400。诊断台配置页不再编辑三框。
 
-未验证：App SwiftUI（`CameraRiskOverlay` / `DiagnosticCaptureRecorder`）需完整 Xcode `bash deploy/ios/test.sh`。`path_roi.py` 仍留在仓库给旧 eval 信息展示，不再是门禁。
+未验证：App SwiftUI（`CameraRiskOverlay` / `DiagnosticCaptureRecorder`）需完整 Xcode `bash deploy/ios/test.sh`。`path_roi.py` 已从仓库删除。
 
 ## 沉淀去向
 

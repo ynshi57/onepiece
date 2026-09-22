@@ -1,16 +1,16 @@
-"""Normalize client frame metadata used by walking safety fast paths.
+"""Normalize client frame-quality hints used by walking safety fast paths.
 
 The backend cannot reliably measure blur/exposure from a compressed JPEG without
 an image-processing dependency, and a single frame cannot provide physical
-meter-level distance. This module therefore treats client-provided quality/ROI
+meter-level distance. This module therefore treats client-provided quality
 metadata as a safety hint: validate it, expose uncertainty, and never let it
 silently hide risks.
+
+Three-zone ``walking_roi`` boxes are not accepted. Extra ``walking_roi`` keys on
+old payloads are ignored.
 """
 
 from __future__ import annotations
-
-from typing import Optional
-
 
 _ALLOWED_BLUR = {"ok", "blurry", "unknown"}
 _ALLOWED_EXPOSURE = {"ok", "too_dark", "too_bright", "unknown"}
@@ -89,42 +89,6 @@ def normalize_frame_quality(raw: object) -> dict:
     }
 
 
-def _normalize_rect(raw: object) -> Optional[dict]:
-    if not isinstance(raw, dict):
-        return None
-    try:
-        x = float(raw["x"])
-        y = float(raw["y"])
-        w = float(raw["w"])
-        h = float(raw["h"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > 1.0 or y + h > 1.0:
-        return None
-    return {"x": round(x, 3), "y": round(y, 3), "w": round(w, 3), "h": round(h, 3)}
-
-
-def normalize_walking_roi(raw: object) -> Optional[dict]:
-    """Validate normalized-image walking ROI metadata from the client.
-
-    Returns None for absent/invalid metadata so old clients remain compatible.
-    """
-    if not isinstance(raw, dict):
-        return None
-    coordinate_space = raw.get("coordinate_space", "normalized_image")
-    if coordinate_space != "normalized_image":
-        return None
-
-    normalized: dict = {"coordinate_space": "normalized_image"}
-    for key in ["near_path", "left_front", "right_front"]:
-        rect = _normalize_rect(raw.get(key))
-        if rect:
-            normalized[key] = rect
-    if len(normalized) == 1:
-        return None
-    return normalized
-
-
 def should_short_circuit_quality(mode: str, question: str, frame_quality: dict) -> bool:
     """Whether walking can answer immediately with a quality warning.
 
@@ -169,7 +133,6 @@ def build_frame_metadata_prompt(
     *,
     mode: str,
     frame_quality: dict,
-    walking_roi: Optional[dict],
 ) -> str:
     lines: list[str] = []
     if mode in {"risk_observe", "walking"}:
@@ -184,17 +147,6 @@ def build_frame_metadata_prompt(
         )
         if frame_quality.get("spoken_hint"):
             lines.append(f"若图像质量影响判断，优先提示用户：{frame_quality['spoken_hint']}")
-        if walking_roi:
-            near_path = walking_roi.get("near_path")
-            left_front = walking_roi.get("left_front")
-            right_front = walking_roi.get("right_front")
-            if near_path:
-                lines.append(f"near_path ROI={near_path}，代表画面中的近处通行路径。")
-            if left_front:
-                lines.append(f"left_front ROI={left_front}，代表左前方风险区域。")
-            if right_front:
-                lines.append(f"right_front ROI={right_front}，代表右前方风险区域。")
-            lines.append("请重点关注 ROI，但不要忽略 ROI 外与安全相关的人、车辆、开门、台阶或路沿。")
     if not lines:
         return ""
     return "\n" + "\n".join(lines)

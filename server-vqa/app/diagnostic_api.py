@@ -140,9 +140,11 @@ def _html_page(title: str, body: str) -> HTMLResponse:
     .frame-overlay img {{ display: block; width: 100%; height: auto; }}
     .frame-overlay .gt-mask {{ position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }}
     .frame-overlay .pred-mask {{ position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; }}
+    .frame-overlay .lane-grid-debug {{ position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; image-rendering: pixelated; }}
     .frame-overlay svg {{ position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }}
     .hide-gt-mask .gt-mask {{ display: none; }}
     .hide-pred-mask .pred-mask {{ display: none; }}
+    .hide-lane-grid-debug .lane-grid-debug {{ display: none; }}
     .explain {{ color: #8e8e93; font-size: 0.92rem; margin-top: 4px; }}
     details {{ background: #151518; border: 1px solid #3a3a3c; border-radius: 12px; padding: 10px; margin: 12px 0; }}
     summary {{ cursor: pointer; font-weight: 700; }}
@@ -1340,6 +1342,108 @@ def _lane_grid_png_datauri(grid: dict, rgba: tuple[int, int, int, int]) -> Optio
     return f"data:image/png;base64,{b64}"
 
 
+def _lane_polylines_from_grid(grid: object) -> list[dict]:
+    """Turn a coarse lane_grid into display polylines (not a chessboard).
+
+    Each row's occupied cells are clustered, then tracked down the image.
+    Source is ``twinlite_mask`` so UFLD ``rowAnchor`` guidance never consumes
+    these strokes. This is a drawing change: geometry can still be short/wrong.
+    """
+    mask = _traversable_grid_to_mask(grid if isinstance(grid, dict) else {})
+    if mask is None:
+        return []
+    rows, cols = mask.shape
+    if rows < 2 or cols < 2:
+        return []
+
+    def clusters_in_row(y: int) -> list[tuple[int, int]]:
+        xs = np.flatnonzero(mask[y])
+        if xs.size == 0:
+            return []
+        groups: list[tuple[int, int]] = []
+        start = int(xs[0])
+        prev = int(xs[0])
+        for x in xs[1:]:
+            xi = int(x)
+            if xi - prev > 1:
+                groups.append((start, prev))
+                start = xi
+            prev = xi
+        groups.append((start, prev))
+        return groups
+
+    rails: list[dict[int, float]] = []
+    last: list[tuple[int, float]] = []
+    associate_dx = 4.0
+    for y in range(rows - 1, -1, -1):
+        groups = clusters_in_row(y)
+        used = [False] * len(groups)
+        for ri, (ly, lx) in enumerate(last):
+            if ly - y <= 0 or ly - y > 8:
+                continue
+            best_i = -1
+            best_d = associate_dx
+            for i, (lo, hi) in enumerate(groups):
+                if used[i]:
+                    continue
+                mid = 0.5 * (lo + hi)
+                dist = abs(mid - lx)
+                if dist < best_d:
+                    best_d = dist
+                    best_i = i
+            if best_i >= 0:
+                used[best_i] = True
+                lo, hi = groups[best_i]
+                mid = 0.5 * (lo + hi)
+                rails[ri][y] = mid
+                last[ri] = (y, mid)
+        for i, (lo, hi) in enumerate(groups):
+            if used[i]:
+                continue
+            mid = 0.5 * (lo + hi)
+            rails.append({y: mid})
+            last.append((y, mid))
+
+    polylines: list[dict] = []
+    for idx, sparse in enumerate(rails):
+        if len(sparse) < 3:
+            continue
+        points = []
+        for y in sorted(sparse):
+            x = sparse[y]
+            points.append(
+                {
+                    "x": min(max((x + 0.5) / cols, 0.0), 1.0),
+                    "y": min(max((y + 0.5) / rows, 0.0), 1.0),
+                }
+            )
+        if len(points) < 2:
+            continue
+        polylines.append(
+            {
+                "lane_index": idx,
+                "source": "twinlite_mask",
+                "points": points,
+            }
+        )
+    return polylines
+
+
+def _drawable_lane_polylines(raw: object, grid: object) -> list:
+    """Prefer stored geometry; otherwise stroke the pixel grid so yellow is a line."""
+    if isinstance(raw, list):
+        usable = []
+        for lane in raw:
+            if not isinstance(lane, dict):
+                continue
+            pts = lane.get("points")
+            if isinstance(pts, list) and len(pts) >= 2:
+                usable.append(lane)
+        if usable:
+            return usable
+    return _lane_polylines_from_grid(grid)
+
+
 def default_tags_for_dataset(dataset_type: str) -> str:
     if dataset_type == "road":
         return "road,vehicle,drivable"
@@ -1986,12 +2090,8 @@ def dataset_evaluate_ui(manifest: str):
         return f"<div class='card'><h2>{html.escape(title)}</h2><p style='font-size:2rem;font-weight:800'>{html.escape(str(value))}</p><p class='muted'>{html.escape(hint)}</p></div>"
     cards = "<div class='grid'>" + "".join([
         card("总帧数", report.get("frame_count"), "manifest 中的总图像/帧数"),
-        card("有标注帧", report.get("labeled_frames"), "可参与准确率计算的帧"),
-        card("状态准确率", report.get("status_accuracy"), "near/left/right 三个区域的状态匹配率"),
-        card("方向准确率", report.get("focus_direction_accuracy"), "关注方向是否匹配"),
-        card("漏报风险", report.get("risk_miss_count"), "真实 caution/blocked 却预测 candidateOpen"),
-        card("误阻挡", report.get("false_block_count"), "真实 candidateOpen 却预测 caution/blocked"),
-        card("Unknown 比例", report.get("unknown_prediction_rate"), "预测为 unknown 的比例"),
+        card("有标注帧", report.get("labeled_frames"), "带 traversable_grid 的帧"),
+        card("缺预测", report.get("missing_prediction_count"), "有标注但没有对应预测"),
     ]) + "</div>"
     missing_card = _missing_prediction_card(report.get("missing_prediction_count"), report.get("labeled_frames"))
     recs = "".join(f"<li>{html.escape(str(item))}</li>" for item in report.get("recommendations", []))
@@ -2103,6 +2203,7 @@ def dataset_ios_harness_ui(manifest: str, predictions: str = ""):
     if not manifest_path.is_file():
         raise HTTPException(status_code=404, detail="manifest_not_found")
     failed_run = _finalize_dead_harness(manifest_path)
+    active_run = _active_harness_run(manifest_path)
     encoded_manifest = html.escape(manifest)
     default_out = str(_harness_out_path(manifest_path))
     cache = _harness_cache_info(manifest_path)
@@ -2129,7 +2230,7 @@ def dataset_ios_harness_ui(manifest: str, predictions: str = ""):
         role_banner = (
             "<div class='status' style='border-color:#ffd60a'>"
             "<b>这份是机动车评估。</b>人行道不算可行驶区。"
-            f"一键跑会用 TwinLiteNet 实验叠图（bundled Core ML，{frame_count} 帧，Intel Mac {eta_text}）。"
+            f"一键跑：TwinLiteNet 可走区 + UFLDv2 车道折线（有模型时）→ 紫线优先 UFLD 中线（{frame_count} 帧，Intel Mac {eta_text}）。"
             "CamVid 线级真值已退役；看红/绿/蓝原色叠图请用 "
             "<a href='/diagnostics/twinlite/ui'>TwinLiteNet 画廊</a>。"
             "</div>"
@@ -2292,6 +2393,22 @@ async function runHarness(force) {{
             + (f"<pre style='margin-top:8px;white-space:pre-wrap'>{err_stderr}</pre>" if err_stderr else "")
             + "<p class='muted'>上次任务已结束（不是仍在运行）。可再点一次「一键跑」重试。</p></div>"
         )
+    elif failed_run and failed_run.get("status") == "ok":
+        failed_banner = (
+            f"<div class='status ok'>{html.escape(str(failed_run.get('note') or '真身感知已完成'))}"
+            " <a href='"
+            + html.escape(
+                f"/diagnostics/datasets/ios-harness/ui?manifest={encoded_manifest}"
+                f"&predictions={failed_run.get('predictions', default_out)}"
+            )
+            + "'>查看评估结果</a></div>"
+        )
+    elif active_run is not None:
+        failed_banner = (
+            "<div class='status'>"
+            + html.escape(_harness_progress_reason(manifest_path, active_run))
+            + "</div>"
+        )
 
     if not predictions.strip():
         return _html_page("iPhone 真身评估", header + failed_banner + steps)
@@ -2358,14 +2475,7 @@ async function runHarness(force) {{
             "无法做区域评估。重生成带真值网格的 manifest 并重跑真身感知后即可显示。</p></div>"
         )
 
-    cards = region_cards + "<h2 style='margin-top:1.5rem'>三区状态指标（已退役 · 仅供参考，不再门禁）</h2><div class='grid'>" + "".join([
-        card("有标注帧", report.get("labeled_frames"), "参与打分的帧数"),
-        card("状态准确率", report.get("status_accuracy"), "近处/左/右三区域状态匹配率"),
-        card("方向准确率", report.get("focus_direction_accuracy"), "关注方向是否匹配"),
-        card("漏报风险", report.get("risk_miss_count"), "真实 caution/blocked 却报 candidateOpen（最危险）"),
-        card("误阻挡", report.get("false_block_count"), "真实可走却报占用"),
-        card("Unknown 比例", report.get("unknown_prediction_rate"), "预测为信息不足的比例"),
-    ]) + "</div>"
+    cards = region_cards
 
     encoded_pred = html.escape(str(pred_path))
     parity_script = f"""<script>
@@ -2461,6 +2571,25 @@ async function clusterCases() {{
 def _repo_root() -> Path:
     # server-vqa/app/diagnostic_api.py -> repo root is two parents up from app/.
     return Path(__file__).resolve().parents[2]
+
+
+def _resolve_manifest_path(manifest_path: Path) -> Path:
+    """Canonical absolute manifest path (relative paths are rooted at the repo)."""
+    p = manifest_path.expanduser()
+    if p.is_absolute():
+        try:
+            return p.resolve()
+        except OSError:
+            return p
+    try:
+        return (_repo_root() / p).resolve()
+    except OSError:
+        return p
+
+
+def _manifest_key(manifest_path: Path) -> str:
+    """Stable string for lock/meta/finalize regardless of relative vs absolute."""
+    return str(_resolve_manifest_path(manifest_path))
 
 
 def _harness_bin() -> Path:
@@ -2711,7 +2840,8 @@ def _active_harness_run(manifest_path: Path) -> dict | None:
         info = json.loads(lock.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return _active_harness_process(manifest_path)
-    if str(info.get("manifest")) != str(manifest_path):
+    locked_manifest = info.get("manifest")
+    if locked_manifest and _manifest_key(Path(str(locked_manifest))) != _manifest_key(manifest_path):
         return None
     if _pid_is_running(info.get("pid")):
         return info
@@ -2758,7 +2888,7 @@ def _write_harness_lock(manifest_path: Path, *, pid: int, cmd: list[str], extra:
     lock = _harness_lock_path(manifest_path)
     payload = {
         "pid": pid,
-        "manifest": str(manifest_path),
+        "manifest": _manifest_key(manifest_path),
         "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "cmd": cmd,
     }
@@ -2862,7 +2992,8 @@ def _finalize_dead_harness(manifest_path: Path) -> dict | None:
         info = json.loads(lock.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if str(info.get("manifest")) != str(manifest_path):
+    locked_manifest = info.get("manifest")
+    if locked_manifest and _manifest_key(Path(str(locked_manifest))) != _manifest_key(manifest_path):
         return None
     if _pid_is_running(info.get("pid")):
         return None
@@ -2950,7 +3081,7 @@ def _write_harness_meta(manifest_path: Path, *, count: int, config_version, conf
     fingerprint) rather than only file mtimes."""
     bin_path = _harness_bin()
     meta = {
-        "manifest_hash": _sha256_file(manifest_path),
+        "manifest_hash": _sha256_file(_resolve_manifest_path(manifest_path)),
         "config_version": config_version,
         "config_hash": config_hash,
         "harness_hash": _sha256_file(bin_path) if bin_path.is_file() else None,
@@ -3025,7 +3156,7 @@ def _harness_cache_info(manifest_path: Path) -> dict:
     if meta:
         info["fingerprint"] = "content"
         info["generated_at"] = meta.get("generated_at", info["generated_at"])
-        current_manifest_hash = _sha256_file(manifest_path)
+        current_manifest_hash = _sha256_file(_resolve_manifest_path(manifest_path))
         if (
             meta.get("manifest_hash")
             and current_manifest_hash
@@ -3459,8 +3590,6 @@ def _frame_flags(gt: dict, prediction: dict) -> set:
         return flags
     if gt_cells == pred_cells:
         flags.add("correct")
-    elif "region_miss" not in flags and "region_false_go" not in flags:
-        flags.add("mismatch")
     else:
         flags.add("mismatch")
     return flags
@@ -3494,8 +3623,8 @@ def dataset_ios_harness_frames_ui(
         overlay_legend = (
             "<b style='color:#bf5af2'>紫实线=iPhone 预测路径</b> · "
             "蓝虚框=检测物体；<b style='color:#30d158'>绿色叠层=车可通行区（不含人行道）</b>；"
-            "<b style='color:#ffd60a'>黄色实线=iPhone 车道折线</b> · "
-            "<b style='color:#ffd60a'>黄块=像素车道调试层</b>。"
+            "<b style='color:#ffd60a'>黄色实线=车道折线</b>。"
+            " 黄块调试层默认关。"
             " CamVid 线/车道真值已退役；红绿蓝 TwinLite 原色见 "
             "<a href='/diagnostics/twinlite/ui'>TwinLite 画廊</a>。"
         )
@@ -3503,8 +3632,8 @@ def dataset_ios_harness_frames_ui(
         overlay_legend = (
             "<b style='color:#bf5af2'>紫实线=iPhone 预测路径</b> · "
             "蓝虚框=检测物体；<b style='color:#30d158'>绿色叠层=可走区域</b>；"
-            "<b style='color:#ffd60a'>黄色实线=iPhone 车道折线</b> · "
-            "<b style='color:#ffd60a'>黄块=像素车道调试层</b>。"
+            "<b style='color:#ffd60a'>黄色实线=车道折线</b>。"
+            " 黄块调试层默认关。"
         )
 
     # Classify every frame once so we can both filter and show per-category counts
@@ -3579,18 +3708,20 @@ def dataset_ios_harness_frames_ui(
                 f"src='{grid_uri}' alt='iPhone 感知可走区域'>"
             )
 
-        # Lane-marking layers. Product lane output is geometry-first: UFLDv2-style
-        # `lane_polylines` render as true lines. The old pixel `lane_grid` remains
-        # visible only as a debug mask so blocky over-spray is not mistaken for the
-        # lane-line product target.
+        # Lane-marking: yellow strokes only. Pixel `lane_grid` is a hidden debug
+        # layer (own CSS class, default off) so it cannot masquerade as a lane line.
         lane_layer = ""
         pred_lane_debug_uri = _lane_grid_png_datauri(pred_row.get("lane_grid"), (255, 214, 10, 120))
         if pred_lane_debug_uri:
             lane_layer += (
-                f"<img class='pred-mask' decoding='async' "
-                f"src='{pred_lane_debug_uri}' alt='旧像素车道调试层'>"
+                f"<img class='lane-grid-debug' decoding='async' "
+                f"src='{pred_lane_debug_uri}' alt='像素车道调试层'>"
             )
-        lane_polyline_svg = _lane_polylines_svg(pred_row.get("lane_polylines"))
+        drawable_lanes = _drawable_lane_polylines(
+            pred_row.get("lane_polylines"),
+            pred_row.get("lane_grid"),
+        )
+        lane_polyline_svg = _lane_polylines_svg(drawable_lanes)
         if lane_polyline_svg:
             lane_layer += lane_polyline_svg
 
@@ -3614,14 +3745,23 @@ def dataset_ios_harness_frames_ui(
             )
 
         pred_line_ok = _guidance_status_ok(pred_guidance)
+        guidance_source = ""
+        if isinstance(pred_guidance, dict):
+            src = str(pred_guidance.get("source") or "").strip()
+            if src:
+                guidance_source = f" · 来源 <code>{html.escape(src)}</code>"
         if prediction:
             path_note = (
-                "<span style='color:#30d158'>已画出预测路径</span>"
+                f"<span style='color:#30d158'>已画出预测路径</span>{guidance_source}"
                 if pred_line_ok
-                else "<span class='muted'>本帧未画出预测路径（insufficient）</span>"
+                else f"<span class='muted'>本帧未画出预测路径（insufficient）</span>{guidance_source}"
             )
         else:
             path_note = "<span class='muted'>该帧无预测</span>"
+        if drawable_lanes:
+            lane_note = "<span style='color:#ffd60a'>已画出车道折线</span>"
+        else:
+            lane_note = "<span class='muted'>本帧没有车道折线</span>"
 
         obj_labels = ", ".join(
             html.escape(str(o.get("label") or o.get("kind") or "物体")) for o in objects
@@ -3635,6 +3775,7 @@ def dataset_ios_harness_frames_ui(
   </div>
   <div>
     <p class='explain'><b>预测路径：</b>{path_note}</p>
+    <p class='explain'><b>车道折线：</b>{lane_note}</p>
     <p class='explain'>检出物体：{obj_labels}</p>
   </div>
 </div></div>"""
@@ -3712,6 +3853,10 @@ def dataset_ios_harness_frames_ui(
         _traversable_grid_to_mask(r.get("traversable_grid")) is not None
         for r in pred_index.values()
     )
+    has_lane_grid = any(
+        _traversable_grid_to_mask(r.get("lane_grid")) is not None
+        for r in pred_index.values()
+    )
     # Both regions are green. To compare them cleanly we show ONE at a time by
     # default: the iPhone-perceived region is on (that's the thing under review),
     # the CamVid truth is one toggle away. Turn both on to see overlap/gap.
@@ -3736,6 +3881,16 @@ def dataset_ios_harness_frames_ui(
             "（绿色半透明 = 标注推出的答案；和上面对比就能看出 iPhone 感知差多少）"
             "</label>"
         )
+    if has_lane_grid:
+        toggles.append(
+            "<label style='cursor:pointer;user-select:none;display:block;margin:2px 0'>"
+            "<input type='checkbox' id='laneGridToggle' "
+            "onchange=\"document.getElementById('framesWrap')"
+            ".classList.toggle('hide-lane-grid-debug', !this.checked)\"> "
+            "<b style='color:#ffd60a'>显示像素车道调试层</b>"
+            "（黄块 = TwinLite 格子，不是产品车道线；默认关）"
+            "</label>"
+        )
     mask_toggle = ""
     if toggles:
         mask_toggle = (
@@ -3745,8 +3900,12 @@ def dataset_ios_harness_frames_ui(
             + "".join(toggles)
             + "</div>"
         )
-    # Default view: iPhone region ON (hide-gt-mask hides the truth layer initially).
-    wrap_classes = "hide-gt-mask" if has_gt_mask else ""
+    wrap_bits = []
+    if has_gt_mask:
+        wrap_bits.append("hide-gt-mask")
+    if has_lane_grid:
+        wrap_bits.append("hide-lane-grid-debug")
+    wrap_classes = " ".join(wrap_bits)
     cards_html = (
         f"<div id='framesWrap' class='{wrap_classes}'>{''.join(cards) or empty_msg}</div>"
     )
@@ -3759,7 +3918,7 @@ def cases_cluster(manifest: str, predictions: str) -> dict:
     """Cluster this eval run's failing frames into cases (create or update).
 
     This is the AutoTriage-lite entry: read the manifest + harness predictions,
-    bucket region_miss / region_false_go frames, and upsert a case per bucket with a
+    bucket risk_miss / false_block frames, and upsert a case per bucket with a
     deterministic id so re-runs update instead of duplicate."""
     manifest_path = Path(manifest).expanduser()
     if not manifest_path.is_file():
@@ -4052,7 +4211,7 @@ async function saveConfig(){
     body = (
         "<p><a href='/diagnostics/ui'>← 感知能力总览</a></p>"
         f"<h1>感知配置（当前 v{config['version']}）</h1>"
-        "<p class='hint'>三区 ROI 已退役，不再下发近/左/右框。这里只调分割阈值和路面模型。"
+        "<p class='hint'>三区 ROI 已退役。这里只调分割阈值和路面模型。"
         "先在 iPhone 真身评估里验证候选参数，再回到这里保存并升级版本，iPhone 下次连接自动生效。</p>"
         + script
         + thr_block

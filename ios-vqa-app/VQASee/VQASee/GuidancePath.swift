@@ -272,4 +272,187 @@ enum GuidancePathBuilder {
         let line = GuidanceLine(points: points, confidence: confidence, kind: "primary")
         return GuidancePath(status: .ok, coverage: coverage, lines: [line], source: source)
     }
+
+    // MARK: - UFLDv2 lane polylines → ego guidance path (Phase B primary source)
+
+    /// Build a traversable centerline from UFLD row-anchor lane polylines.
+    ///
+    /// CULane ego lane is bounded by row indices 1 and 2; the product path is the
+    /// midpoint between those lines when both exist. UFLD points use top-left origin;
+    /// output uses bottom-left Vision coordinates like `centerline`.
+    static func fromUFLDPolylines(
+        _ lanes: [LanePolyline],
+        egoX: Double = 0.5,
+        horizon: Double = 0.55,
+        samples: Int = 16,
+        source: String = "ufld"
+    ) -> GuidancePath? {
+        let rowLanes = lanes.filter { $0.source == .rowAnchor && $0.points.count >= 2 }
+        guard !rowLanes.isEmpty else { return nil }
+
+        let left = rowLanes.first { $0.laneIndex == 1 }
+        let right = rowLanes.first { $0.laneIndex == 2 }
+        if let left, let right {
+            return midlineBetween(
+                left: left,
+                right: right,
+                horizon: horizon,
+                samples: samples,
+                source: source
+            )
+        }
+        if let boundary = bestSingleRowLane(rowLanes, egoX: egoX) {
+            return fromSingleBoundary(
+                boundary,
+                egoX: egoX,
+                horizon: horizon,
+                samples: samples,
+                source: source
+            )
+        }
+        return nil
+    }
+
+    private static func midlineBetween(
+        left: LanePolyline,
+        right: LanePolyline,
+        horizon: Double,
+        samples: Int,
+        source: String
+    ) -> GuidancePath? {
+        let yMin = max(left.points.map(\.y).min() ?? 0, right.points.map(\.y).min() ?? 0)
+        let yMax = min(left.points.map(\.y).max() ?? 0, right.points.map(\.y).max() ?? 0)
+        guard yMax > yMin else { return nil }
+
+        let clampedHorizon = min(max(horizon, 0.05), 1.0)
+        let yTopTL = 1.0 - clampedHorizon
+        let count = max(2, samples)
+        var points: [GuidancePoint] = []
+        points.reserveCapacity(count)
+
+        for i in 0..<count {
+            let t = Double(i) / Double(count - 1)
+            let yTL = yMin + t * (yMax - yMin)
+            if yTL < yTopTL { continue }
+            guard let xLeft = interpolateX(atY: Double(yTL), in: left.points),
+                  let xRight = interpolateX(atY: Double(yTL), in: right.points) else {
+                continue
+            }
+            let xMid = (xLeft + xRight) / 2.0
+            let halfW = abs(xRight - xLeft) / 2.0
+            guard halfW.isFinite, halfW > 0.001 else { continue }
+            points.append(
+                GuidancePoint(
+                    x: min(max(xMid, 0.0), 1.0),
+                    y: 1.0 - yTL,
+                    halfWidth: min(max(halfW, 0.005), 0.5)
+                )
+            )
+        }
+
+        return finalizePolylinePath(points: points, samples: count, source: source)
+    }
+
+    private static func fromSingleBoundary(
+        _ lane: LanePolyline,
+        egoX: Double,
+        horizon: Double,
+        samples: Int,
+        source: String
+    ) -> GuidancePath? {
+        let sorted = lane.points.sorted { $0.y < $1.y }
+        guard let yMin = sorted.first?.y, let yMax = sorted.last?.y, yMax > yMin else {
+            return nil
+        }
+
+        let defaultHalfLane = 0.035
+        let inward: Double
+        if lane.laneIndex == 1 {
+            inward = defaultHalfLane
+        } else if lane.laneIndex == 2 {
+            inward = -defaultHalfLane
+        } else {
+            let bottomX = Double(sorted.last?.x ?? 0.5)
+            inward = bottomX <= egoX ? defaultHalfLane : -defaultHalfLane
+        }
+
+        let clampedHorizon = min(max(horizon, 0.05), 1.0)
+        let yTopTL = 1.0 - clampedHorizon
+        let count = max(2, samples)
+        var points: [GuidancePoint] = []
+        points.reserveCapacity(count)
+
+        for i in 0..<count {
+            let t = Double(i) / Double(count - 1)
+            let yTL = Double(yMin) + t * Double(yMax - yMin)
+            if yTL < yTopTL { continue }
+            guard let xBoundary = interpolateX(atY: yTL, in: sorted) else { continue }
+            let xCenter = min(max(xBoundary + inward, 0.0), 1.0)
+            points.append(
+                GuidancePoint(
+                    x: xCenter,
+                    y: 1.0 - yTL,
+                    halfWidth: defaultHalfLane
+                )
+            )
+        }
+
+        return finalizePolylinePath(points: points, samples: count, source: source)
+    }
+
+    private static func bestSingleRowLane(_ lanes: [LanePolyline], egoX: Double) -> LanePolyline? {
+        lanes
+            .filter { $0.points.count >= GuidancePath.minPoints }
+            .max { lhs, rhs in
+                let lhsScore = singleLaneScore(lhs, egoX: egoX)
+                let rhsScore = singleLaneScore(rhs, egoX: egoX)
+                if lhsScore != rhsScore { return lhsScore < rhsScore }
+                return lhs.points.count < rhs.points.count
+            }
+    }
+
+    private static func singleLaneScore(_ lane: LanePolyline, egoX: Double) -> Double {
+        let bottom = lane.points.max(by: { $0.y < $1.y })
+        let bottomX = Double(bottom?.x ?? 0.5)
+        let indexBonus: Double
+        switch lane.laneIndex {
+        case 1, 2: indexBonus = 0.1
+        default: indexBonus = 0
+        }
+        return Double(lane.points.count) + indexBonus - abs(bottomX - egoX)
+    }
+
+    private static func interpolateX(atY y: Double, in points: [CGPoint]) -> Double? {
+        guard !points.isEmpty else { return nil }
+        let sorted = points.sorted { $0.y < $1.y }
+        if y <= Double(sorted[0].y) { return Double(sorted[0].x) }
+        if y >= Double(sorted[sorted.count - 1].y) { return Double(sorted[sorted.count - 1].x) }
+        for index in 0..<(sorted.count - 1) {
+            let a = sorted[index]
+            let b = sorted[index + 1]
+            let ay = Double(a.y)
+            let by = Double(b.y)
+            if ay <= y, y <= by {
+                if by == ay { return Double(a.x) }
+                let t = (y - ay) / (by - ay)
+                return Double(a.x) + t * Double(b.x - a.x)
+            }
+        }
+        return nil
+    }
+
+    private static func finalizePolylinePath(
+        points: [GuidancePoint],
+        samples: Int,
+        source: String
+    ) -> GuidancePath? {
+        let ordered = points.sorted { $0.y < $1.y }
+        let coverage = Double(ordered.count) / Double(max(2, samples))
+        guard ordered.count >= GuidancePath.minPoints, coverage >= GuidancePath.minCoverage else {
+            return nil
+        }
+        let confidence = min(1.0, coverage)
+        let line = GuidanceLine(points: ordered, confidence: confidence, kind: "primary")
+        return GuidancePath(status: .ok, coverage: coverage, lines: [line], source: source)
+    }
 }

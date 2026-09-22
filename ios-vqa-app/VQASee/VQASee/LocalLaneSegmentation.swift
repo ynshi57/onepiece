@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import CoreML
 import CoreVideo
 import Foundation
@@ -8,6 +9,8 @@ struct LanePolyline: Sendable, Equatable {
     enum Source: String, Sendable, Equatable {
         case rowAnchor
         case colAnchor
+        /// TwinLite lane-mask skeleton. Display only — never UFLD guidance.
+        case twinliteMask = "twinlite_mask"
     }
 
     var laneIndex: Int
@@ -204,6 +207,170 @@ enum UFLDv2LaneDecoder {
     }
 }
 
+/// Post-decode geometry for UFLDv2 row-anchor ego lanes (indices 1 and 2).
+///
+/// Raw `pred2coords` stays a per-row expected-x. This pass drops isolated
+/// x-spikes and light-smoothes heading so a 165° Z does not ship as a lane.
+/// Col-anchor lanes (0/3) are left untouched: their geometry is in y.
+enum UFLDv2LanePolisher {
+    static let minPoints = 8
+    static let maxSpikeDev = 0.035
+    static let maxIdentityJump = 0.06
+    static let smoothLambda = 800.0
+
+    static func polishRowEgoLanes(_ lanes: [LanePolyline]) -> [LanePolyline] {
+        lanes.map { lane in
+            guard lane.source == .rowAnchor, lane.laneIndex == 1 || lane.laneIndex == 2 else {
+                return lane
+            }
+            let polished = polish(lane.points)
+            guard polished.count >= 2 else { return lane }
+            var out = lane
+            out.points = polished
+            return out
+        }
+    }
+
+    static func polish(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count >= minPoints else { return points }
+        let sorted = points.sorted { $0.y < $1.y }
+        let fragment = longestIdentityFragment(rejectSpikes(sorted))
+        if fragment.count < minPoints {
+            return fragment.count >= 2 ? fragment : points
+        }
+        let smoothed = smoothX(fragment)
+        return smoothed.count >= 2 ? smoothed : points
+    }
+
+    private static func rejectSpikes(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count >= 3 else { return points }
+        return points.enumerated().compactMap { index, point in
+            if index == 0 || index == points.count - 1 { return point }
+            let pred = 0.5 * (points[index - 1].x + points[index + 1].x)
+            return abs(point.x - pred) > maxSpikeDev ? nil : point
+        }
+    }
+
+    private static func longestIdentityFragment(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count >= 2 else { return points }
+        var fragments: [[CGPoint]] = [[points[0]]]
+        for index in 1..<points.count {
+            let prev = points[index - 1]
+            let point = points[index]
+            if abs(Double(point.x - prev.x)) > maxIdentityJump {
+                fragments.append([point])
+            } else {
+                fragments[fragments.count - 1].append(point)
+            }
+        }
+        return fragments.max(by: { $0.count < $1.count }) ?? points
+    }
+
+    private static func smoothX(_ points: [CGPoint]) -> [CGPoint] {
+        let n = points.count
+        guard n >= minPoints, smoothLambda > 0 else { return points }
+        let target = points.map { Double($0.x) }
+        let weights = Array(repeating: 1.0, count: n)
+        let xs = solveSmoothD2(target: target, weights: weights, lam: smoothLambda)
+        return zip(xs, points).map { x, point in
+            CGPoint(x: min(max(x, 0.0), 1.0), y: point.y)
+        }
+    }
+
+    private static func solveSmoothD2(target: [Double], weights: [Double], lam: Double) -> [Double] {
+        let n = target.count
+        guard n >= 3, lam > 0 else { return target }
+        var a = Array(repeating: Array(repeating: 0.0, count: n), count: n)
+        for i in 0..<n { a[i][i] += weights[i] }
+        for i in 0..<(n - 2) {
+            let coeffs = [(i, 1.0), (i + 1, -2.0), (i + 2, 1.0)]
+            for (j, vj) in coeffs {
+                for (k, vk) in coeffs {
+                    a[j][k] += lam * vj * vk
+                }
+            }
+        }
+        let b = zip(weights, target).map(*)
+        return solveLinear(a, b) ?? target
+    }
+
+    private static func solveLinear(_ matrix: [[Double]], _ rhs: [Double]) -> [Double]? {
+        let n = rhs.count
+        var a = matrix
+        var b = rhs
+        for col in 0..<n {
+            var pivot = col
+            for row in (col + 1)..<n {
+                if abs(a[row][col]) > abs(a[pivot][col]) { pivot = row }
+            }
+            if abs(a[pivot][col]) < 1e-12 { return nil }
+            if pivot != col {
+                a.swapAt(pivot, col)
+                b.swapAt(pivot, col)
+            }
+            let div = a[col][col]
+            for j in col..<n { a[col][j] /= div }
+            b[col] /= div
+            for row in 0..<n where row != col {
+                let factor = a[row][col]
+                if abs(factor) < 1e-15 { continue }
+                for j in col..<n { a[row][j] -= factor * a[col][j] }
+                b[row] -= factor * b[col]
+            }
+        }
+        return b
+    }
+}
+
+/// CULane UFLDv2 input transform (mirrors `preprocess()` in decode_ufldv2_lanes.py):
+/// stretch-resize to (1600, net_h/crop_ratio) then keep the bottom `net_h` rows.
+enum UFLDv2ImagePreprocessor {
+    static let netWidth = 1600
+    static let netHeight = 320
+    static let cropRatio = 0.6
+
+    static var resizedHeight: Int {
+        Int(Double(netHeight) / cropRatio)
+    }
+
+    private static let ciContext = CIContext(options: nil)
+
+    static func preprocess(
+        pixelBuffer: CVPixelBuffer,
+        orientation: CGImagePropertyOrientation = .up
+    ) -> CVPixelBuffer? {
+        var image = CIImage(cvPixelBuffer: pixelBuffer)
+        image = image.oriented(forExifOrientation: Int32(orientation.rawValue))
+        let extent = image.extent.integral
+        guard extent.width > 0, extent.height > 0 else { return nil }
+
+        let scaleX = Double(netWidth) / extent.width
+        let scaleY = Double(resizedHeight) / extent.height
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        let cropRect = CGRect(x: 0, y: 0, width: netWidth, height: netHeight)
+        let cropped = scaled.cropped(to: cropRect)
+        let translated = cropped.transformed(
+            by: CGAffineTransform(
+                translationX: -cropped.extent.origin.x,
+                y: -cropped.extent.origin.y
+            )
+        )
+
+        var output: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            netWidth,
+            netHeight,
+            kCVPixelFormatType_32BGRA,
+            nil,
+            &output
+        )
+        guard status == kCVReturnSuccess, let output else { return nil }
+        ciContext.render(translated, to: output)
+        return output
+    }
+}
+
 /// UFLDv2 Core ML runner: outputs true lane polylines, not a pixel mask.
 ///
 /// This is intentionally separate from `LocalLaneSegmentationRunner` (the old
@@ -218,16 +385,14 @@ final class LocalLanePolylineRunner {
     init(bundle: Bundle = .main, modelName: String = "VQASeeLaneUFLDv2") {
         var loaded: VNCoreMLModel?
         if let compiledURL = bundle.url(forResource: modelName, withExtension: "mlmodelc"),
-           let mlModel = try? MLModel(contentsOf: compiledURL),
-           let visionModel = try? VNCoreMLModel(for: mlModel) {
+           let visionModel = CoreMLPlatformLoader.visionModel(at: compiledURL) {
             loaded = visionModel
         }
         self.visionModel = loaded
     }
 
     init?(compiledModelURL: URL) {
-        guard let mlModel = try? MLModel(contentsOf: compiledModelURL),
-              let visionModel = try? VNCoreMLModel(for: mlModel) else {
+        guard let visionModel = CoreMLPlatformLoader.visionModel(at: compiledModelURL) else {
             return nil
         }
         self.visionModel = visionModel
@@ -240,10 +405,16 @@ final class LocalLanePolylineRunner {
         orientation: CGImagePropertyOrientation = .right
     ) -> [LanePolyline]? {
         guard let visionModel else { return nil }
+        guard let preprocessed = UFLDv2ImagePreprocessor.preprocess(
+            pixelBuffer: pixelBuffer,
+            orientation: orientation
+        ) else {
+            return nil
+        }
         let start = DispatchTime.now()
         let request = VNCoreMLRequest(model: visionModel)
         request.imageCropAndScaleOption = .scaleFill
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
+        let handler = VNImageRequestHandler(cvPixelBuffer: preprocessed, orientation: .up, options: [:])
         do {
             try handler.perform([request])
         } catch {
@@ -265,8 +436,9 @@ final class LocalLanePolylineRunner {
             return nil
         }
 
-        let lanes = UFLDv2LaneDecoder.decodeRowAnchors(locRow: locRow, existRow: existRow)
+        let decoded = UFLDv2LaneDecoder.decodeRowAnchors(locRow: locRow, existRow: existRow)
             + UFLDv2LaneDecoder.decodeColAnchors(locCol: locCol, existCol: existCol)
+        let lanes = UFLDv2LanePolisher.polishRowEgoLanes(decoded)
         lastInferenceMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000.0
         return lanes.isEmpty ? nil : lanes
     }
@@ -276,28 +448,24 @@ final class LocalLanePolylineRunner {
         lastDims: (Int, Int, Int)
     ) -> [Double]? {
         guard let array else { return nil }
-        let shape = array.shape.map { $0.intValue }
-        guard shape.count >= 3 else { return nil }
-        let dims = Array(shape.suffix(3))
-        guard dims[0] == lastDims.0, dims[1] == lastDims.1, dims[2] == lastDims.2 else {
+        var shape = array.shape.map { $0.intValue }
+        if shape.count == 4, shape[0] == 1 {
+            shape = Array(shape.dropFirst())
+        }
+        guard shape.count == 3 else { return nil }
+        guard shape[0] == lastDims.0, shape[1] == lastDims.1, shape[2] == lastDims.2 else {
             return nil
         }
-        let strides = array.strides.map { $0.intValue }
-        let d0Stride = strides[strides.count - 3]
-        let d1Stride = strides[strides.count - 2]
-        let d2Stride = strides[strides.count - 1]
+        let expectedCount = lastDims.0 * lastDims.1 * lastDims.2
+        guard array.count == expectedCount else { return nil }
         var values: [Double] = []
-        values.reserveCapacity(lastDims.0 * lastDims.1 * lastDims.2)
-        for d0 in 0..<lastDims.0 {
-            for d1 in 0..<lastDims.1 {
-                for d2 in 0..<lastDims.2 {
-                    let value = array[d0 * d0Stride + d1 * d1Stride + d2 * d2Stride].doubleValue
-                    guard value.isFinite else {
-                        return nil
-                    }
-                    values.append(value)
-                }
+        values.reserveCapacity(expectedCount)
+        for index in 0..<expectedCount {
+            let value = array[index].doubleValue
+            guard value.isFinite else {
+                return nil
             }
+            values.append(value)
         }
         return values
     }
@@ -337,8 +505,7 @@ final class LocalLaneSegmentationRunner {
     init(bundle: Bundle = .main, modelName: String = "VQASeeLaneSegmentation") {
         var loaded: VNCoreMLModel?
         if let compiledURL = bundle.url(forResource: modelName, withExtension: "mlmodelc"),
-           let mlModel = try? MLModel(contentsOf: compiledURL),
-           let visionModel = try? VNCoreMLModel(for: mlModel) {
+           let visionModel = CoreMLPlatformLoader.visionModel(at: compiledURL) {
             loaded = visionModel
         }
         self.visionModel = loaded
@@ -348,8 +515,7 @@ final class LocalLaneSegmentationRunner {
     /// evaluation harness can use the freshly compiled model without copying it
     /// into the shipping source tree.
     init?(compiledModelURL: URL) {
-        guard let mlModel = try? MLModel(contentsOf: compiledModelURL),
-              let visionModel = try? VNCoreMLModel(for: mlModel) else {
+        guard let visionModel = CoreMLPlatformLoader.visionModel(at: compiledModelURL) else {
             return nil
         }
         self.visionModel = visionModel

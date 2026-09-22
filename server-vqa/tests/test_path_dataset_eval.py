@@ -1,22 +1,15 @@
 from app.path_dataset_eval import evaluate_path_guidance
 
 
-def test_evaluate_path_guidance_finds_risk_miss():
+def test_evaluate_path_guidance_counts_grid_labels():
     rows = [
         {
             "frame_id": "frame-1",
             "split": "indoor",
-            "ground_truth": {
-                "near_path_status": "blocked",
-                "left_front_status": "candidateOpen",
-                "right_front_status": "candidateOpen",
-                "focus_direction": "center",
-            },
+            "traversable_grid": {"cols": 2, "rows": 2, "cells": [1, 0, 0, 1]},
             "prediction": {
-                "near_path_status": "candidateOpen",
-                "left_front_status": "candidateOpen",
-                "right_front_status": "candidateOpen",
-                "focus_direction": "center",
+                "prediction_source": "ios_coreml_offline_harness",
+                "traversable_grid": {"cols": 2, "rows": 2, "cells": [1, 0, 0, 1]},
             },
         }
     ]
@@ -24,43 +17,42 @@ def test_evaluate_path_guidance_finds_risk_miss():
     report = evaluate_path_guidance(rows)
 
     assert report["labeled_frames"] == 1
-    assert report["risk_miss_count"] == 1
-    assert report["risk_misses"] == ["frame-1:near_path_status"]
-    assert report["status_accuracy"] == 0.6667
+    assert report["missing_prediction_count"] == 0
+    assert "status_accuracy" not in report
+    assert "focus_direction_accuracy" not in report
 
 
 def test_evaluate_path_guidance_external_predictions_override_manifest():
     rows = [
         {
             "frame_id": "frame-1",
-            "ground_truth": {
-                "near_path_status": "caution",
-                "left_front_status": "candidateOpen",
-                "right_front_status": "candidateOpen",
-                "focus_direction": "right",
-            },
-            "prediction": {
-                "near_path_status": "candidateOpen",
-                "left_front_status": "candidateOpen",
-                "right_front_status": "candidateOpen",
-                "focus_direction": "unknown",
-            },
+            "traversable_grid": {"cols": 2, "rows": 2, "cells": [1, 0, 0, 0]},
         }
     ]
     predictions = [
         {
             "frame_id": "frame-1",
             "path_guidance": {
-                "near_path_status": "caution",
-                "left_front_status": "candidateOpen",
-                "right_front_status": "candidateOpen",
-                "focus_direction": "right",
+                "traversable_grid": {"cols": 2, "rows": 2, "cells": [0, 0, 0, 0]},
             },
         }
     ]
 
     report = evaluate_path_guidance(rows, predictions)
 
-    assert report["risk_miss_count"] == 0
-    assert report["status_accuracy"] == 1.0
-    assert report["focus_direction_accuracy"] == 1.0
+    assert report["labeled_frames"] == 1
+    assert report["missing_prediction_count"] == 0
+
+
+def test_evaluate_path_guidance_records_missing_predictions():
+    rows = [
+        {
+            "frame_id": "frame-1",
+            "traversable_grid": {"cols": 2, "rows": 2, "cells": [1, 0, 0, 0]},
+        }
+    ]
+
+    report = evaluate_path_guidance(rows)
+
+    assert report["missing_prediction_count"] == 1
+    assert report["missing_predictions"] == ["frame-1"]

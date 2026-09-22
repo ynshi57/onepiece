@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Sweep the on-device ``seg_traversable_pixel`` threshold and measure the
-missed_path ↔ false_go / hit_rate trade-off.
+region IoU / recall / precision trade-off.
 
 The threshold lives INSIDE the Swift engine (both the ROI cue and the guidance
 centerline), so the only honest way to sweep it is to run the REAL macOS harness
@@ -10,8 +10,8 @@ once per threshold with a matching PerceptionConfig. This tool does exactly that
         write config(seg_traversable_pixel=t) -> run harness -> eval vs manifest
 
 It reports, per threshold:
-- guidance line: both_ok, missed_path, false_go, hit_rate, mean_deviation, over_extension
-- region status: status_accuracy, risk_miss, false_block
+- region grid: mean_iou, mean_recall, mean_precision, region_false_go_frames
+- coverage: labeled_frames, missing_prediction_count
 
 Requires macOS + a built harness binary (see --harness). If the binary is
 missing this fails loudly with build instructions instead of pretending.
@@ -30,10 +30,9 @@ REPO_ROOT = SERVER_ROOT.parent
 if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
-from app.guidance_path import GuidancePath, GuidancePathError  # noqa: E402
-from app.guidance_path_eval import evaluate_guidance_paths  # noqa: E402
 from app.path_dataset_eval import evaluate_path_guidance, load_jsonl  # noqa: E402
 from app.perception_config import config_from_dict, default_config  # noqa: E402
+from app.region_grid import evaluate_region_grids  # noqa: E402
 
 DEFAULT_HARNESS = REPO_ROOT / "ios-vqa-app" / "perception-harness" / ".build" / "debug" / "PerceptionHarness"
 DEFAULT_MODEL_DIR = REPO_ROOT / "ios-vqa-app" / "VQASee" / "VQASee"
@@ -46,23 +45,20 @@ def _write_config(threshold: float, path: Path) -> None:
     path.write_text(json.dumps(cfg.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _guidance_pairs(manifest_rows, prediction_rows):
+def _region_pairs(manifest_rows, prediction_rows):
     preds = {}
     for row in prediction_rows:
         fid = row.get("frame_id")
-        if fid is not None and isinstance(row.get("guidance_path"), dict):
-            preds[fid] = row["guidance_path"]
+        if fid is not None and isinstance(row.get("traversable_grid"), dict):
+            preds[fid] = row["traversable_grid"]
     pairs = []
     for row in manifest_rows:
         fid = row.get("frame_id")
-        gt_raw = row.get("ground_truth_path")
+        gt_raw = row.get("traversable_grid")
         pred_raw = preds.get(fid)
         if fid is None or not isinstance(gt_raw, dict) or pred_raw is None:
             continue
-        try:
-            pairs.append((fid, GuidancePath.from_dict(gt_raw), GuidancePath.from_dict(pred_raw)))
-        except GuidancePathError:
-            continue
+        pairs.append((fid, gt_raw, pred_raw))
     return pairs
 
 
@@ -107,33 +103,30 @@ def main() -> int:
         _run_one(args.harness, args.manifest, args.model_dir, cfg_path, preds_path)
 
         pred_rows = load_jsonl(preds_path)
-        gl = evaluate_guidance_paths(_guidance_pairs(manifest_rows, pred_rows))
-        region = evaluate_path_guidance(manifest_rows, pred_rows)
+        region = evaluate_region_grids(_region_pairs(manifest_rows, pred_rows))
+        status = evaluate_path_guidance(manifest_rows, pred_rows)
         rows.append({
             "threshold": t,
-            "both_ok": gl["both_ok"],
-            "missed_path": gl["missed_path_frames"],
-            "false_go": gl["false_go_frames"],
-            "hit_rate": gl["hit_rate"],
-            "mean_deviation": gl["mean_deviation"],
-            "over_extension": gl["over_extension"],
-            "status_accuracy": region.get("status_accuracy"),
-            "risk_miss": region.get("risk_miss_count"),
-            "false_block": region.get("false_block_count"),
+            "mean_iou": region.get("mean_iou"),
+            "mean_recall": region.get("mean_recall"),
+            "mean_precision": region.get("mean_precision"),
+            "region_false_go": region.get("region_false_go_frames"),
+            "region_miss": region.get("region_miss_frames"),
+            "labeled_frames": status.get("labeled_frames"),
+            "missing_predictions": status.get("missing_prediction_count"),
         })
 
     def fmt(v, nd=3):
         return f"{v:.{nd}f}" if isinstance(v, (int, float)) and not isinstance(v, bool) and v is not None else str(v)
 
-    header = ["thr", "both_ok", "missed", "false_go", "hit_rate", "mean_dev", "over_ext",
-              "status_acc", "risk_miss", "false_block"]
+    header = ["thr", "iou", "recall", "precision", "false_go", "miss", "labeled", "missing_pred"]
     print("| " + " | ".join(header) + " |")
     print("|" + "|".join(["---"] * len(header)) + "|")
     for r in rows:
         print("| " + " | ".join([
-            fmt(r["threshold"], 2), str(r["both_ok"]), str(r["missed_path"]), str(r["false_go"]),
-            fmt(r["hit_rate"]), fmt(r["mean_deviation"]), fmt(r["over_extension"]),
-            fmt(r["status_accuracy"]), str(r["risk_miss"]), str(r["false_block"]),
+            fmt(r["threshold"], 2), fmt(r["mean_iou"]), fmt(r["mean_recall"]), fmt(r["mean_precision"]),
+            str(r["region_false_go"]), str(r["region_miss"]),
+            str(r["labeled_frames"]), str(r["missing_predictions"]),
         ]) + " |")
 
     if args.out:

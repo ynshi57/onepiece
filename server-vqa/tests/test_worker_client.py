@@ -197,7 +197,7 @@ def test_worker_invalid_base64_still_fails_before_quality_gate(monkeypatch):
     assert payload["reason"] == "invalid_frame_payload"
 
 
-def test_worker_adds_walking_roi_metadata_to_prompt(monkeypatch):
+def test_worker_ignores_legacy_walking_roi_payload(monkeypatch):
     captured = {}
 
     def fake_run_vqa_from_frame(
@@ -233,9 +233,12 @@ def test_worker_adds_walking_roi_metadata_to_prompt(monkeypatch):
 
     assert payload["type"] == "inference_result"
     assert captured["fast_response"] is True
-    assert "near_path ROI" in captured["prompt"]
-    assert "不要忽略 ROI 外" in captured["prompt"]
-    assert payload["diagnostic_metrics"]["walking_roi_present"] is True
+    assert "图像质量提示" in captured["prompt"]
+    assert "near_path ROI" not in captured["prompt"]
+    assert "left_front ROI" not in captured["prompt"]
+    assert "right_front ROI" not in captured["prompt"]
+    assert "不要忽略 ROI 外" not in captured["prompt"]
+    assert "walking_roi_present" not in payload["diagnostic_metrics"]
 
 
 def test_worker_no_mode_defaults_to_risk_observe_fast_prompt(monkeypatch):

@@ -189,7 +189,8 @@ final class LocalVisionAnalyzer {
         self.roadBackend = RoadSurfaceBackends.make(config: config)
         let skipExtraLane = config.roadBackend == .twinlite
         self.laneRunner = (!skipExtraLane && config.useLaneSegmentation) ? LocalLaneSegmentationRunner() : nil
-        self.lanePolylineRunner = nil
+        let polylineRunner = LocalLanePolylineRunner()
+        self.lanePolylineRunner = polylineRunner.isAvailable ? polylineRunner : nil
         self.config = config
         self.emitTraversableGrid = false
     }
@@ -270,6 +271,8 @@ final class LocalVisionAnalyzer {
             .analyze(pixelBuffer: pixelBuffer, orientation: orientation)
             .merging(visionHuman: human)
         timings.yoloMs = Self.elapsedMs(since: yoloStart)
+        var twinliteGuidance: GuidancePath?
+        var twinlitePolylines: [LanePolyline] = []
         if let roadBackend {
             let segStart = DispatchTime.now()
             if let maps = roadBackend.infer(
@@ -278,7 +281,8 @@ final class LocalVisionAnalyzer {
                 config: config,
                 emitGrid: emitTraversableGrid || roadBackend.id == .twinlite
             ) {
-                perception.guidancePath = maps.guidancePath
+                twinliteGuidance = maps.guidancePath
+                twinlitePolylines = maps.lanePolylines
                 if let grid = maps.traversableGrid {
                     perception.traversableGrid = grid
                 }
@@ -291,16 +295,35 @@ final class LocalVisionAnalyzer {
                 timings.segmentationMs = roadBackend.lastInferenceMs ?? Self.elapsedMs(since: segStart)
             }
         }
+        if let lanePolylineRunner {
+            let laneStart = DispatchTime.now()
+            if let polylines = lanePolylineRunner.analyze(
+                pixelBuffer: pixelBuffer,
+                orientation: orientation
+            ), !polylines.isEmpty {
+                perception.lanePolylines = polylines
+            }
+            timings.laneMs = Self.elapsedMs(since: laneStart)
+        }
+        if perception.lanePolylines.isEmpty, !twinlitePolylines.isEmpty {
+            perception.lanePolylines = twinlitePolylines
+        }
         // Extra CamVid lane pixels only when the adaptor did not already emit lanes.
-        if (laneRunner != nil || lanePolylineRunner != nil), perception.laneGrid == nil {
+        if laneRunner != nil, perception.laneGrid == nil {
             let laneStart = DispatchTime.now()
             if let laneGrid = laneRunner?.analyze(pixelBuffer: pixelBuffer, orientation: orientation) {
                 perception.laneGrid = laneGrid
             }
-            if let polylines = lanePolylineRunner?.analyze(pixelBuffer: pixelBuffer, orientation: orientation) {
-                perception.lanePolylines = polylines
+            if timings.laneMs == nil {
+                timings.laneMs = Self.elapsedMs(since: laneStart)
             }
-            timings.laneMs = Self.elapsedMs(since: laneStart)
+        }
+        // Product path priority: UFLD ego midline → TwinLite occupied rails → unavailable.
+        // DA centerline is not a product fallback (debug-only in TwinLite backend).
+        if let ufldPath = GuidancePathBuilder.fromUFLDPolylines(perception.lanePolylines) {
+            perception.guidancePath = ufldPath
+        } else if let twinliteGuidance {
+            perception.guidancePath = twinliteGuidance
         }
         var resolvedDepthCues = depthCues
         var resolvedDepthCapability = depthCapability

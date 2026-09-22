@@ -30,13 +30,13 @@
 
 ## 车道线
 
-- **现在用户看见的车道：** TwinLite 出的车道图 / 线。开启 TwinLite 时不再叠一套 CamVid 像素车道模型。
-- **下一阶段：** UFLDv2 真·几何折线。decoder 在代码里，live `lanePolylineRunner = nil`。
+- **现在用户看见的车道：** TwinLite 抽出来的几何折线（不是 128×96 黄格子）。没有折线就明示没有。格子只当调试层。
+- **下一阶段：** UFLDv2 真·几何折线。decoder 在代码里；有权时优先 UFLD，否则 TwinLite 折线。live `lanePolylineRunner` 仍可能为 nil。
 - **CamVid 像素车道：** 只做评测资产，不是产品车道线。
 
 ## 三区 ROI
 
-左 / 近 / 右三个框不是产品信号。屏幕上的框已去掉。引擎、OTA、case 层的三区字段已于 2026-09-22 删干净。新 manifest 只写 `traversable_grid`。磁盘上旧 jsonl 里的旧字段不再当产品信号。未重跑 701 帧。
+左 / 近 / 右三个框不是产品信号。屏幕上的框已去掉。引擎、OTA、Qwen `walking_roi` ingest、case 层、`path_roi.py`、701 帧 jsonl 旧字段、harness-config 矩形都已删干净。旧 payload 里的 `walking_roi` 键会被忽略，不再写入 prompt。`frame_quality` 模糊/曝光短路仍保留。VQA `direction` 的 `left_front` / `right_front` 是空间方向，不是三框。新 manifest 只写 `traversable_grid`。
 
 ## 障碍 · 台阶 / 路沿
 

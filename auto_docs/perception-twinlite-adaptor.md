@@ -11,7 +11,7 @@ TwinLiteNet 12 帧没过视觉门，DA 是 BDD 驾驶可走区域，不是行人
 ## 共识
 
 - live 默认 `road_backend=twinlite`（实验）
-- walk/drive 评测显式 `road_backend=mc5`，不被 TwinLite 污染
+- walk/drive **日常 harness** 也走 `road_backend=twinlite`（2026-09-22 切回）；mc5 仅手动全量回归
 - 红色 = 驾驶 DA，绿色 = 车道像素，蓝色 = DA 中线；有真实线就不画假梯形
 - 行人可走区仍未解决；OTA 改 backend 要下次启动才加载模型
 
@@ -25,8 +25,10 @@ GPT / Sonnet 有条件赞成，Gemini / 乔布斯赞成。子代理额度不足�
 - Swift：`RoadSurface.swift` 协议、TwinLite / mc5 两个 backend；`off` 就是 off
 - App overlay：DA + 车道 + `GuidancePath`；有真线不画假梯形
 - Python/OTA：`road_backend`；诊断台可切换
-- harness-config-walk/drive 锁定 mc5
-- 验证：PerceptionHarness `swift build` 绿；相关 pytest 112 passed
+- harness-config-walk/drive 锁定 twinlite（mc5 退出日常一键跑）
+- **Mac harness CPU-only**（2026-09-22）：`CoreMLPlatformLoader.swift` 在 macOS 强制 `computeUnits=.cpuOnly`，规避 Intel Mac + macOS 26 上 MPSGraph/MLIR 崩溃（exit 134，进度卡 0/12）
+- 诊断台：死进程立即 finalize + MPS 错误文案；不再长期显示「正在运行 0/12」
+- 验证：PerceptionHarness 12/12 帧 exit 0（~18s Intel）；harness 相关 pytest 27 passed
 
 ## 待办 / 阻塞
 
@@ -47,3 +49,7 @@ GPT / Sonnet 有条件赞成，Gemini / 乔布斯赞成。子代理额度不足�
 OTA 或诊断台把 `road_backend` 设为 `off`（无路面模型）或 `mc5`（人/车可走区，需 bundled Seg5）。不要把 TwinLite DA 说成可以走。
 
 更新时间: 2026-09-21 12:42
+
+更新时间: 2026-09-22 09:30
+
+更新时间: 2026-09-22 09:45

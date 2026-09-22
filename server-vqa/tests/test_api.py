@@ -285,8 +285,6 @@ def test_diagnostics_path_guidance_visualization_ui(monkeypatch, tmp_path):
             "event": "sent_to_backend",
             "perception": {
                 "path_guidance": {
-                    "near_path_status": "caution",
-                    "focus_direction": "right",
                     "guidance_corridor": {"x": 0.25, "y": 0, "width": 0.5, "height": 0.58},
                     "blocked_regions": [{"x": 0.62, "y": 0.2, "width": 0.2, "height": 0.2}],
                     "depth_capability": "unsupported",
@@ -317,11 +315,7 @@ def test_diagnostics_session_path_manifest_and_eval_ui(monkeypatch, tmp_path):
             "event": "sent_to_backend",
             "perception": {
                 "path_guidance": {
-                    "near_path_status": "caution",
-                    "left_front_status": "candidateOpen",
-                    "right_front_status": "candidateOpen",
-                    "focus_direction": "center",
-                }
+                    }
             },
         },
     )
@@ -341,7 +335,7 @@ def test_diagnostics_session_path_manifest_and_eval_ui(monkeypatch, tmp_path):
 
     eval_response = client.get("/diagnostics/sessions/path-export-session/path-eval")
     assert eval_response.status_code == 200
-    assert eval_response.json()["labeled_frames"] == 1
+    assert eval_response.json()["frame_count"] == 1
 
     eval_ui_response = client.get("/diagnostics/sessions/path-export-session/path-eval/ui")
     assert eval_ui_response.status_code == 200
@@ -503,7 +497,7 @@ def test_diagnostics_datasets_ui_and_evaluate():
 
     eval_response = client.get("/diagnostics/datasets/evaluate?manifest=docs/datasets/path-guidance-manifest-example.jsonl")
     assert eval_response.status_code == 200
-    assert "status_accuracy" in eval_response.json()
+    assert "labeled_frames" in eval_response.json()
 
 
 def test_ios_harness_run_rejects_predictions_file(tmp_path):
@@ -513,7 +507,7 @@ def test_ios_harness_run_rejects_predictions_file(tmp_path):
 
     pred = tmp_path / "foo-ios-harness.jsonl"
     pred.write_text(
-        _json.dumps({"frame_id": "road/x", "prediction": {}, "guidance_path": {}}) + "\n",
+        _json.dumps({"frame_id": "road/x", "prediction": {"prediction_source": "ios_coreml_offline_harness"}, "guidance_path": {}}) + "\n",
         encoding="utf-8",
     )
     resp = client.post(f"/diagnostics/datasets/ios-harness/run?manifest={pred}")
@@ -625,7 +619,7 @@ def test_manifest_runnable_reason_accepts_dataset_flags_predictions(tmp_path):
     assert _manifest_runnable_reason(ds) is None
 
     pred = tmp_path / "p-ios-harness.jsonl"
-    pred.write_text(_json.dumps({"frame_id": "road/x", "prediction": {}}) + "\n", encoding="utf-8")
+    pred.write_text(_json.dumps({"frame_id": "road/x", "prediction": {"prediction_source": "ios_coreml_offline_harness"}}) + "\n", encoding="utf-8")
     reason = _manifest_runnable_reason(pred)
     assert reason is not None and "预测结果" in reason
 
@@ -777,7 +771,7 @@ def test_manifest_browser_paginates_and_lazy_loads_thumbnails(monkeypatch, tmp_p
                 {
                     "frame_id": f"road/frame-{i:03d}",
                     "image_path": str(image_path),
-                    "ground_truth": {"near_path_status": "candidateOpen"},
+                    "ground_truth": {},
                 },
                 ensure_ascii=False,
             )
