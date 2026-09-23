@@ -88,16 +88,22 @@ struct AssistanceScreen: View {
 
     private func bottomStack(maxAnswerHeight: CGFloat) -> some View {
         VStack(spacing: Theme.Spacing.md) {
-            AnswerPanel(
-                summary: viewModel.summaryText,
-                spatial: viewModel.spatialText,
-                riskLevel: viewModel.currentRiskLevel,
-                risk: viewModel.riskText,
-                action: viewModel.actionText,
-                latency: viewModel.latencyText,
-                isProcessing: viewModel.isProcessing,
-                maxContentHeight: maxAnswerHeight
-            )
+            // 乔布斯：本地看路时叠层是主叙事，AnswerPanel 黑框挡近端车道/障碍。
+            // 思余：远程 VQA 关 → 不挂大玻璃卡；空闲仅一行轻提示，观察中完全让位给画面。
+            if viewModel.isRemoteVQAEnabled {
+                AnswerPanel(
+                    summary: viewModel.summaryText,
+                    spatial: viewModel.spatialText,
+                    riskLevel: viewModel.currentRiskLevel,
+                    risk: viewModel.riskText,
+                    action: viewModel.actionText,
+                    latency: viewModel.latencyText,
+                    isProcessing: viewModel.isProcessing,
+                    maxContentHeight: maxAnswerHeight
+                )
+            } else if !isActive {
+                localIdleHint
+            }
 
             if !viewModel.speechStatusText.isEmpty {
                 HStack(spacing: Theme.Spacing.sm) {
@@ -126,7 +132,12 @@ struct AssistanceScreen: View {
                 onStart: { viewModel.startVoiceQuestion() },
                 onStop: { viewModel.stopVoiceQuestion() }
             )
-            .accessibilityHint("按住说出你的问题，松开后优先回答")
+            .opacity(viewModel.isRemoteVQAEnabled ? 1.0 : 0.55)
+            .accessibilityHint(
+                viewModel.isRemoteVQAEnabled
+                    ? "按住说出你的问题，松开后优先回答"
+                    : "需要先在设置打开远程风险解释"
+            )
             .accessibilityAddTraits(.startsMediaSession)
 
             startStopButton
@@ -139,6 +150,21 @@ struct AssistanceScreen: View {
                     .frame(maxWidth: .infinity)
             }
         }
+    }
+
+    /// One-line tip before local session starts — no opaque multi-line card.
+    private var localIdleHint: some View {
+        Text("点「开始观察」即可本地看路")
+            .font(Theme.Typography.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(.ultraThinMaterial)
+            }
+            .accessibilityLabel("点开始观察即可本地看路，无需连接 Mac")
     }
 
     @ViewBuilder

@@ -1,0 +1,158 @@
+{
+  "task_slug": "purge-three-zone-roi",
+  "title": "删除三区 ROI 残余代码、测试、jsonl、harness 矩形",
+  "created_at": "2026-09-22T14:30:00+08:00",
+  "forum_dir": ".cursor/forum",
+  "auto_execute": true,
+  "status": "executed",
+  "messages": [
+    {
+      "id": "ctx-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "CONTEXT_SHARE",
+      "ts": "2026-09-22T14:30:00+08:00",
+      "body": "用户原话：不要了，删除掉相关的文档和代码，测试，测试结果以及磁盘上 701 帧 jsonl 里的旧字段、path_roi.py 给旧评测看、harness-config-*.json 里还有矩形都删掉。这是执行确认。不提交。UFLD polish 留下。"
+    },
+    {
+      "id": "prop-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "PROPOSAL",
+      "ts": "2026-09-22T14:31:00+08:00",
+      "body": "全量清掉三区 ROI 产品路径残余：1) 工作区恢复的 LocalPerception 三区字段 checkout 回 HEAD；2) 删 path_roi.py，预测/评测改 traversable_grid；3) 剥 jsonl 旧字段、harness-config 矩形、eval 三区结果；4) 诊断台配置页不再编辑三框；5) CURRENT / 8/25 遗留句改成已删除。不改 dated lab。auto_execute=true。"
+    },
+    {
+      "id": "exec-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "EXECUTION",
+      "ts": "2026-09-22T14:55:00+08:00",
+      "body": "已执行。path_roi.py 删除；jsonl/harness-config/eval 三区字段剥掉；Swift/Python/测试同步。详见 auto_docs/purge-three-zone-roi.md。"
+    },
+    {
+      "id": "rev-sonnet-1",
+      "agent": "Sonnet",
+      "role": "架构审阅",
+      "type": "REVIEW",
+      "time": "2026-09-22",
+      "ts": "2026-09-22T15:15:00+08:00",
+      "content": "态度：有条件同意。\n\n结论：本地感知 + 可走区评测路径上，near/left/right 三框已经没有生产者，也没有打分消费者。Qwen 行走旁路仍有一个三框消费者，但当前 iOS 不再发送。\n\n—— 产品路径（本地感知 / 浮层 / OTA / harness）——\n无生产者。\n- path_roi.py 已删，全仓无 import。\n- LocalPerception / LocalPathGuidanceSignal / DiagnosticCaptureRecorder 无 nearPathStatus / leftFront / rightFront。\n- PerceptionConfig.swift（App + harness 两份）不再解码 roi；OTA bump 带 roi 会 400。\n- CameraRiskOverlay 只画引导线 / 可走区 / YOLO 框；三区 chips 已删。\n- harness main.swift 只出 traversable_grid + guidance_path。\n- LocalSegmentation.coverage(in:) 只对整帧 CGRect(0,0,1,1) 采样，不是三框。\n\n—— 评测路径 ——\n无三框打分。\n- harness-config-walk/drive.json 无 roi。\n- docs/datasets jsonl、eval-baselines、server-vqa/data 搜不到 near_path_status / left_front_status / right_front_status / status_accuracy。\n- predictor 只出 traversable_grid；evaluate_path_guidance 只数 labeled/missing，不打 status_accuracy。\n- 诊断台配置页不再编辑三框；roi POST 被拒。\n\n—— 仍在的消费者（非本地评测主链）——\n1) walking_roi：frame_metadata.normalize_walking_roi 仍认 near_path / left_front / right_front 矩形，signaling.py + worker_client.py 写入 Qwen prompt。iOS 全仓无 walking_roi 发送。这是 8/25 说的「Qwen 间接吃框」残留。CURRENT 已把 Qwen 问答标 backlog，所以不是 live 主信号，但是协议层还活着，测试还在保它。\n2) case 磁盘化石：camvid-manifest__risk_miss.json / __false_block.json 仍是三区 taxonomy。聚类代码已改 region_miss / region_false_go。CURRENT「case 层都已删干净」过满。\n3) 死代码/注释：case_store.REGION_KEYS = ()；diagnostic_api 仍过滤 status_confusion/risk_misses/false_blocks（防御性，不是生产者）；LocalSegmentation 注释还写 coarse ROI cue。\n\n—— 不算三框的 ——\nVQA direction 枚举 left_front/right_front 是空间方向，不是矩形。YOLO blocked_regions 是障碍框。不要和三区 ROI 混删。\n\nUFLD 未动、不提交、不改 dated lab：同意。App SwiftUI 仍需 Xcode 编译，纪要已写。",
+      "body": "态度：有条件同意。\n\n结论：本地感知 + 可走区评测路径上，near/left/right 三框已经没有生产者，也没有打分消费者。Qwen 行走旁路仍有一个三框消费者，但当前 iOS 不再发送。\n\n—— 产品路径（本地感知 / 浮层 / OTA / harness）——\n无生产者。\n- path_roi.py 已删，全仓无 import。\n- LocalPerception / LocalPathGuidanceSignal / DiagnosticCaptureRecorder 无 nearPathStatus / leftFront / rightFront。\n- PerceptionConfig.swift（App + harness 两份）不再解码 roi；OTA bump 带 roi 会 400。\n- CameraRiskOverlay 只画引导线 / 可走区 / YOLO 框；三区 chips 已删。\n- harness main.swift 只出 traversable_grid + guidance_path。\n- LocalSegmentation.coverage(in:) 只对整帧 CGRect(0,0,1,1) 采样，不是三框。\n\n—— 评测路径 ——\n无三框打分。\n- harness-config-walk/drive.json 无 roi。\n- docs/datasets jsonl、eval-baselines、server-vqa/data 搜不到 near_path_status / left_front_status / right_front_status / status_accuracy。\n- predictor 只出 traversable_grid；evaluate_path_guidance 只数 labeled/missing，不打 status_accuracy。\n- 诊断台配置页不再编辑三框；roi POST 被拒。\n\n—— 仍在的消费者（非本地评测主链）——\n1) walking_roi：frame_metadata.normalize_walking_roi 仍认 near_path / left_front / right_front 矩形，signaling.py + worker_client.py 写入 Qwen prompt。iOS 全仓无 walking_roi 发送。这是 8/25 说的「Qwen 间接吃框」残留。CURRENT 已把 Qwen 问答标 backlog，所以不是 live 主信号，但是协议层还活着，测试还在保它。\n2) case 磁盘化石：camvid-manifest__risk_miss.json / __false_block.json 仍是三区 taxonomy。聚类代码已改 region_miss / region_false_go。CURRENT「case 层都已删干净」过满。\n3) 死代码/注释：case_store.REGION_KEYS = ()；diagnostic_api 仍过滤 status_confusion/risk_misses/false_blocks（防御性，不是生产者）；LocalSegmentation 注释还写 coarse ROI cue。\n\n—— 不算三框的 ——\nVQA direction 枚举 left_front/right_front 是空间方向，不是矩形。YOLO blocked_regions 是障碍框。不要和三区 ROI 混删。\n\nUFLD 未动、不提交、不改 dated lab：同意。App SwiftUI 仍需 Xcode 编译，纪要已写。"
+    },
+    {
+      "id": "vote-sonnet-1",
+      "agent": "Sonnet",
+      "role": "架构审阅",
+      "type": "VOTE",
+      "time": "2026-09-22",
+      "ts": "2026-09-22T15:15:30+08:00",
+      "content": "票：有条件同意。\n\n条件：本轮本地感知/评测清框可以收口。walking_roi 三框协议与旧 case JSON 不算本轮失败，但不要写进 CURRENT 当「都已删干净」。若下一刀清 Qwen 旁路，再拆 walking_roi + 那两份 case 化石。不阻塞本次不提交的交付。",
+      "body": "票：有条件同意。\n\n条件：本轮本地感知/评测清框可以收口。walking_roi 三框协议与旧 case JSON 不算本轮失败，但不要写进 CURRENT 当「都已删干净」。若下一刀清 Qwen 旁路，再拆 walking_roi + 那两份 case 化石。不阻塞本次不提交的交付。"
+    },
+    {
+      "id": "rev-gpt-1",
+      "agent": "GPT",
+      "role": "代码审阅",
+      "type": "REVIEW",
+      "time": "2026-09-22",
+      "ts": "2026-09-22T15:16:00+08:00",
+      "content": "态度：有条件同意。用户点名的那批产品路径已经清掉：path_roi.py、701 jsonl 旧字段、harness-config 矩形、eval 三区数字、Swift ROISet decoder、诊断台三框编辑、status_accuracy 门禁。UFLD 没被动，dated lab 没改写，未提交。CURRENT「都已删干净」写过了。\n\n已核对：path_roi 无 import；全部 docs/datasets jsonl 无 near/left/right/focus 状态；LocalPathGuidanceSignal 无三区字段；CameraRiskOverlay 不画三框；predictor/parity/regression_gate 改锚 traversable_grid；camvid-ios-report 与 camvid-walk-v1 无 status_accuracy。Swift Codable 去掉 ROISet 后未知键仍忽略，OTA 旧 payload 不会因此炸。\n\n仍必须清掉的活产品路径（不是 lab 笔记）：\n1) walking_roi。frame_metadata.normalize_walking_roi + signaling.py + worker_client.py 仍接受 near_path/left_front/right_front 并写入 Qwen prompt。iOS 已不发，但后端和 test_frame_metadata/test_worker_client 把这条三区契约锁死。8/25 点名 Qwen 是消费者。这是活代码。应删 ingest、prompt 注入、相关测试。frame_quality 短路可留。VQA direction 枚举 left_front/right_front 是空间方向，不要混删。\n2) 诊断台 case 库存。server-vqa/cases/camvid-manifest__risk_miss.json 与 __false_block.json 仍被 list_cases() 列出；聚类已改 region_miss/region_false_go。这是活诊断结果，不是 dated lab。应移出 cases/。\n\n不是必须再删的文案：diagnostic_api「改了 ROI/阈值」；cases_cluster docstring 仍写 risk_miss/false_block；run_ios_harness_eval 模块注释；LocalSegmentation coarse ROI cue 注释（实际已整帧采样）；REGION_KEYS=()；evaluate_path_guidance 兼容非空 leftover ground_truth；camvid-ios-report 一句 Review false-block。\n\n@Sonnet 同意本地感知/评测主链已无生产者。不同意把 walking_roi 只标「下一刀」：用户要删的是相关活代码，Qwen WS 仍是产品路径，测试还在保三框。CURRENT 过满这句两边同意。\n\n不做：不改写 dated model-lab/evolution。不要求重跑 701 帧推理。未独立重跑 pytest 390。walk/drive harness-config 的 mc5→twinlite 是更早 TwinLite 裁定，不是这次矩形删除的缺陷。",
+      "body": "态度：有条件同意。用户点名的那批产品路径已经清掉：path_roi.py、701 jsonl 旧字段、harness-config 矩形、eval 三区数字、Swift ROISet decoder、诊断台三框编辑、status_accuracy 门禁。UFLD 没被动，dated lab 没改写，未提交。CURRENT「都已删干净」写过了。\n\n已核对：path_roi 无 import；全部 docs/datasets jsonl 无 near/left/right/focus 状态；LocalPathGuidanceSignal 无三区字段；CameraRiskOverlay 不画三框；predictor/parity/regression_gate 改锚 traversable_grid；camvid-ios-report 与 camvid-walk-v1 无 status_accuracy。Swift Codable 去掉 ROISet 后未知键仍忽略，OTA 旧 payload 不会因此炸。\n\n仍必须清掉的活产品路径（不是 lab 笔记）：\n1) walking_roi。frame_metadata.normalize_walking_roi + signaling.py + worker_client.py 仍接受 near_path/left_front/right_front 并写入 Qwen prompt。iOS 已不发，但后端和 test_frame_metadata/test_worker_client 把这条三区契约锁死。8/25 点名 Qwen 是消费者。这是活代码。应删 ingest、prompt 注入、相关测试。frame_quality 短路可留。VQA direction 枚举 left_front/right_front 是空间方向，不要混删。\n2) 诊断台 case 库存。server-vqa/cases/camvid-manifest__risk_miss.json 与 __false_block.json 仍被 list_cases() 列出；聚类已改 region_miss/region_false_go。这是活诊断结果，不是 dated lab。应移出 cases/。\n\n不是必须再删的文案：diagnostic_api「改了 ROI/阈值」；cases_cluster docstring 仍写 risk_miss/false_block；run_ios_harness_eval 模块注释；LocalSegmentation coarse ROI cue 注释（实际已整帧采样）；REGION_KEYS=()；evaluate_path_guidance 兼容非空 leftover ground_truth；camvid-ios-report 一句 Review false-block。\n\n@Sonnet 同意本地感知/评测主链已无生产者。不同意把 walking_roi 只标「下一刀」：用户要删的是相关活代码，Qwen WS 仍是产品路径，测试还在保三框。CURRENT 过满这句两边同意。\n\n不做：不改写 dated model-lab/evolution。不要求重跑 701 帧推理。未独立重跑 pytest 390。walk/drive harness-config 的 mc5→twinlite 是更早 TwinLite 裁定，不是这次矩形删除的缺陷。"
+    },
+    {
+      "id": "vote-gpt-1",
+      "agent": "GPT",
+      "role": "代码审阅",
+      "type": "VOTE",
+      "time": "2026-09-22",
+      "ts": "2026-09-22T15:16:30+08:00",
+      "content": "VOTE: agree_with_changes\n必改：清 walking_roi 三区 ingest（frame_metadata/signaling/worker_client + 锁死它的测试）；把 cases/ 里 risk_miss 与 false_block 两份活库存移出诊断台列表。CURRENT 不要再写 case 层已删干净。文案/注释可随后。不改 dated lab，不提交。",
+      "body": "VOTE: agree_with_changes\n必改：清 walking_roi 三区 ingest（frame_metadata/signaling/worker_client + 锁死它的测试）；把 cases/ 里 risk_miss 与 false_block 两份活库存移出诊断台列表。CURRENT 不要再写 case 层已删干净。文案/注释可随后。不改 dated lab，不提交。"
+    },
+    {
+      "id": "ctx-2",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "CONTEXT_SHARE",
+      "ts": "2026-09-22T15:18:00+08:00",
+      "body": "用户原话：一起拆掉。范围：Qwen walking_roi 三框 ingest（normalize_walking_roi + signaling/worker_client prompt 注入 + 锁死契约的测试）。保留 frame_quality 短路。不混删 VQA direction 枚举 left_front/right_front。不改写 8/11 dated lab。不提交。auto_execute=true。"
+    },
+    {
+      "id": "prop-2",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "PROPOSAL",
+      "ts": "2026-09-22T15:18:30+08:00",
+      "body": "拆掉 walking_roi：1) 删 _normalize_rect / normalize_walking_roi；build_frame_metadata_prompt 只留质量提示；2) signaling.py / worker_client.py 忽略旧 walking_roi 键，去掉 walking_roi_present；3) 测试改为断言旧 payload 不注入 ROI 行；4) CURRENT 写明 Qwen ingest 已删、frame_quality 仍在、direction 枚举不是三框。cases/ 两份化石上一刀已删。"
+    },
+    {
+      "id": "exec-2",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "EXECUTION",
+      "ts": "2026-09-22T15:22:00+08:00",
+      "body": "已执行。Python 生产路径无 walking_roi ingest。pytest server-vqa/tests：388 passed。详见 auto_docs/purge-three-zone-roi.md 第二刀。"
+    },
+    {
+      "id": "rev-sonnet-2",
+      "agent": "Sonnet",
+      "role": "架构审阅",
+      "type": "REVIEW",
+      "time": "2026-09-22",
+      "ts": "2026-09-22T15:28:00+08:00",
+      "content": "态度：同意。\n\nQwen WS 路径已无三框消费者。\n- 生产：normalize_walking_roi / _normalize_rect 已删。signaling.py 与 worker_client.py 不再 message.get(\"walking_roi\")，不再传入 prompt，不再写 walking_roi_present。\n- 注入 choke point 只剩 build_frame_metadata_prompt(mode, frame_quality)。helper 签名去掉 walking_roi 后，双路径无法在不改这一处的情况下再把三框写进 Qwen。\n- 剩余 near_path 是行走 prompt / VQA 输出 schema（risk_zone + direction），不是矩形 ingest。ALLOWED_DIRECTIONS / fusion / JSON schema 仍保留 left_front/right_front。\n\n旧客户端带 walking_roi：静默忽略，不会炸。\n- Direct /ws/signaling：receive_json 是裸 dict，无 extra-forbid；未读的键被丢掉。\n- Worker：同理。test_worker_ignores_legacy_walking_roi_payload 断言 prompt 无 ROI 行、诊断无 walking_roi_present，且仍返回 inference_result。\n- Relay：白名单本来就不转发 walking_roi（也不转发 frame_quality），旧键在 relay 层已剥掉，到不了 worker。\n\niOS 无发送端。FrameMessageBuilder 只有 type/frame_id/prompt/model/image_base64/mode/question/context/previous_image_base64/client_ocr_text/diagnostic_session_id/gps。Swift 全仓无 walking_roi / walkingRoi / frame_quality。\n\n约束核对：frame_quality 短路仍在 signaling + worker + test_signaling_walking_quality_gate；8/11 dated lab 未改写；git 未提交。\n\n必改项：无。\n\n非必改：signaling WS 没有对等 ignore 测试（worker 已覆盖契约，helper 已去参）；relay 也不转发 frame_quality，质量短路只走直连 WS——都是既有结构，不是本刀回归。",
+      "body": "态度：同意。\n\nQwen WS 路径已无三框消费者。\n- 生产：normalize_walking_roi / _normalize_rect 已删。signaling.py 与 worker_client.py 不再 message.get(\"walking_roi\")，不再传入 prompt，不再写 walking_roi_present。\n- 注入 choke point 只剩 build_frame_metadata_prompt(mode, frame_quality)。helper 签名去掉 walking_roi 后，双路径无法在不改这一处的情况下再把三框写进 Qwen。\n- 剩余 near_path 是行走 prompt / VQA 输出 schema（risk_zone + direction），不是矩形 ingest。ALLOWED_DIRECTIONS / fusion / JSON schema 仍保留 left_front/right_front。\n\n旧客户端带 walking_roi：静默忽略，不会炸。\n- Direct /ws/signaling：receive_json 是裸 dict，无 extra-forbid；未读的键被丢掉。\n- Worker：同理。test_worker_ignores_legacy_walking_roi_payload 断言 prompt 无 ROI 行、诊断无 walking_roi_present，且仍返回 inference_result。\n- Relay：白名单本来就不转发 walking_roi（也不转发 frame_quality），旧键在 relay 层已剥掉，到不了 worker。\n\niOS 无发送端。FrameMessageBuilder 只有 type/frame_id/prompt/model/image_base64/mode/question/context/previous_image_base64/client_ocr_text/diagnostic_session_id/gps。Swift 全仓无 walking_roi / walkingRoi / frame_quality。\n\n约束核对：frame_quality 短路仍在 signaling + worker + test_signaling_walking_quality_gate；8/11 dated lab 未改写；git 未提交。\n\n必改项：无。\n\n非必改：signaling WS 没有对等 ignore 测试（worker 已覆盖契约，helper 已去参）；relay 也不转发 frame_quality，质量短路只走直连 WS——都是既有结构，不是本刀回归。"
+    },
+    {
+      "id": "vote-sonnet-2",
+      "agent": "Sonnet",
+      "role": "架构审阅",
+      "type": "VOTE",
+      "time": "2026-09-22",
+      "ts": "2026-09-22T15:28:30+08:00",
+      "content": "VOTE: agree\n必改：无。本刀范围收口：ingest 已拆、旧 payload 静默忽略、iOS 无发送端、quality 短路与 direction 枚举保留、dated lab 未动、未提交。",
+      "body": "VOTE: agree\n必改：无。本刀范围收口：ingest 已拆、旧 payload 静默忽略、iOS 无发送端、quality 短路与 direction 枚举保留、dated lab 未动、未提交。"
+    },
+    {
+      "id": "rev-gpt-2",
+      "agent": "GPT",
+      "role": "代码审阅",
+      "type": "REVIEW",
+      "time": "2026-09-22",
+      "ts": "2026-09-22T15:26:00+08:00",
+      "content": "态度：同意。\n\n第二刀按用户「一起拆掉」做完了：Qwen walking_roi 三框 ingest 从生产路径拿走，frame_quality 短路还在，direction 枚举没被误删，测试不再锁死三框契约。未提交。8/11 dated 笔记仍在磁盘上。\n\n1) 生产路径无 walking_roi ingest\n- frame_metadata.py：normalize_walking_roi / _normalize_rect 已删；build_frame_metadata_prompt 只收 mode + frame_quality。模块注释写明旧 walking_roi 键忽略。\n- signaling.py / worker_client.py：不再 import normalize_walking_roi，不再 message.get('walking_roi')，不再把 ROI 行拼进 prompt，diagnostic_metrics 不再报 walking_roi_present。\n- py/swift 全仓（忽略 dated md 和 forum）：生产代码只剩 frame_metadata 一句「不接受」注释；test_worker_client 用旧 payload 断言忽略。Swift 无 walking_roi / walkingRoi。html/js 无 walking_roi。\n- 独立跑：test_frame_metadata + test_worker_client + test_signaling + test_fusion + test_api + test_vqa_service → 108 passed。未重跑整套 388。\n\n2) frame_quality 短路还在\n- should_short_circuit_quality / quality_gate_vqa_payload 仍在 frame_metadata.py。\n- signaling 与 worker 两条 WS 路径都先 normalize_frame_quality，再按 blur/exposure/occlusion 短路。\n- 测试仍锁：blur 短路、too_dark medium 谨慎 payload、有问题时不短路、risk_observe 也走质量门、invalid base64 在质量门之前失败。\n\n3) ALLOWED_DIRECTIONS / fusion 没被误删\n- vqa_service.ALLOWED_DIRECTIONS 仍含 left_front / right_front。\n- fusion.py 白名单同样保留。\n- test_api.py 仍断言 direction 枚举含这两项。这是空间方向，不是矩形。\n\n4) 测试不再锁死三框契约\n- 删掉 test_normalize_walking_roi_accepts_safe_normalized_rects / rejects_out_of_bounds_rect（少 2，与 390→388 对得上）。\n- test_frame_metadata_prompt_keeps_quality_and_drops_roi_boxes 断言 prompt 无 near_path/left_front/right_front ROI 行。\n- test_worker_adds_walking_roi_metadata_to_prompt 改名为 test_worker_ignores_legacy_walking_roi_payload：旧键仍可进 payload，prompt 无 ROI 行、metrics 无 walking_roi_present。\n- test_walking_prompt_focuses_near_path_without_fake_meters 是「近处通行路径」文案，不是三框矩形契约。\n\n5) CURRENT 不过满；8/11 化石故意还在\n- CURRENT 三区段现写：ingest 已删、旧键忽略、frame_quality 仍在、direction 不是三框。与代码一致。\n- 8/11 仍在盘上且未改写：docs/evolution/2026-08-11-walking-roi-quality-gate-task-plan.md、docs/performance/2026-08-11-walking-quality-roi-metrics.md、docs/model-lab/2026-08-11-walking-near-path-risk-zone.md 等。那是历史，不是活 ingest。\n- git HEAD 仍是 343483f，工作区脏，未提交。\n\n必改项：无。\n\n非阻塞：signaling 没有对称的「旧 walking_roi 被忽略」用例，但 worker 已覆盖同构路径；生产两边都不读该键。",
+      "body": "态度：同意。\n\n第二刀按用户「一起拆掉」做完了：Qwen walking_roi 三框 ingest 从生产路径拿走，frame_quality 短路还在，direction 枚举没被误删，测试不再锁死三框契约。未提交。8/11 dated 笔记仍在磁盘上。\n\n1) 生产路径无 walking_roi ingest\n- frame_metadata.py：normalize_walking_roi / _normalize_rect 已删；build_frame_metadata_prompt 只收 mode + frame_quality。模块注释写明旧 walking_roi 键忽略。\n- signaling.py / worker_client.py：不再 import normalize_walking_roi，不再 message.get('walking_roi')，不再把 ROI 行拼进 prompt，diagnostic_metrics 不再报 walking_roi_present。\n- py/swift 全仓（忽略 dated md 和 forum）：生产代码只剩 frame_metadata 一句「不接受」注释；test_worker_client 用旧 payload 断言忽略。Swift 无 walking_roi / walkingRoi。html/js 无 walking_roi。\n- 独立跑：test_frame_metadata + test_worker_client + test_signaling + test_fusion + test_api + test_vqa_service → 108 passed。未重跑整套 388。\n\n2) frame_quality 短路还在\n- should_short_circuit_quality / quality_gate_vqa_payload 仍在 frame_metadata.py。\n- signaling 与 worker 两条 WS 路径都先 normalize_frame_quality，再按 blur/exposure/occlusion 短路。\n- 测试仍锁：blur 短路、too_dark medium 谨慎 payload、有问题时不短路、risk_observe 也走质量门、invalid base64 在质量门之前失败。\n\n3) ALLOWED_DIRECTIONS / fusion 没被误删\n- vqa_service.ALLOWED_DIRECTIONS 仍含 left_front / right_front。\n- fusion.py 白名单同样保留。\n- test_api.py 仍断言 direction 枚举含这两项。这是空间方向，不是矩形。\n\n4) 测试不再锁死三框契约\n- 删掉 test_normalize_walking_roi_accepts_safe_normalized_rects / rejects_out_of_bounds_rect（少 2，与 390→388 对得上）。\n- test_frame_metadata_prompt_keeps_quality_and_drops_roi_boxes 断言 prompt 无 near_path/left_front/right_front ROI 行。\n- test_worker_adds_walking_roi_metadata_to_prompt 改名为 test_worker_ignores_legacy_walking_roi_payload：旧键仍可进 payload，prompt 无 ROI 行、metrics 无 walking_roi_present。\n- test_walking_prompt_focuses_near_path_without_fake_meters 是「近处通行路径」文案，不是三框矩形契约。\n\n5) CURRENT 不过满；8/11 化石故意还在\n- CURRENT 三区段现写：ingest 已删、旧键忽略、frame_quality 仍在、direction 不是三框。与代码一致。\n- 8/11 仍在盘上且未改写：docs/evolution/2026-08-11-walking-roi-quality-gate-task-plan.md、docs/performance/2026-08-11-walking-quality-roi-metrics.md、docs/model-lab/2026-08-11-walking-near-path-risk-zone.md 等。那是历史，不是活 ingest。\n- git HEAD 仍是 343483f，工作区脏，未提交。\n\n必改项：无。\n\n非阻塞：signaling 没有对称的「旧 walking_roi 被忽略」用例，但 worker 已覆盖同构路径；生产两边都不读该键。"
+    },
+    {
+      "id": "vote-gpt-2",
+      "agent": "GPT",
+      "role": "代码审阅",
+      "type": "VOTE",
+      "time": "2026-09-22",
+      "ts": "2026-09-22T15:26:30+08:00",
+      "content": "VOTE: agree\n第二刀可收口。walking_roi 三框 ingest 已从 frame_metadata/signaling/worker_client 拿掉，测试改成忽略旧 payload，frame_quality 短路与 VQA direction 枚举保留。CURRENT 与活代码对齐；8/11 dated 笔记故意不改。不提交。无必改项。",
+      "body": "VOTE: agree\n第二刀可收口。walking_roi 三框 ingest 已从 frame_metadata/signaling/worker_client 拿掉，测试改成忽略旧 payload，frame_quality 短路与 VQA direction 枚举保留。CURRENT 与活代码对齐；8/11 dated 笔记故意不改。不提交。无必改项。"
+    },
+    {
+      "id": "rev-gemini-2",
+      "agent": "Gemini",
+      "role": "综合审阅",
+      "type": "REVIEW",
+      "time": "2026-09-22",
+      "ts": "2026-09-22T15:30:00+08:00",
+      "content": "态度：同意。\n\n第二刀与用户「一起拆掉」对齐。CURRENT 三区 ROI 段现在时写得准，不需要再改。\n\n—— walking_roi ingest 真的没了 ——\n生产路径不再读框、不再写 prompt、不再报 walking_roi_present。\n- frame_metadata.py：normalize_walking_roi / _normalize_rect 已删；build_frame_metadata_prompt 只剩质量行。\n- signaling.py / worker_client.py：不再 import、不再 message.get(\"walking_roi\")。\n- iOS Swift 全仓无 walking_roi 发送。\n- 测试改成忽略契约：test_frame_metadata_prompt_keeps_quality_and_drops_roi_boxes；test_worker_ignores_legacy_walking_roi_payload。旧 payload 带 near_path 矩形时 prompt 无 ROI 行、metrics 无 walking_roi_present。\n- frame_quality 短路仍在（normalize_frame_quality / should_short_circuit_quality / quality_gate_vqa_payload + 原测试）。\n- VQA direction 枚举 left_front/right_front 仍在 fusion.py / vqa_service.py，未混删。\n独立复跑：pytest test_frame_metadata.py + test_worker_client.py → 14 passed。未重跑宣称的全量 388。\n\n—— CURRENT 三区 ROI 段 ——\n「不是产品信号 / ingest 已删 / 旧键忽略不进 prompt / frame_quality 仍留 / direction 不是三框 / manifest 只写 traversable_grid」与代码一致。\n「case 层都已删干净」：工作区 server-vqa/cases/ 为空目录；camvid-manifest__risk_miss.json 与 __false_block.json 已从磁盘删除（git D，未提交故 HEAD 仍跟踪）。list_cases() 读不到三区化石。case_store 活代码已改锚 region_miss / region_false_go，不是三框。上一刀 GPT 说这句过满，现在工作区为真。\n\n—— 8/11 dated 笔记未被误改 ——\ndocs/performance/2026-08-11-walking-quality-roi-metrics.md 与 docs/evolution/2026-08-11-walking-roi-quality-gate-task-plan.md：git status 干净、无 diff。正文仍用现在时写当时 walking_roi 协议，符合「不改写 dated lab」。8/25 决策只动了 9/22 附录里 path_roi/jsonl 一句（第一刀范围），不是 8/11。\n\n—— cases/ 化石 ——\n不在工作区磁盘上。空目录留下无害。不提交所以 git 仍显示 D。诊断台不会再 list 那两份三区 taxonomy JSON。\n\n必改项：无。\n\n非阻塞（不挡收口）：signaling.py 没有平行的 ignore 测试（worker 已覆盖同一 prompt 拼装）；diagnostic_api 仍过滤 status_confusion/risk_misses/false_blocks；REGION_KEYS=()；CURRENT「case 层」若被读成「整个 case 系统删了」会歧义，但本节标题是三区 ROI，活聚类已是网格。不改 dated lab，不提交。\n\n依赖/性能：无新依赖。少写 ROI prompt 行，token 略减；质量短路路径未动。",
+      "body": "态度：同意。\n\n第二刀与用户「一起拆掉」对齐。CURRENT 三区 ROI 段现在时写得准，不需要再改。\n\n—— walking_roi ingest 真的没了 ——\n生产路径不再读框、不再写 prompt、不再报 walking_roi_present。\n- frame_metadata.py：normalize_walking_roi / _normalize_rect 已删；build_frame_metadata_prompt 只剩质量行。\n- signaling.py / worker_client.py：不再 import、不再 message.get(\"walking_roi\")。\n- iOS Swift 全仓无 walking_roi 发送。\n- 测试改成忽略契约：test_frame_metadata_prompt_keeps_quality_and_drops_roi_boxes；test_worker_ignores_legacy_walking_roi_payload。旧 payload 带 near_path 矩形时 prompt 无 ROI 行、metrics 无 walking_roi_present。\n- frame_quality 短路仍在（normalize_frame_quality / should_short_circuit_quality / quality_gate_vqa_payload + 原测试）。\n- VQA direction 枚举 left_front/right_front 仍在 fusion.py / vqa_service.py，未混删。\n独立复跑：pytest test_frame_metadata.py + test_worker_client.py → 14 passed。未重跑宣称的全量 388。\n\n—— CURRENT 三区 ROI 段 ——\n「不是产品信号 / ingest 已删 / 旧键忽略不进 prompt / frame_quality 仍留 / direction 不是三框 / manifest 只写 traversable_grid」与代码一致。\n「case 层都已删干净」：工作区 server-vqa/cases/ 为空目录；camvid-manifest__risk_miss.json 与 __false_block.json 已从磁盘删除（git D，未提交故 HEAD 仍跟踪）。list_cases() 读不到三区化石。case_store 活代码已改锚 region_miss / region_false_go，不是三框。上一刀 GPT 说这句过满，现在工作区为真。\n\n—— 8/11 dated 笔记未被误改 ——\ndocs/performance/2026-08-11-walking-quality-roi-metrics.md 与 docs/evolution/2026-08-11-walking-roi-quality-gate-task-plan.md：git status 干净、无 diff。正文仍用现在时写当时 walking_roi 协议，符合「不改写 dated lab」。8/25 决策只动了 9/22 附录里 path_roi/jsonl 一句（第一刀范围），不是 8/11。\n\n—— cases/ 化石 ——\n不在工作区磁盘上。空目录留下无害。不提交所以 git 仍显示 D。诊断台不会再 list 那两份三区 taxonomy JSON。\n\n必改项：无。\n\n非阻塞（不挡收口）：signaling.py 没有平行的 ignore 测试（worker 已覆盖同一 prompt 拼装）；diagnostic_api 仍过滤 status_confusion/risk_misses/false_blocks；REGION_KEYS=()；CURRENT「case 层」若被读成「整个 case 系统删了」会歧义，但本节标题是三区 ROI，活聚类已是网格。不改 dated lab，不提交。\n\n依赖/性能：无新依赖。少写 ROI prompt 行，token 略减；质量短路路径未动。"
+    },
+    {
+      "id": "vote-gemini-2",
+      "agent": "Gemini",
+      "role": "综合审阅",
+      "type": "VOTE",
+      "time": "2026-09-22",
+      "ts": "2026-09-22T15:30:30+08:00",
+      "content": "VOTE: agree\n必改项：无。\nwalking_roi ingest 已拆；CURRENT 三区段准确；8/11 笔记未误改；cases/ 两份化石工作区已删。frame_quality 保留，direction 枚举未混删。不提交。第二刀可以收口。",
+      "body": "VOTE: agree\n必改项：无。\nwalking_roi ingest 已拆；CURRENT 三区段准确；8/11 笔记未误改；cases/ 两份化石工作区已删。frame_quality 保留，direction 枚举未混删。不提交。第二刀可以收口。"
+    }
+  ]
+}

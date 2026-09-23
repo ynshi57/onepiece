@@ -658,6 +658,68 @@ def test_harness_run_lock_reports_running_and_clears_stale(tmp_path, monkeypatch
     assert not lock.exists()
 
 
+def test_pid_is_running_treats_zombie_as_dead(monkeypatch):
+    from app import diagnostic_api
+
+    monkeypatch.setattr(diagnostic_api, "_reap_pid", lambda _pid: False)
+    monkeypatch.setattr(os, "kill", lambda _pid, _sig: None)
+    monkeypatch.setattr(diagnostic_api, "_pid_state", lambda _pid: "Z")
+    assert diagnostic_api._pid_is_running(40764) is False
+
+    monkeypatch.setattr(diagnostic_api, "_pid_state", lambda _pid: "S")
+    assert diagnostic_api._pid_is_running(40764) is True
+
+
+def test_finalize_dead_harness_when_exit_file_exists_even_if_pid_looks_alive(tmp_path, monkeypatch):
+    """Finished harness + zombie wrapper must not keep the UI at 12/12."""
+    from app import diagnostic_api
+
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text('{"frame_id":"f1","image_path":"x.png"}\n', encoding="utf-8")
+    out = tmp_path / "out.jsonl"
+    out.write_text(
+        '{"frame_id":"f1","prediction": {"prediction_source": "ios_coreml_offline_harness"}}\n',
+        encoding="utf-8",
+    )
+    exit_path = tmp_path / "exit"
+    exit_path.write_text("0\n", encoding="utf-8")
+    lock = tmp_path / "lock.json"
+    meta = tmp_path / "meta.json"
+    monkeypatch.setattr(diagnostic_api, "_harness_lock_path", lambda _m: lock)
+    monkeypatch.setattr(diagnostic_api, "_harness_out_path", lambda _m: out)
+    monkeypatch.setattr(diagnostic_api, "_harness_meta_path", lambda _m: meta)
+    monkeypatch.setattr(diagnostic_api, "_pid_is_running", lambda _pid: True)
+    monkeypatch.setattr(diagnostic_api, "_reap_pid", lambda _pid: False)
+    lock.write_text(json.dumps({
+        "pid": os.getpid(),
+        "manifest": str(manifest),
+        "expected": 1,
+        "config_version": 1,
+        "config_hash": "abc",
+        "exit_path": str(exit_path),
+        "stderr_path": str(tmp_path / "no-stderr.log"),
+    }), encoding="utf-8")
+    result = diagnostic_api._finalize_dead_harness(manifest)
+    assert result is not None
+    assert result["status"] == "ok"
+    assert result["predicted"] == 1
+    assert not lock.exists()
+
+
+def test_harness_progress_reason_complete_does_not_claim_one_minute(tmp_path, monkeypatch):
+    from app import diagnostic_api
+
+    out = tmp_path / "out.jsonl"
+    out.write_text('{"frame_id":"a"}\n{"frame_id":"b"}\n', encoding="utf-8")
+    monkeypatch.setattr(diagnostic_api, "_harness_out_path", lambda _m: out)
+    reason = diagnostic_api._harness_progress_reason(
+        tmp_path / "m.jsonl",
+        {"pid": 1, "started_at": "now", "expected": 2, "eval_role": "vehicle"},
+    )
+    assert "已写完 2/2 帧" in reason
+    assert "约 1 分钟" not in reason
+
+
 def test_ios_harness_frames_ui_prefers_lane_polylines_and_demotes_grid_debug(client, tmp_path):
     """Product lane display is geometry-first: polylines are the yellow strokes.
     Pixel lane_grid may exist as a hidden debug layer, never the default overlay."""

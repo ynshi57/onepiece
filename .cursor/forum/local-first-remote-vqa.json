@@ -1,0 +1,25 @@
+{
+  "task_slug": "local-first-remote-vqa",
+  "title": "本地感知默认 · 远程 VQA 设置开启",
+  "forum_dir": ".cursor/forum",
+  "auto_execute": true,
+  "status": "executed",
+  "messages": [
+    {
+      "id": "prop-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "PROPOSAL",
+      "ts": "2026-09-23T11:30:00+08:00",
+      "body": "用户确认计划：默认本地看路；设置开启远程 Qwen。对齐 CURRENT。"
+    },
+    {
+      "id": "exec-1",
+      "agent": "opus-executor",
+      "role": "罗根",
+      "type": "EXECUTION",
+      "ts": "2026-09-23T11:45:00+08:00",
+      "body": "已落地 isRemoteVQAEnabled 门闩、Settings Toggle、语音提问拒绝、CURRENT/纪要。"
+    }
+  ]
+}

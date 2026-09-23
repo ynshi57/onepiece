@@ -1,0 +1,86 @@
+{
+  "task_slug": "docs-noise-cleanup",
+  "title": "清除不再适用的文档噪声",
+  "created_at": "2026-09-22T11:40:00+08:00",
+  "auto_execute": true,
+  "status": "executed",
+  "messages": [
+    {
+      "id": "ctx-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "CONTEXT_SHARE",
+      "ts": "2026-09-22T11:40:00+08:00",
+      "body": "用户原话：经过矛盾分析后，旧的文档以及不在 VQASee 再适用的描述可以删除掉，原则就是清除噪声。这是对上次审计「只加横幅、不删文件」的加严。CURRENT 已是宪法。"
+    },
+    {
+      "id": "prop-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "PROPOSAL",
+      "ts": "2026-09-22T11:41:00+08:00",
+      "body": "原则：Agent 还会当成「现在」的旧文删掉；按日期写的实验笔记本留下。\n\n删整文件：\n1. docs/vqasee-skills-draft/ 整树（禁止调度的假 skill，仍写低视力优先/语音优先）\n2. docs/vqasee-codex-agent-design.md（已被 AGENTS.md 取代，还写 low-vision 核心任务）\n3. auto_docs/local-perception-gap.md（superseded，正文仍写用户仍吃二值）\n4. auto_docs/perception-four-questions.md（第2条已被推翻，正文仍写不能当产品默认、打开 App 没有绿可走区）\n\n改现在时（不删 lab 文件）：\n5. README.en.md 对齐中文 README：去 voice-first / 四模式当当前能力，补 CURRENT 指针，架构图改 TwinLite + 视觉 overlay\n6. docs/performance/2026-08-27 和 docs/decisions/2026-08-27 里「live 仍二值」改成历史：当时默认关 mc5；现行 TwinLite 见 CURRENT\n7. .agents/skills/vqasee-self-evolution 决策例「是否语音优先」改成「是否视觉引导优先」\n8. CURRENT / 0001 去掉对已删 draft 的指针\n\n不删：model-lab / evolution / tech-radar / ui-lab / decisions 整篇 / architecture（已重写）。\n请 REVIEW + VOTE。"
+    },
+    {
+      "id": "rev-sonnet-1",
+      "agent": "Sonnet",
+      "role": "架构审阅",
+      "type": "REVIEW",
+      "ts": "2026-09-22T11:48:00+08:00",
+      "time": "2026-09-22",
+      "content": "态度：有条件同意。分层原则对，删除清单对，model-lab/evolution 没有被误列入。执行时必须收窄 8/27 改写、并补官方 skill 里仍当「现在」的四模式。",
+      "body": "态度：有条件同意。\n\n判断：用户要的是「Agent 还会当成现在的旧文」清掉，不是扫实验室。提案的分层（删现在时噪声 / 留 dated 笔记本）和排除名单（model-lab / evolution / tech-radar / ui-lab / decisions 整篇 / architecture）架构上正确。抽查后，四份整文件删除都成立；8/27 只能改时态不能改写决策；官方 skill 只改一个决策例不够。\n\n—— 抽查：将删文件会不会误导 Agent ——\n\n1) docs/vqasee-skills-draft/ 整树 — 会。CURRENT 已写「不是现行知识」，但同名 skill 仍躺在 docs/ 下，RAG/grep 会当工作流吃。抽查：\n   - draft/vqasee-product-review：横幅写禁止调度，使命仍是「做成低视力用户真正愿意每天使用」。\n   - draft/vqasee-self-evolution：观察清单仍把「行走/周围/详细/读文字」写成当前模式。\n   横幅挡不住调度。假 skill 与 .agents/skills/ 重名是真实分发风险。同意整树删。\n\n2) docs/vqasee-codex-agent-design.md — 会。v0.1 已被 AGENTS.md 取代。决策序第 2 条仍是「low-vision users」核心任务；四周路线是室内导航/读牌/四模式。入链只剩 draft 互指 + CURRENT/0001 指针。删文件安全。\n\n3) auto_docs/local-perception-gap.md — 会，而且是最危险的「横幅+正文互打」。横幅已 superseded，§2 仍写「用户仍吃二值 Fast-SCNN」，横断仍写「TwinLiteNet 只在诊断台」。Agent 读正文会推翻 CURRENT。数字不唯一：586ms 在 performance/2026-08-27，UFLD hit_rate=0.45 在 model-lab/2026-08-29。删纪要不丢证据。\n\n4) auto_docs/perception-four-questions.md — 会。横幅说 TwinLite 就是默认，正文第 2 条仍写「不能当产品默认」，第 3 条仍写「打开 App 暂时没有绿可走区和分割中线」。仍成立的两条（YOLO 不加台阶/路沿、二值退役）已在 CURRENT。同意删。\n\n—— model-lab / evolution 有没有被误列入 ——\n\n没有。提案明确不删；清单里也没有 dated lab 路径。上次审计的 P1 约束保住了。投票锁定：执行时禁止把 model-lab / evolution 扩进删除。\n\n—— 改现在时 ——\n\n5) README.en.md — 必须改。中文 README 已是 TwinLite + 视觉 overlay +「读文字以后再做」；英文仍写 voice-first UI、four modes 当当前能力。双语入口不一致，外文 Agent 会吃错栈。\n\n6) 8/27 performance + decisions「live 仍二值」— 同意改时态，反对改写决策。CURRENT 自己写了「不要靠改 8 月决策正文来更正历史」。上次审计已删「现状快照」、加了 CURRENT 指针。残留现在时在 G L69「live 仍二分类」、H' L74「live 仍二值」、performance L59「live 仍二值」。这些是快照泄漏，不是裁决。\n   必须收窄：只把「live 仍二值/仍二分类」改成「当时 shipping 路面是二值 Fast-SCNN；现行路面默认 TwinLite，见 CURRENT」。\n   禁止改：四项验收口径、任务卡事实、mc5 已 bundle、useMulticlassSegmentation 默认 false（开关默认关仍是真的）、评测数字。\n   这是 approve_with_changes 的硬条件。\n\n7) vqasee-self-evolution「是否语音优先」— 方向对，范围不够。官方 skill 里更误导的是同一文件把四模式写成现在：\n   - L167-168：「当前模式：行走/周围/详细/读文字」\n   - L15 / L215：读文字仍当核心任务\n   只改决策例、留下「当前模式=四模式」，噪声还在调度面。本轮既已动这份 skill，必须把「当前模式」改成 CURRENT 四项（或标成历史/以后再做）。不要借机改 model-prompt-lab 的 OCR 检查清单——那是以后再做的工作流，不是声称 live 默认。\n\n8) CURRENT / 0001 去 draft 指针 — 同意。删树后 CURRENT L6、0001 L26 会变成死链。0001 保留「正式工作流只认 .agents/skills/」，不要点已删路径。\n\n—— 逻辑完整性缺口（非否决） ——\n\n- 同 slug 的 auto_docs/*.json 没进清单。纪要删了、讨论稿还在，grep 仍能读到旧结论。建议一并删 local-perception-gap.json / perception-four-questions.json，不扩成扫 auto_docs。\n- auto_docs/vqasee-core-goal-refocus.md L24 仍问「shipping 是否仍二值」——是待核实，不是假现在时。本轮不必删，执行后那条待办应指向 CURRENT。\n- 执行后应用 grep 关门，而不是「删了就算」：活文档/技能里不应再命中 用户仍吃二值|不能把 TwinLite|voice-first|是否语音优先|vqasee-skills-draft|vqasee-codex-agent-design。\n\n@Opus 8/27 只动时态；官方 skill 把「当前模式」一并改掉；lab 目录碰都不要碰。"
+    },
+    {
+      "id": "vote-sonnet-1",
+      "agent": "Sonnet",
+      "role": "架构审阅",
+      "type": "VOTE",
+      "ts": "2026-09-22T11:48:30+08:00",
+      "time": "2026-09-22",
+      "vote": "approve_with_changes",
+      "content": "approve_with_changes",
+      "body": "VOTE: approve_with_changes\n\n必须改：\n1. 8/27 只改「live 仍二值/仍二分类」为历史口径 + CURRENT 指针；不改写任务卡、验收口径、开关默认 false、数字。\n2. 动 vqasee-self-evolution 时，把「当前模式：行走/周围/详细/读文字」改成 CURRENT 四项或标成以后再做；不要只改「是否语音优先」一例。\n3. 删树后清 CURRENT L6 / 0001 L26；0001 保留「只认 .agents/skills/」。\n4. 锁定不删：model-lab / evolution / tech-radar / ui-lab / decisions 整篇 / architecture。\n\n建议（不挡票）：\n- 同删 auto_docs/local-perception-gap.json 与 perception-four-questions.json。\n- 执行后 grep 活文档/技能，确认上列化石清空。\n\n整文件删除 1–4、README.en.md 对齐、去 draft 指针：同意。"
+    },
+    {
+      "id": "rev-gpt-1",
+      "agent": "gpt-reviewer",
+      "role": "GPT",
+      "type": "REVIEW",
+      "ts": "2026-09-22T11:48:00+08:00",
+      "body": "态度：有条件同意。\n\n方向对：Agent 还会当「现在」读的旧文删掉，按日期写的实验笔记本留下。抽查坐实提案 1–4、5、7 是真噪声，不是文风。不能原样同意的是把 8/27 决策正文改成现行 TwinLite 叙事——CURRENT 自己写了「不要靠改 8 月决策正文来更正历史」。\n\n已核对：\n- CURRENT：TwinLite 是 live 默认；二值 Fast-SCNN 退役；视觉引导优先；CURRENT 优于 dated 裁决。\n- 0001 L26：skills-draft「禁止调度」，不是现行 skill。\n- skills-draft/product-review：使命仍是「低视力用户每天使用」；ui-polish 仍写语音优先。正式 skill 在 .agents/skills/，AGENTS.md 无 draft 指针。\n- vqasee-codex-agent-design.md：第 2 优先级仍是 low-vision core task；四周路线图是读文字/周围/Qwen。已被 AGENTS.md 取代。\n- auto_docs/local-perception-gap.md：横幅 superseded，正文仍写「用户仍吃二值 Fast-SCNN」。\n- auto_docs/perception-four-questions.md：横幅已推翻第 2 条，正文仍写「不能把 TwinLite 当产品默认」「打开 App 没有绿可走区」。\n- README.en.md L43/51/64：voice-first + 四模式当当前能力。中文 README 已是 TwinLite + 视觉 overlay +「读文字以后再做」+ 知识库 CURRENT。英文知识库（L355–365）漏了 CURRENT。\n- performance 08-27 L59、decision 08-27 L69「仍二分类」+ L74「仍二值」：现在时。roadmap / architecture 已无语音优先/仍二值。\n- 正式 skill 里只剩 self-evolution L407「是否语音优先」这一处开放题。\n\n漏删：\n1. auto_docs/local-perception-gap.json 与 perception-four-questions.json 正文仍是被推翻结论。只删 md 会留下可检索噪声。应与 md 一起删（论坛归档不是现行产品知识）。\n2. auto_docs/vqasee-core-goal-refocus.md L24 待办仍问「shipping App 是否仍二值分割」。结论（四项核心）仍成立，整篇不删；只改这一行，指向 CURRENT：二值已退役、TwinLite 默认、mc5 bundle 且开关默认关。\n\n误删风险（提案「不删」名单正确，不要扩大）：\n- perception-four-questions 第 1/3/4 条（YOLO 不加台阶路沿、二值退役、Mac≠iPhone）仍有效，但已写入 CURRENT。删纪要可接受。\n- local-perception-gap 的召回/延迟数字属于证据，真源在 dated model-lab/performance，不靠这篇纪要。\n- evolution/2026-07-29 语音优先、8/06 决策正文 voice-first、8/12「从语音优先改过来」都是按日期的记录，已有或应只留横幅。整篇不删。\n- 8/27 整篇不删（提案已写对）。\n\n替代方案（必须改，否则反对把 8/27 当现行产品页改）：\n- 08-27 两处只做时态手术，三处都改：L59、L69、L74。写成「当时（2026-08-27）mc5 默认关、live 仍二值；现行 TwinLite 见 CURRENT」。禁止重写 G/H' 完成叙事，假装 8/27 默认就是 TwinLite。数字、表格、分辨率曲线不动。\n- CURRENT L6 / 0001 L26：不要裸删指针留 404。改成「非正式 skill 草案已删除；正式工作流只认 .agents/skills/」。0001 可补一句：与 CURRENT 打架的 auto_docs 纪要可以删。\n- README.en.md：表/能力段/架构图对齐中文，知识库补 CURRENT，原则节已是 visual guidance first，不要动。\n- self-evolution L407：改「是否视觉引导优先」；不要顺手改观察清单里的行走/周围/读文字——那是现场可能出现的用户话，不是产品现在时。\n\n不删 model-lab / evolution / tech-radar / ui-lab / decisions 整篇 / architecture：同意。"
+    },
+    {
+      "id": "vote-gpt-1",
+      "agent": "gpt-reviewer",
+      "role": "GPT",
+      "type": "VOTE",
+      "ts": "2026-09-22T11:48:30+08:00",
+      "body": "VOTE: approve_with_changes。同意删 skills-draft 整树、codex-agent-design、两份 superseded 纪要 md；同意 README.en 对齐中文、self-evolution 决策例改视觉引导优先、CURRENT/0001 去掉已删 draft。必须改：08-27 三处「仍二值/仍二分类」只改时态+CURRENT 指针，不重写决策正文；两份 auto_docs JSON 与 md 同删；core-goal-refocus 只改 L24 待办不删篇；CURRENT/0001 指针改成「草案已删」而不是裸 404。"
+    },
+    {
+      "id": "rev-gemini-1",
+      "agent": "gemini-reviewer",
+      "role": "Gemini",
+      "type": "REVIEW",
+      "ts": "2026-09-22T11:45:00+08:00",
+      "body": "态度：有条件同意。\n\n判断：删「Agent 还会当成现在」的旧文、留日期实验笔记本，这条刀法对。抽查坐实 README.en 是唯一漏网的双语活文档；model-lab / evolution / decisions 整篇 / architecture 不删，不会误扫实验记录。不能原样同意的是整份删掉 auto_docs/local-perception-gap.md——它不是假 skill，正文里有仓库别处找不到的评测数字。\n\n—— 对照 CURRENT ——\n现行：视觉引导优先；TwinLite 产品默认；禁止再写 shipping 仍二分类；skills-draft / 8/10 对话不是现行知识；auto_docs 是工作纪要。提案 1–8 都对准这些句子。\n\n—— 四词残留（只扫 md/skill，不含论坛 JSON）——\n活文档现在时（该改/该删，提案已列入）：\n- README.en.md L43/L51/L64：voice-first UI、四模式当当前能力、架构图 Voice-first UI。中文 README 已清。\n- docs/decisions/2026-08-27 H'：「live 仍二值 / 仍二分类」\n- docs/performance/2026-08-27 L59：「开关默认关（live 仍二值）」\n- .agents/skills/vqasee-self-evolution L407：「是否语音优先」\n- docs/vqasee-skills-draft/ 整树仍写低视力/语音优先\n- 两份 auto_docs 正文与横幅互打\n\n历史记录（提案不删，正确）：\n- evolution/2026-07-29、2026-09-13 里的「语音优先」是当时事实\n- decisions/08-06、08-12 已有 9/22 横幅，正文作废句应留着当追溯\n- CURRENT 自己解释「不是语音优先」——不是噪声\n\n漏网活纪要（提案未列）：\n- auto_docs/vqasee-core-goal-refocus.md L24 待办仍写「shipping App 是否仍二值分割」——Agent 会当未决项。不是 lab，是工作纪要。应改现在时或删该条，指向 CURRENT（TwinLite 默认、二值已退役）。\n\n—— 会不会误删实验记录 ——\n不会扫到 model-lab / evolution / tech-radar / ui-lab / decisions 整篇 / architecture。这五类留下是对的。\n\n单点风险：local-perception-gap.md 是唯一写出「覆盖召回 0.663、漏 79/701」的文件。docs/model-lab 里搜不到这两个数。删整文件 = 评测数字走路。perception-four-questions.md 可删：YOLO 不加台阶、二值退役、Mac≠iPhone 已进 CURRENT；被推翻的第 2 条才是噪声。\n\nskills-draft 整树、vqasee-codex-agent-design.md：不是实验。AGENTS.md / 正式 skill 无 inbound（design 只被 draft 自引用）。CURRENT L6、0001 L26 有指针，提案第 8 条已覆盖。\n\n—— 依赖 / 测试 / 文档 ——\n- 依赖：删 draft 后必须同步 CURRENT/0001，否则悬空路径。无产品代码、无 requirements、无测试契约。\n- 性能：08-27 性能笔记只改现在时措辞，Mac 586ms 表和 H' 完成记录必须原样留。\n- README.en 知识库缺 CURRENT 指针（中文已有）——提案第 5 条已写，执行时对齐中文知识库那一行。\n- 两份 auto_docs 的配套 .json 不删也可（论坛档案）；若原则是 Agent 不当现在，建议一并收或标 archive，非阻断。\n\n必须改：\n1) 删 local-perception-gap.md 前，把 0.663 / 79/701（以及 shipping vs harness 两套栈这句横断）迁到 dated model-lab 或 evolution；或改成只剥现在时、留数字。禁止数字跟纪要一起蒸发。\n2) 顺手清 vqasee-core-goal-refocus 待办「是否仍二值」。\n3) 改 08-27 只动时态/横幅，不动测过的延迟表。\n"
+    },
+    {
+      "id": "vote-gemini-1",
+      "agent": "gemini-reviewer",
+      "role": "Gemini",
+      "type": "VOTE",
+      "ts": "2026-09-22T11:45:30+08:00",
+      "body": "VOTE: approve_with_changes。同意删 skills-draft 整树、codex-agent-design、perception-four-questions；同意改 README.en / 08-27 现在时 / self-evolution 例句 / CURRENT+0001 指针；同意不删 model-lab / evolution / tech-radar / ui-lab / decisions 整篇 / architecture。必须改：local-perception-gap 先迁走 0.663/79/701 再删（或留文件剥现在时）；vqasee-core-goal-refocus 待办「是否仍二值」一并清；08-27 只改措辞不改数字。"
+    },
+    {
+      "id": "exec-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "EXECUTION",
+      "ts": "2026-09-22T11:55:00+08:00",
+      "body": "按三审收窄已执行。删 skills-draft 整树、codex-agent-design、两份过时 auto_docs（含 json）。README.en 对齐中文。08-27 只改时态。self-evolution 当前阶段改四项。0.663 已在 eval-baselines/camvid-ios-obstacle.json，未另迁 md。model-lab/evolution/decisions 整篇未删。"
+    }
+  ]
+}

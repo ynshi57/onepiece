@@ -33,6 +33,28 @@ struct StreamingConfigValidator {
     }
 }
 
+/// Product gate for optional Mac/Qwen VQA vs local-only perception sessions.
+enum RemoteVQASessionPolicy {
+    static let defaultsKey = "vqasee.remote_vqa.enabled"
+
+    /// Missing key means off — local TwinLite/YOLO is the default product path.
+    static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
+        (defaults.object(forKey: defaultsKey) as? Bool) ?? false
+    }
+
+    static func shouldConnectBackend(remoteEnabled: Bool) -> Bool {
+        remoteEnabled
+    }
+
+    static func shouldSendFrameToBackend(remoteEnabled: Bool, streamingActive: Bool) -> Bool {
+        remoteEnabled && streamingActive
+    }
+
+    static func shouldAllowVoiceQuestion(remoteEnabled: Bool) -> Bool {
+        remoteEnabled
+    }
+}
+
 /// Pure decision logic for auto-connect, factored out for swiftc unit tests.
 /// The design (approved by the user): full-auto when a single backend is found,
 /// present a selection list only when 2+ are found, and never clobber an address

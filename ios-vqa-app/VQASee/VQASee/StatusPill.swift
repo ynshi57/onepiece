@@ -25,12 +25,22 @@ struct StatusPill: View {
         }
     }
 
+    /// Prefer a short connection hint when it adds product meaning (e.g. 本地看路中)
+    /// over the generic StreamStatus title alone.
+    private var displayTitle: String {
+        let trimmed = connectionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed.count <= 16 {
+            return trimmed
+        }
+        return status.title
+    }
+
     var body: some View {
         HStack(spacing: Theme.Spacing.sm) {
             Circle()
                 .fill(dotColor)
                 .frame(width: 10, height: 10)
-            Text(status.title)
+            Text(displayTitle)
                 .font(Theme.Typography.pill)
                 .lineLimit(1)
         }
@@ -41,7 +51,7 @@ struct StatusPill: View {
             if reduceTransparency {
                 shape.fill(Theme.solidSurface)
             } else {
-                shape.fill(.regularMaterial)
+                shape.fill(.ultraThinMaterial)
             }
         }
         .clipShape(Capsule(style: .continuous))

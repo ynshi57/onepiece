@@ -1,0 +1,33 @@
+{
+  "task_slug": "harness-zombie-stuck",
+  "title": "真身评估 12/12 卡住",
+  "forum_dir": ".cursor/forum",
+  "auto_execute": true,
+  "status": "executed",
+  "messages": [
+    {
+      "id": "ctx-1",
+      "agent": "opus-executor",
+      "role": "罗根",
+      "type": "CONTEXT_SHARE",
+      "ts": "2026-09-22T16:07:00+08:00",
+      "body": "用户截图：camvid-manifest-drive-test 进度 12/12，pid 40764 从 16:03:07 起一直显示在跑。实测：exit=0，jsonl=12，stderr 已 harness done；ps 显示 40764 是 uvicorn 40746 的僵尸。os.kill(0) 对僵尸为真，锁不释放。"
+    },
+    {
+      "id": "prop-1",
+      "agent": "opus-executor",
+      "role": "罗根",
+      "type": "PROPOSAL",
+      "ts": "2026-09-22T16:07:30+08:00",
+      "body": "P0：exit 文件在则 finalize；pid 状态 Z 视为死；Popen 后线程 wait。进度写满后不要再说剩余 1 分钟。用户正卡着，直接修。"
+    },
+    {
+      "id": "exec-1",
+      "agent": "opus-executor",
+      "role": "罗根",
+      "type": "EXECUTION",
+      "ts": "2026-09-22T16:08:00+08:00",
+      "body": "已改 diagnostic_api._pid_is_running / _finalize_dead_harness / spawn wait 线程 / progress 文案。补测试。"
+    }
+  ]
+}

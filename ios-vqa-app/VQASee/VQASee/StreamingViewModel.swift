@@ -28,6 +28,8 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private static let workerIDDefaultsKey = "vqasee.relay.worker_id"
     private static let clientIDDefaultsKey = "vqasee.relay.client_id"
     private static let modelDefaultsKey = "vqasee.model.option"
+    /// Opt-in remote Qwen VQA over Mac WebSocket. Default off: local perception only.
+    static let remoteVQAEnabledDefaultsKey = RemoteVQASessionPolicy.defaultsKey
     private static let defaultServerURL = "localhost:9000/ws/signaling"
     private static let defaultWorkerID = "local-mac-worker"
     private static let defaultClientID = "bayes-iphone"
@@ -73,13 +75,22 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     /// localized `riskText` so the UI can pick a semantic color without parsing
     /// display strings (which breaks once the text is localized).
     @Published var currentRiskLevel: String = "low"
-    @Published var actionText: String = String(localized: "请让 iPhone 与 Mac 连同一 Wi‑Fi，并在 Mac 上启动本地后端。")
+    @Published var actionText: String = String(localized: "点「开始观察」即可本地看路。需要文字解释时，在设置打开远程风险解释。")
     @Published var debugText: String = "waiting"
     @Published var latencyText: String = "--"
     /// True while a frame is in flight; the UI keeps showing the previous latency
     /// value and just marks it as updating, instead of blanking it to "处理中…".
     @Published var isProcessing = false
-    @Published var nearbyServerText: String = String(localized: "正在寻找 Mac 后端…")
+    @Published var nearbyServerText: String = String(localized: "本地看路，无需 Mac")
+    /// When false (default), 「开始观察」 is on-device only. Mac/Qwen connect is Settings opt-in.
+    @Published var isRemoteVQAEnabled: Bool = RemoteVQASessionPolicy.isEnabled() {
+        didSet {
+            UserDefaults.standard.set(isRemoteVQAEnabled, forKey: Self.remoteVQAEnabledDefaultsKey)
+            Task { @MainActor in
+                await self.handleRemoteVQAToggleChanged()
+            }
+        }
+    }
     /// Backends currently discovered via Bonjour (de-duplicated). When 2+ are
     /// present the UI shows a picker; a single one is auto-filled.
     @Published var discoveredServers: [DiscoveredServer] = []
@@ -202,6 +213,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             guard let self else {
                 return
             }
+            guard self.isRemoteVQAEnabled else {
+                return
+            }
             if statusText.contains("无法搜索本地网络"),
                !StreamingConfigValidator.isLoopbackHost(self.serverURLInput) {
                 return
@@ -212,7 +226,12 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                 self.nearbyServerText = statusText
             }
         }
-        nearbyServerBrowser.start()
+        if isRemoteVQAEnabled {
+            nearbyServerBrowser.start()
+            nearbyServerText = String(localized: "正在寻找 Mac 后端…")
+        } else {
+            nearbyServerText = String(localized: "本地看路，无需 Mac")
+        }
         configureSpeechAudioSession()
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
@@ -257,6 +276,10 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     /// `AutoConnectPolicy.decide`; this method applies its side effects.
     /// Never starts streaming — the user still taps 开始视觉辅助.
     private func applyDiscoveryDecision() {
+        guard isRemoteVQAEnabled else {
+            showServerPicker = false
+            return
+        }
         let decision = AutoConnectPolicy.decide(
             discovered: discoveredServers,
             userPinned: userPinnedServer
@@ -356,6 +379,15 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
 
     /// Begin press-to-talk capture; mute any ongoing speech so it isn't recorded.
     func startVoiceQuestion() {
+        guard isRemoteVQAEnabled else {
+            let message = String(localized: "请先在设置打开「远程风险解释」，再提问。")
+            speechStatusText = message
+            actionText = message
+            if isVoiceEnabled {
+                speak(message, force: true)
+            }
+            return
+        }
         isVoicePressHeld = true
         guard isSpeechAvailable else {
             speechController.requestAuthorization { [weak self] state in
@@ -380,6 +412,15 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     private func handleRecognizedQuestion(_ text: String?) {
+        guard isRemoteVQAEnabled else {
+            let message = String(localized: "请先在设置打开「远程风险解释」，再提问。")
+            speechStatusText = message
+            actionText = message
+            if isVoiceEnabled {
+                speak(message, force: true)
+            }
+            return
+        }
         guard let text else {
             if speechPeakLevel < 0.08 {
                 speechStatusText = String(localized: "没有检测到声音，请靠近麦克风再试。")
@@ -574,16 +615,19 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     func startStreaming() async {
-        // Discovery always runs (started in init and re-armed here); it is no longer
-        // gated on the address being loopback. This lets us re-resolve after a
-        // network change (hotspot <-> Wi-Fi) even if a real IP was saved earlier.
+        if !isRemoteVQAEnabled {
+            await startLocalOnlyStreaming()
+            return
+        }
+
+        // Discovery always runs when remote VQA is on; re-resolve after network changes.
         nearbyServerBrowser.start()
         await waitForNearbyServerIfNeeded()
 
 #if !targetEnvironment(simulator)
         if StreamingConfigValidator.isLoopbackHost(serverURLInput) {
             streamStatus = .error("invalid_server_url_for_device")
-            errorText = String(localized: "还没有自动发现 Mac 后端。请确认 iPhone 与 Mac 连同一 Wi‑Fi、已在 iOS 设置中允许 VQASee 使用本地网络，并且 Mac 上已运行 bash ./start_backend.sh。")
+            errorText = String(localized: "还没有自动发现 Mac 后端。请确认 iPhone 与 Mac 连同一 Wi‑Fi、已在 iOS 设置中允许 VQASee 使用本地网络，并且 Mac 上已运行 bash ./start_backend.sh。也可先关掉「远程风险解释」只用本地看路。")
             return
         }
 #endif
@@ -594,39 +638,11 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             return
         }
 
-        streamStatus = .preparing
-        errorText = nil
-        // Fresh stream: first frame must always be sent (no stale duplicate hash).
-        frameCaptureProxy.resetGateState()
-        arFrameCaptureProxy.resetGateState()
-        frameCaptureProxy.setEncodingProfile(ObservationRoute.riskObserve.encodingProfile)
-        arFrameCaptureProxy.setEncodingProfile(ObservationRoute.riskObserve.encodingProfile)
-        usesARDepthCapture = ARFrameCaptureProxy.isDepthCaptureSupported
-        previousFrameBase64 = nil
-        lastBackendFrameSentAt = nil
-        pendingSingleShotOnly = false
-        pendingLatestFrame = nil
-        latestFrameReplacementCount = 0
-        summaryText = String(localized: "正在准备观察风险…")
-        riskText = String(localized: "连接中")
-        currentRiskLevel = "low"
-
+        prepareStreamingSession(remote: true)
         startVisualCaptureIfNeeded()
 
         do {
-            let relayConfig = RelayAuthConfig(
-                pairingToken: pairingTokenInput.trimmingCharacters(in: .whitespacesAndNewlines),
-                workerID: workerIDInput.trimmingCharacters(in: .whitespacesAndNewlines),
-                clientID: clientIDInput.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
-            try await transport.connect(serverURL: normalizedURL, relayConfig: relayConfig) { [weak self] event in
-                guard let self else {
-                    return
-                }
-                Task { @MainActor in
-                    self.handleTransportEvent(event)
-                }
-            }
+            try await connectRemoteTransport(normalizedURL: normalizedURL)
             locationManager.requestLocation()
             isStreamingActive = true
             streamStatus = .streaming
@@ -643,6 +659,127 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         } catch {
             streamStatus = .error("transport_connect_failed")
             errorText = String(localized: "连接失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// On-device TwinLite/YOLO session with no Mac/WebSocket requirement.
+    private func startLocalOnlyStreaming() async {
+        nearbyServerBrowser.stop()
+        showServerPicker = false
+        prepareStreamingSession(remote: false)
+        startVisualCaptureIfNeeded()
+        locationManager.requestLocation()
+        isStreamingActive = true
+        streamStatus = .streaming
+        nearbyServerText = String(localized: "本地看路中")
+        if isVoiceEnabled {
+            speak(String(localized: "开始本地看路。"), force: true)
+        }
+    }
+
+    private func prepareStreamingSession(remote: Bool) {
+        // Local sessions skip `.preparing` ("连接中") — there is no Mac handshake.
+        streamStatus = remote ? .preparing : .streaming
+        errorText = nil
+        frameCaptureProxy.resetGateState()
+        arFrameCaptureProxy.resetGateState()
+        frameCaptureProxy.setEncodingProfile(ObservationRoute.riskObserve.encodingProfile)
+        arFrameCaptureProxy.setEncodingProfile(ObservationRoute.riskObserve.encodingProfile)
+        usesARDepthCapture = ARFrameCaptureProxy.isDepthCaptureSupported
+        previousFrameBase64 = nil
+        lastBackendFrameSentAt = nil
+        pendingSingleShotOnly = false
+        pendingLatestFrame = nil
+        latestFrameReplacementCount = 0
+        if remote {
+            summaryText = String(localized: "正在准备观察风险…")
+            riskText = String(localized: "连接中")
+            actionText = String(localized: "正在连接 Mac 后端…")
+        } else {
+            // AnswerPanel is hidden in local mode; keep fields quiet for VoiceOver/fallbacks.
+            summaryText = String(localized: "本地看路中")
+            spatialText = ""
+            riskText = ""
+            actionText = ""
+            latencyText = "--"
+            isProcessing = false
+        }
+        currentRiskLevel = "low"
+    }
+
+    private func connectRemoteTransport(normalizedURL: URL) async throws {
+        let relayConfig = RelayAuthConfig(
+            pairingToken: pairingTokenInput.trimmingCharacters(in: .whitespacesAndNewlines),
+            workerID: workerIDInput.trimmingCharacters(in: .whitespacesAndNewlines),
+            clientID: clientIDInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        try await transport.connect(serverURL: normalizedURL, relayConfig: relayConfig) { [weak self] event in
+            guard let self else {
+                return
+            }
+            Task { @MainActor in
+                self.handleTransportEvent(event)
+            }
+        }
+    }
+
+    /// Settings toggle side effects: discovery on/off; keep local session if connect fails.
+    private func handleRemoteVQAToggleChanged() async {
+        if isRemoteVQAEnabled {
+            nearbyServerBrowser.start()
+            if discoveredServers.isEmpty {
+                nearbyServerText = String(localized: "正在寻找 Mac 后端…")
+            } else {
+                applyDiscoveryDecision()
+            }
+            guard isStreamingActive else {
+                return
+            }
+            await waitForNearbyServerIfNeeded()
+#if !targetEnvironment(simulator)
+            if StreamingConfigValidator.isLoopbackHost(serverURLInput) {
+                errorText = String(localized: "远程风险解释已打开，但还没发现 Mac。本地看路继续；请确认同一 Wi‑Fi 并启动后端。")
+                nearbyServerText = String(localized: "本地看路中 · 等待 Mac")
+                return
+            }
+#endif
+            guard let normalizedURL = StreamingConfigValidator.normalizeServerURL(serverURLInput) else {
+                errorText = String(localized: "远程风险解释已打开，但服务器地址无效。本地看路继续。")
+                return
+            }
+            do {
+                try await connectRemoteTransport(normalizedURL: normalizedURL)
+                if let host = normalizedURL.host {
+                    nearbyServerText = String(localized: "已连接 Mac 后端：\(host)")
+                } else {
+                    nearbyServerText = String(localized: "已连接 Mac 后端")
+                }
+                errorText = nil
+                refreshRuntimeStatus()
+                refreshPerceptionConfig()
+            } catch {
+                errorText = String(localized: "远程连接失败：\(error.localizedDescription)。本地看路继续。")
+                nearbyServerText = String(localized: "本地看路中 · 远程未连上")
+            }
+            return
+        }
+
+        nearbyServerBrowser.stop()
+        showServerPicker = false
+        discoveredServers = []
+        clearInFlightWatchdog()
+        isRequestInFlight = false
+        isProcessing = false
+        pendingLatestFrame = nil
+        currentVoiceIntent = nil
+        clearQuestionAfterNextResult = false
+        await transport.disconnect()
+        nearbyServerText = isStreamingActive
+            ? String(localized: "本地看路中")
+            : String(localized: "本地看路，无需 Mac")
+        if isStreamingActive {
+            summaryText = String(localized: "本地看路中")
+            actionText = String(localized: "需要文字解释或问答时，在设置打开远程风险解释。")
         }
     }
 
@@ -860,17 +997,28 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             return
         }
 
+        // Local-only sessions ignore remote socket teardown (should not happen, but safe).
+        guard isRemoteVQAEnabled else {
+            nearbyServerText = String(localized: "本地看路中")
+            return
+        }
+
         streamStatus = .error("connection_lost")
         nearbyServerText = String(localized: "后端连接已断开，正在重连…")
         summaryText = String(localized: "与 Mac 后端的连接已断开。")
-        actionText = String(localized: "请确认 Mac 后端仍在运行；App 会自动尝试重新连接。")
+        actionText = String(localized: "本地叠层仍可用。请确认 Mac 后端仍在运行；App 会自动尝试重新连接。")
         latencyText = "--"
         errorText = String(localized: "连接已断开：\(reason)")
 
         // Tear down the dead transport, then retry from a clean state.
         Task { @MainActor in
             await transport.disconnect()
-            guard isStreamingActive else {
+            guard isStreamingActive, isRemoteVQAEnabled else {
+                if isStreamingActive {
+                    nearbyServerText = String(localized: "本地看路中")
+                    streamStatus = .streaming
+                    errorText = nil
+                }
                 return
             }
             // The network may have changed (hotspot <-> Wi-Fi), so the previously
@@ -882,7 +1030,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             nearbyServerBrowser.stop()
             nearbyServerBrowser.start()
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard isStreamingActive else {
+            guard isStreamingActive, isRemoteVQAEnabled else {
                 return
             }
             isStreamingActive = false
@@ -897,6 +1045,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         locationText = LocationTextFormatter.format(lat: location.coordinate.latitude, lon: location.coordinate.longitude)
         latestGPS = (lat: location.coordinate.latitude, lon: location.coordinate.longitude)
         refreshPlaceLabelIfNeeded(for: location)
+        guard isRemoteVQAEnabled else {
+            return
+        }
         Task {
             await transport.sendLocationUpdate(
                 lat: location.coordinate.latitude,
@@ -1093,6 +1244,20 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             voiceIntent: currentVoiceIntent
         )
         let compatibilityMode = observationRoute.compatibilityMode
+
+        // Local-only product path: refresh overlay + immediate speech, never upload.
+        if !isRemoteVQAEnabled {
+            let immediateDecision = WalkingImmediateFeedbackPolicy.decide(
+                mode: compatibilityMode,
+                signal: localVisionSignal,
+                hasQuestion: !currentQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                millisecondsSinceLastImmediateSpeech: lastSpokenAt.map { (CACurrentMediaTime() - $0) * 1000.0 }
+            )
+            applyVoiceFeedbackDecision(immediateDecision, source: "Local Vision")
+            debugText = "local-only: \(localVisionSignal.backendContext)"
+            return
+        }
+
         if isRequestInFlight {
             pendingLatestFrame = PendingLatestFrame(
                 jpegData: jpegData,

@@ -1,0 +1,89 @@
+{
+  "task_slug": "seq05vd-f04080-left-lane-zigzag",
+  "title": "Seq05VD_f04080 左侧黄线折线过重",
+  "messages": [
+    {
+      "id": "jobs-root-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "PROPOSAL",
+      "ts": "2026-09-22T13:55:00+08:00",
+      "body": "看图：诊断台 iPhone 真身评估的 UFLD 黄线（lane_index=1）。不是 TwinLite 绿像素。\n\n根因：UFLDv2 产品折线是逐行独立 expected-x，decoder 不做行间几何。本帧左线 56 点，单行尖刺 (0.369,0.706)→(0.419,0.714)→(0.329,0.722)，最大转角 165.6°，平均 43.4°。右线平均 18.5°。左侧没有清晰白线，栗色旅行车抢锚点。rails 已有 split_sharp_turns，UFLD 产品路径没走。\n\n方案：本轮不重训。在 UFLD decode 后加 spike-reject + 航向门 + 轻 G2。PoC：56→33 点，最大转角 165→39°，走廊曲率还在。不拉成直线。验收：再出本帧黄线图，Z 横档消失。\n\nauto_execute=false，等用户确认是否落地到 Swift decoder。"
+    },
+    {
+      "id": "rev-sonnet-1",
+      "agent": "sonnet-reviewer",
+      "role": "Sonnet",
+      "type": "REVIEW",
+      "ts": "2026-09-22T13:58:00+08:00",
+      "time": "2026-09-22",
+      "content": "有条件同意。后处理必须落 UFLDv2LaneDecoder / harness，禁止只改诊断台 SVG。",
+      "body": "态度：有条件同意。\n\n方案方向对：不重训、不拉直、decode 后补行间几何。根因也对——UFLDv2 逐行 expected-x，decoder 没有行间约束；本帧左线 165° Z 横档是锚点被栗色旅行车抢走，不是路弯。\n\n落地必须钉在产品路径，不是诊断台 SVG。\n\n消费链（已对过代码）：\nCoreML loc/exist → UFLDv2LaneDecoder.decodeRow/Col → [LanePolyline] → LocalLanePolylineRunner.analyze → harness `lane_polylines` → diagnostic_api._lane_polylines_svg 只画点。\n下游还有 GuidancePathBuilder.fromUFLDPolylines（row 1/2 中线）。Live 里 lanePolylineRunner 仍是 nil。\n\n_lane_polylines_svg 是哑渲染器。只改 SVG = 诊断台假好看，下一轮 harness / 未来 live 仍是 Z 横档。用户正在看的就是这根黄线，所以「看起来好了」必须等于 harness 写出的点好了。\n\nCURRENT 要诚实，不要拿它挡看图门：\n- Live 默认仍是 TwinLite；UFLD 是下一阶段几何线，decoder 在代码里、live 未挂。\n- 诊断台「iPhone 真身」发现 VQASeeLaneUFLDv2.mlmodelc 就会注入 --lane-polyline-model，黄线是 UFLD 阶段的验收面。\n- 不要把 CURRENT 改成「UFLD 已 shipping」。\n- 也不要用「还没 live」当借口只修 SVG。\n\n架构落点：\n1. 新函数 UFLDv2LaneDecoder.refine（或等价），放在 decode 之后。decodeRow/decodeCol 继续镜像 pred2coords。\n2. 唯一调用点：LocalLanePolylineRunner.analyze 在 decodeRow+decodeCol 之后。harness 和未来 live 共用。\n3. Python deploy/ios/decode_ufldv2_lanes.py 保持 raw spec，不要把产品 refine 偷偷写进 pred2coords，避免 Swift/Python 双真源。\n4. 禁止把几何塞进 diagnostic_api.py。\n5. 不要复用 lane_rails.split_sharp_turns：那是离线 mask 轨切段，职责不同、栈不同。\n\n落地条件：\n- 顺序：先 spike-reject（丢掉 3 点 Z），再 40° 航向门，最后轻 G2。G2 不得把已拒尖刺插回来。\n- 先只作用于 row-anchor ego 对 (1,2)。col-anchor (0,3) 坐标约定不同，不要同一套航向门。\n- 40° 是图像空间，近景 dx 会被透视放大。验收不能只看本帧最大转角；要再看一帧真弯道，确认走廊没被拉直。\n- VQASeeTests 加「165° Z 被丢掉、平滑直线保留」；不要改存在性门测试去迎合 refine。\n- auto_execute=false 正确。用户说「先试试看看效果」是看图门，不是授权改 Swift。PoC 图过门后再问是否落地 decoder。\n\n@Opus 若要把 refine 写进 decodeRow 内部，反对：会污染 pred2coords 契约，也让 col 线误吃航向门。"
+    },
+    {
+      "id": "vote-sonnet-1",
+      "agent": "sonnet-reviewer",
+      "role": "Sonnet",
+      "type": "VOTE",
+      "ts": "2026-09-22T13:58:00+08:00",
+      "time": "2026-09-22",
+      "content": "VOTE: approve_with_changes",
+      "body": "VOTE: approve_with_changes\n条件：refine 落 UFLDv2LaneDecoder + LocalLanePolylineRunner；SVG 保持哑渲染；不改 CURRENT 成 UFLD shipping；先看图再落地 Swift。"
+    },
+    {
+      "id": "gemini-review-1",
+      "agent": "Gemini",
+      "role": "综合审阅",
+      "type": "REVIEW",
+      "ts": "2026-09-22T14:02:00+08:00",
+      "time": "2026-09-22",
+      "content": "已对照 raw / proposed 两张图，不是只看转角表。\n看图：`Seq05VD_f04080-ufld-raw.jpg` 左黄线中段有红圈 Z 横档（(0.369,0.706)→(0.419,0.714)→(0.329,0.722)），停车走廊还有一串小折；右橙线基本干净。`Seq05VD_f04080-ufld-proposed.jpg` 蓝线：Z 横档消失，沿栗色旅行车那点走廊弯还在，没有拉成直线。PoC 上残留的黄点是被拒尖刺，产品/诊断台 overlay 落地时必须丢掉，不能当车道点再画。\n\n同意本轮方向：UFLD decode 后做 spike-reject + 航向门 + 轻折线平滑。不重训。反对整条线拉直。反对本轮微调。\n\n依赖 / 影响面：\n1. 用户看见的是诊断台 UFLD 黄线（lane_index=1），产品引导线是 `GuidancePathBuilder.fromUFLDPolylines` 对左右折线按 y 插值中线。左线 Z 尖刺会把中线拽歪。后处理必须挂在 decode 出口、两条消费路径之前，不能只改 Python 画图脚本。\n2. Swift `UFLDv2LaneDecoder` 明文镜像 `deploy/ios/decode_ufldv2_lanes.py`。只改一边会静默分叉。落地时 Python spec 与 Swift 同一次改。\n3. 禁止直接复用 `split_sharp_turns` / `drop_identity_jumps`。前者切段，后者从第一个锐角起把远端整段抹掉。这帧要的是丢掉中间尖刺、保住走廊连续性，语义相反。\n4. 本仓库「G2」在 `guidance_between_rails` 是占车道左右轨中点拟合。这里的「轻 G2」只能是单条折线的轻连续平滑，不要 import 占车道 G2。\n5. 40° 门与 rails `LANE_MAX_TURN_DEG` 同数，但 rails 用它来切/丢段。UFLD 侧只作航向门，不要把 rails 语义带过来。\n\n性能：56 点 O(n) 后处理相对 UFLD 推理可忽略，不碰 CoreML、不增模型。Realtime 预算无新增风险。\n\n测试：现有 Swift 用例只验 existence/grid，没有行间几何。落地时要有 Z 三元组夹具：中间点必须丢掉；走廊弯必须还在（例如近端点仍偏左、三点不共线）。禁止用「最大转角 165→39」当唯一断言。回归至少再看 4 帧已 UFLD-ok：0016E5_06630 / 08047、Seq05VD_f01080 / f02820（f02820 本身有弯，门不能抹平）。col-anchor 车道 0/3 本帧不是病灶，不要同一套激进 reject 未经看图就套上去。\n\n文档：auto_docs 已有。落地时补一句 Python↔Swift lockstep，并写明验收是看图门不是转角表。\n\n条件：\n- 验收看图：Z 横档消失 + 停车走廊弯还在。转角度数只作附录。\n- 被拒点不得留在用户 overlay。\n- 后处理进 decode 出口，诊断台黄线与 fromUFLDPolylines 一起吃到。\n- 不拉直、不微调、不复用 rails 切段函数。",
+      "body": "已对照 raw / proposed 两张图，不是只看转角表。\n看图：`Seq05VD_f04080-ufld-raw.jpg` 左黄线中段有红圈 Z 横档（(0.369,0.706)→(0.419,0.714)→(0.329,0.722)），停车走廊还有一串小折；右橙线基本干净。`Seq05VD_f04080-ufld-proposed.jpg` 蓝线：Z 横档消失，沿栗色旅行车那点走廊弯还在，没有拉成直线。PoC 上残留的黄点是被拒尖刺，产品/诊断台 overlay 落地时必须丢掉，不能当车道点再画。\n\n同意本轮方向：UFLD decode 后做 spike-reject + 航向门 + 轻折线平滑。不重训。反对整条线拉直。反对本轮微调。\n\n依赖 / 影响面：\n1. 用户看见的是诊断台 UFLD 黄线（lane_index=1），产品引导线是 `GuidancePathBuilder.fromUFLDPolylines` 对左右折线按 y 插值中线。左线 Z 尖刺会把中线拽歪。后处理必须挂在 decode 出口、两条消费路径之前，不能只改 Python 画图脚本。\n2. Swift `UFLDv2LaneDecoder` 明文镜像 `deploy/ios/decode_ufldv2_lanes.py`。只改一边会静默分叉。落地时 Python spec 与 Swift 同一次改。\n3. 禁止直接复用 `split_sharp_turns` / `drop_identity_jumps`。前者切段，后者从第一个锐角起把远端整段抹掉。这帧要的是丢掉中间尖刺、保住走廊连续性，语义相反。\n4. 本仓库「G2」在 `guidance_between_rails` 是占车道左右轨中点拟合。这里的「轻 G2」只能是单条折线的轻连续平滑，不要 import 占车道 G2。\n5. 40° 门与 rails `LANE_MAX_TURN_DEG` 同数，但 rails 用它来切/丢段。UFLD 侧只作航向门，不要把 rails 语义带过来。\n\n性能：56 点 O(n) 后处理相对 UFLD 推理可忽略，不碰 CoreML、不增模型。Realtime 预算无新增风险。\n\n测试：现有 Swift 用例只验 existence/grid，没有行间几何。落地时要有 Z 三元组夹具：中间点必须丢掉；走廊弯必须还在（例如近端点仍偏左、三点不共线）。禁止用「最大转角 165→39」当唯一断言。回归至少再看 4 帧已 UFLD-ok：0016E5_06630 / 08047、Seq05VD_f01080 / f02820（f02820 本身有弯，门不能抹平）。col-anchor 车道 0/3 本帧不是病灶，不要同一套激进 reject 未经看图就套上去。\n\n文档：auto_docs 已有。落地时补一句 Python↔Swift lockstep，并写明验收是看图门不是转角表。\n\n条件：\n- 验收看图：Z 横档消失 + 停车走廊弯还在。转角度数只作附录。\n- 被拒点不得留在用户 overlay。\n- 后处理进 decode 出口，诊断台黄线与 fromUFLDPolylines 一起吃到。\n- 不拉直、不微调、不复用 rails 切段函数。"
+    },
+    {
+      "id": "gemini-vote-1",
+      "agent": "Gemini",
+      "role": "综合审阅",
+      "type": "VOTE",
+      "ts": "2026-09-22T14:02:00+08:00",
+      "time": "2026-09-22",
+      "vote": "有条件同意",
+      "content": "VOTE: 有条件同意。\n赞成：decode 后 spike-reject + 航向门 + 轻折线平滑；本轮不重训、不微调；不把整条左线拉直。已看图：proposed 蓝线过门（Z 没了，走廊弯还在）。\n反对：整条线拉直；本轮 UFLD 微调；只用 165→39° 当验收；把 `split_sharp_turns`/`drop_identity_jumps` 或占车道 G2 原样套到 UFLD。\n条件：后处理挂在 Python+Swift decode 出口；被拒黄点不进 overlay；回归看另外 4 帧 UFLD-ok，尤其 f02820 的真弯。",
+      "body": "VOTE: 有条件同意。\n赞成：decode 后 spike-reject + 航向门 + 轻折线平滑；本轮不重训、不微调；不把整条左线拉直。已看图：proposed 蓝线过门（Z 没了，走廊弯还在）。\n反对：整条线拉直；本轮 UFLD 微调；只用 165→39° 当验收；把 `split_sharp_turns`/`drop_identity_jumps` 或占车道 G2 原样套到 UFLD。\n条件：后处理挂在 Python+Swift decode 出口；被拒黄点不进 overlay；回归看另外 4 帧 UFLD-ok，尤其 f02820 的真弯。"
+    },
+    {
+      "id": "rev-gpt-1",
+      "agent": "gpt-reviewer",
+      "role": "GPT",
+      "type": "REVIEW",
+      "ts": "2026-09-22T13:58:00+08:00",
+      "body": "态度：有条件同意。方向对：Z 横档是逐行独立 expected-x，后处理比重训对；0.035 spike-reject + λ≈800 轻 G2 不该把走廊拉直。落地前必须改挂钩位置和边界，不能原样塞进 raw decode。\n\n看过：raw / proposed 图、UFLDv2LaneDecoder、decode_ufldv2_lanes.py、fit_guidance_g2 / _solve_smooth_d2、lane_rails 40° 门、VQASeeTests 3 点用例、0006R0 harness 口径。\n\n1) 0006R0 真弯会不会被削直？\n产品路径上 0006R0_f00960/f02550/f03450 是 twinlite_rails，UFLD 漏检，本轮黄线 polish 碰不到这三帧。真风险在「UFLD 真出了弯」的帧（Seq05VD_f02820 max Δx≈0.01；0016E5 街角）。\n密采样时：row Δy≈0.008，真弯的二阶残差远小于 0.035，spike-reject 打不中。危险的是 existence 稀疏：圆弧上采样越稀，顶点转角越大；3 点采 90° 弯，中点转角≈45°，40° 航向门会误伤。\n禁止复用 drop_identity_jumps：它在 40° 处把远段整段 nan 掉（out[:y2]=nan），真弯会直接截断。_split_xy_points 是切开，不是丢点。产品黄线应丢尖刺顶点，禁止砍远段。\n禁止复用 fit_guidance_g2：默认 lam=80000、还要左右轨；那是中线拉直器。λ=800 只平滑 x 必须自己写 1D D2，且 D2 按 y 间距加权，不能按丢点后的下标。\n验收：f04080 Z 消失 + f02820（或合成圆弧）曲率幅度掉不了超过约 10%。\n\n2) 3 点 unit test 会不会被 G2 漂掉？\n现测 decodeRowAnchors：三行同 x=0.875；decodeColAnchors：x=[0,0.5,1] 对下标已共线。D2 核包含常数和线性，G2 只动 x 时这两条断言不会漂。existence 失败用例根本走不到 polish。\n但仍不要把 polish 写进 decodeRowAnchors/decodeColAnchors。n=3 时 λ=800 相对 1 个 D2 约束极猛，稍有曲率就会被拉直；col-anchor 的几何在 y，只平滑 x 会毁 0/3 号线。\n挂钩：raw decode 保持 pred2coords 镜像；另开 polishLanePolyline，n<8 直接返回。现有 3 点测试继续打 raw；另加 f04080 尖刺三元组 (0.369,0.706)→(0.419,0.714)→(0.329,0.722) 必丢中点，以及共线 3 点 polish 后坐标不变。\n\n3) decode 与 Swift 镜像是否要同步？要。\nSwift 写明 Pure Swift mirror of decode_ufldv2_lanes.py；诊断台黄线来自 PerceptionHarness 的 Swift decode；Python decode 被 try_ufld_paint_rails / 离线出图复用。只改 Swift：重跑 harness 后用户黄线变了，Python 脚本和 rails 仍锯齿。只改 Python：用户正在看的诊断台不动。\n0.035 是归一化坐标；Python decode() 现在吐像素 int，照抄 0.035 等于 0.035px，门永远不响。必须同一套归一化阈值，或显式 ×width。\n建议：Python + Swift 各实现同语义 polish，产品 runner / harness 调用；raw decode 两边都不碰。rails 已有 40° split，不要再叠一层砍远段。\n\n其它边界：\n- 插值必须按 y，不能按下标；丢点后行距不匀。\n- 只作用于 source=rowAnchor 的 ego 线（1/2）。col-anchor 豁免。\n- 56→33 要断言 y 跨度几乎不变，禁止远段被吃短。\n- 0.035 和 GuidancePath.defaultHalfLane=0.035 只是数字巧合，不要复用那个常量。\n- 看图：proposed 蓝线 Z 横档没了，但停车区还有台阶折，且仍不贴左虚线——本轮只治折线，不治抢锚，验收别写成「贴白线」。\n- auto_execute=false 同意，先试效果再落 Swift。"
+    },
+    {
+      "id": "vote-gpt-1",
+      "agent": "gpt-reviewer",
+      "role": "GPT",
+      "type": "VOTE",
+      "ts": "2026-09-22T13:58:00+08:00",
+      "body": "VOTE: approve_with_changes\n条件：polish 独立层，不进 raw decode；Swift/Python 同步且阈值用归一化；n<8 跳过；row-anchor only；航向门丢顶点不砍远段；禁用 drop_identity_jumps / fit_guidance_g2(lam=80000)；回归 f04080 Z + 真弯帧不削直。"
+    },
+    {
+      "id": "gemini-reply-1",
+      "agent": "Gemini",
+      "role": "综合审阅",
+      "type": "REPLY",
+      "ts": "2026-09-22T14:04:00+08:00",
+      "time": "2026-09-22",
+      "content": "REPLY @Sonnet @GPT：对齐挂钩，修正我 REVIEW 里「Python spec 与 Swift 同一次改」的歧义。\nraw `decodeRowAnchors` / `decode_ufldv2_lanes.py` pred2coords 两边都不碰。另开 polish/refine，挂在 decode 之后、harness / fromUFLDPolylines 之前。Python 若要给离线出图，也调同一层 polish，阈值用归一化坐标，不能把 0.035 当像素。\n同意：只打 row-anchor ego (1,2)；n<8 跳过；丢尖刺顶点、禁止砍远段；不用 drop_identity_jumps / split_sharp_turns / fit_guidance_g2(lam=80000)。\n看图门不变：f04080 Z 横档消失 + 停车走廊弯还在；f02820 真弯不能被抹平。转角度数只作附录。PoC 残留黄点不能进 overlay。",
+      "body": "REPLY @Sonnet @GPT：对齐挂钩，修正我 REVIEW 里「Python spec 与 Swift 同一次改」的歧义。\nraw `decodeRowAnchors` / `decode_ufldv2_lanes.py` pred2coords 两边都不碰。另开 polish/refine，挂在 decode 之后、harness / fromUFLDPolylines 之前。Python 若要给离线出图，也调同一层 polish，阈值用归一化坐标，不能把 0.035 当像素。\n同意：只打 row-anchor ego (1,2)；n<8 跳过；丢尖刺顶点、禁止砍远段；不用 drop_identity_jumps / split_sharp_turns / fit_guidance_g2(lam=80000)。\n看图门不变：f04080 Z 横档消失 + 停车走廊弯还在；f02820 真弯不能被抹平。转角度数只作附录。PoC 残留黄点不能进 overlay。"
+    },
+    {
+      "id": "exec-polish-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "EXECUTION",
+      "ts": "2026-09-22T14:10:00+08:00",
+      "body": "用户确认先试效果。三审 approve_with_changes：refine 在 decode 之后、只打 row 1/2、看图验收。落地 UFLDv2LanePolisher。看图 f04080 Z 消失、f02820 真弯还在。刷新诊断台 frames。"
+    }
+  ]
+}

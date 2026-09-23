@@ -1447,4 +1447,21 @@ final class VQASeeTests: XCTestCase {
         XCTAssertLessThan(points[0].x, 0.50)
     }
 
+    func testRemoteVQADefaultsOffWhenKeyMissing() {
+        let suiteName = "vqasee.tests.remote_vqa.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        XCTAssertFalse(RemoteVQASessionPolicy.isEnabled(in: defaults))
+        XCTAssertFalse(RemoteVQASessionPolicy.shouldConnectBackend(remoteEnabled: false))
+        XCTAssertFalse(RemoteVQASessionPolicy.shouldSendFrameToBackend(remoteEnabled: false, streamingActive: true))
+        XCTAssertFalse(RemoteVQASessionPolicy.shouldAllowVoiceQuestion(remoteEnabled: false))
+    }
+
+    func testRemoteVQAGatesWhenEnabled() {
+        XCTAssertTrue(RemoteVQASessionPolicy.shouldConnectBackend(remoteEnabled: true))
+        XCTAssertTrue(RemoteVQASessionPolicy.shouldSendFrameToBackend(remoteEnabled: true, streamingActive: true))
+        XCTAssertFalse(RemoteVQASessionPolicy.shouldSendFrameToBackend(remoteEnabled: true, streamingActive: false))
+        XCTAssertTrue(RemoteVQASessionPolicy.shouldAllowVoiceQuestion(remoteEnabled: true))
+    }
+
 }

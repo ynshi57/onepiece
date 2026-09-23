@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import urllib.request
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -2815,7 +2816,8 @@ def _harness_lock_path(manifest_path: Path) -> Path:
     return Path(f"/tmp/{manifest_path.stem}-ios-harness.lock.json")
 
 
-def _pid_is_running(pid: object) -> bool:
+def _reap_pid(pid: object) -> bool:
+    """Reap our child if it already exited. True when this process collected it."""
     try:
         value = int(pid)
     except (TypeError, ValueError):
@@ -2823,14 +2825,52 @@ def _pid_is_running(pid: object) -> bool:
     if value <= 0:
         return False
     try:
+        waited, _status = os.waitpid(value, os.WNOHANG)
+    except ChildProcessError:
+        return False
+    except OSError:
+        return False
+    return waited == value
+
+
+def _pid_state(pid: int) -> str:
+    """``ps`` state char, e.g. ``R``/``S``/``Z``. Empty if the pid is gone."""
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def _pid_is_running(pid: object) -> bool:
+    """True only for a live, non-zombie process.
+
+    ``os.kill(pid, 0)`` succeeds on zombies. The diagnostics worker does not
+    ``wait()`` the detached bash wrapper, so a finished harness stays in the
+    process table as ``Z`` and the UI looks stuck at 12/12 forever.
+    """
+    try:
+        value = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    if _reap_pid(value):
+        return False
+    try:
         os.kill(value, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
     except OSError:
         return False
+    return not _pid_state(value).startswith("Z")
 
 
 def _active_harness_run(manifest_path: Path) -> dict | None:
@@ -2972,11 +3012,17 @@ def _harness_progress_reason(manifest_path: Path, info: dict) -> str:
     expected = int(info.get("expected") or 0)
     predicted = _jsonl_line_count(_harness_out_path(manifest_path))
     eval_role = info.get("eval_role")
-    remaining = max(0, expected - predicted) if expected else expected
-    eta = _format_duration(_harness_eta_seconds(remaining or expected or 1, eval_role))
     started = info.get("started_at", "?")
     role_note = "TwinLiteNet 实验叠图" if eval_role else "YOLO + 路面模型"
     progress = f"{predicted}/{expected} 帧" if expected else f"已写出 {predicted} 帧"
+    if expected and predicted >= expected:
+        return (
+            f"真身感知已写完 {progress}（pid {info.get('pid')}，开始于 {started}）。"
+            f"{role_note}，正在收尾退出，页面马上刷新。"
+        )
+    remaining = max(0, expected - predicted) if expected else 0
+    eta_frames = remaining if remaining > 0 else max(expected, 1)
+    eta = _format_duration(_harness_eta_seconds(eta_frames, eval_role))
     return (
         f"真身感知正在运行（pid {info.get('pid')}，开始于 {started}）。"
         f"{role_note}，进度 {progress}，剩余{eta}。"
@@ -2995,9 +3041,14 @@ def _finalize_dead_harness(manifest_path: Path) -> dict | None:
     locked_manifest = info.get("manifest")
     if locked_manifest and _manifest_key(Path(str(locked_manifest))) != _manifest_key(manifest_path):
         return None
-    if _pid_is_running(info.get("pid")):
-        return None
     exit_path = Path(info["exit_path"]) if info.get("exit_path") else _harness_exit_path(manifest_path)
+    finished_exit = exit_path.is_file()
+    pid = info.get("pid")
+    _reap_pid(pid)
+    # Exit file is written after PerceptionHarness returns. A zombie wrapper
+    # still looks "alive" to kill(0); do not wait for the zombie to vanish.
+    if not finished_exit and _pid_is_running(pid):
+        return None
     stderr_path = Path(info["stderr_path"]) if info.get("stderr_path") else _harness_stderr_path(manifest_path)
     stderr_text = ""
     if stderr_path.is_file():
@@ -3363,6 +3414,11 @@ def dataset_ios_harness_run(manifest: str, limit: int = 0, force: bool = False) 
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    threading.Thread(
+        target=proc.wait,
+        name=f"harness-wait-{proc.pid}",
+        daemon=True,
+    ).start()
     lock_extra = {
         "expected": expected,
         "eval_role": eval_role,

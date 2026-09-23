@@ -1,0 +1,201 @@
+{
+  "task_slug": "docs-knowledge-audit",
+  "title": "docs 知识记忆审计：矛盾 / 过时 / 逻辑不通",
+  "created_at": "2026-09-22T09:30:00+08:00",
+  "auto_execute": true,
+  "status": "executed",
+  "messages": [
+    {
+      "id": "ctx-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "CONTEXT_SHARE",
+      "ts": "2026-09-22T09:35:00+08:00",
+      "body": "用户要复盘 VQASee 知识点记忆，尤其 docs/，对照 [8/10 项目概览](7be36e8d-7d54-4321-8dbe-e3b25dd366d3)。已核对 AGENTS.md、roadmap、decisions、architecture、model-lab、README、PerceptionConfig.swift、RoadSurface.swift、auto_docs。GitNexus MCP 不可用，审计靠文档+代码交叉。"
+    },
+    {
+      "id": "prop-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "PROPOSAL",
+      "ts": "2026-09-22T09:40:00+08:00",
+      "body": "结论：记忆层有真矛盾，不是文风问题。最危险的是「活文档把过期现状写成当前」。本轮只审计+提案，不改文档（auto_execute=false）。\n\nP0 会误导下一轮 Agent 的活文档：\n1. 新建 docs/CURRENT.md：一页当前真源（定位/四项/live 栈/评测口径/明确不是什么）。\n2. roadmap.md 文末删「语音优先」；P0 队列标成历史/backlog。\n3. README 表/架构图去掉「语音优先」措辞（原则节已是视觉优先）。\n4. 0001 记忆系统补 tech-radar + auto_docs + 「CURRENT 优于日期文档」。\n5. architecture 设计包顶部加「2026-08-07 快照，已被四项核心/视觉优先取代」。\n6. decisions 08-06 / 08-27 现状表加 superseded 横幅。\n7. docs/vqasee-skills-draft README 标明已被 .agents/skills 取代。\n8. auto_docs/local-perception-gap 加 superseded（二值已退役）。\n\nP1 不改日期实验室笔记（evolution/model-lab 按日期是记录）。\nP2 单独产品题：代码默认 roadBackend=twinlite，但 9/21 乔布斯裁定「不能当产品默认」——这是代码/裁决冲突，不是只改 md。\n\n请 REVIEW + VOTE。"
+    },
+    {
+      "id": "rev-sonnet-1",
+      "agent": "sonnet-reviewer",
+      "role": "Sonnet",
+      "type": "REVIEW",
+      "ts": "2026-09-22T09:35:00+08:00",
+      "body": "态度：有条件同意。CURRENT 只能是派生索引，不能写成优于 dated decisions。roadmap「安全和稳定」不要进 backlog。三区 ROI 实现未闭环，8/25 决策不要整篇 superseded。车道线用产品意图/代码默认/评测资产三列，禁止三选一改代码。"
+    },
+    {
+      "id": "vote-sonnet-1",
+      "agent": "sonnet-reviewer",
+      "role": "Sonnet",
+      "type": "VOTE",
+      "ts": "2026-09-22T09:35:00+08:00",
+      "body": "VOTE: approve_with_changes"
+    },
+    {
+      "id": "rev-gpt-1",
+      "agent": "gpt-reviewer",
+      "role": "GPT",
+      "type": "REVIEW",
+      "ts": "2026-09-22T10:53:00+08:00",
+      "body": "态度：有条件同意。病诊断对，原处方过猛。CURRENT 只能是派生索引，冲突时改 CURRENT 不改决策原文。8/25 不要整篇 superseded（深层删除未完成）。8/27 只过期现状快照表。8/06 只标定位过期，安全边界仍生效。车道线三列，禁止为对齐文档切默认模型。architecture 盖戳要覆盖 system-and-flow-graphs 和 keynote-outline。AGENTS「识别台阶/路沿」是产品意图，9/21「YOLO 不加类」是能力边界，CURRENT 必须分列。auto_docs 同日互打须在 0001 收编。化石数字不要抄进 CURRENT。TwinLite bundle≠live 加载成功。"
+    },
+    {
+      "id": "vote-gpt-1",
+      "agent": "gpt-reviewer",
+      "role": "GPT",
+      "type": "VOTE",
+      "ts": "2026-09-22T10:53:00+08:00",
+      "body": "VOTE: approve_with_changes"
+    },
+    {
+      "id": "rev-gemini-1",
+      "agent": "gemini-reviewer",
+      "role": "Gemini",
+      "type": "REVIEW",
+      "ts": "2026-09-22T10:52:00+08:00",
+      "body": "态度：有条件同意。CURRENT 会变成第三真源，必须写进 0001：派生视图、每条证据链、禁止优于 dated decisions。8/10 transcript 只作历史快照，禁止当项目知识。draft skills 文首加禁止调度横幅，不重写正文。tech-radar/index 补 08-26 pedestrian 卡。提案方向克制，整篇 superseded / 「优于日期文档」会诱发大扫，必须收窄。"
+    },
+    {
+      "id": "vote-gemini-1",
+      "agent": "gemini-reviewer",
+      "role": "Gemini",
+      "type": "VOTE",
+      "ts": "2026-09-22T10:52:00+08:00",
+      "body": "VOTE: approve_with_changes"
+    },
+    {
+      "id": "qa-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "QA",
+      "ts": "2026-09-22T10:54:00+08:00",
+      "body": "三审均为 approve_with_changes。修正后的执行范围（待用户确认）：新建 CURRENT 派生索引；活文档只加过期横幅；0001 收编 CURRENT/tech-radar/auto_docs；不改 lab/代码；8/25 不整篇 superseded；roadmap 安全和稳定留下。是否执行？"
+    },
+    {
+      "id": "qa-item1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "QA",
+      "ts": "2026-09-22T10:55:00+08:00",
+      "body": "用户改流程：矛盾一条一条对，乔布斯+执行侧给修改理由，用户拍板后再下一条。先对第1条：语音优先 vs 视觉优先。"
+    },
+    {
+      "id": "board-item1",
+      "agent": "user",
+      "role": "用户",
+      "type": "QA",
+      "ts": "2026-09-22T10:56:00+08:00",
+      "body": "第1条拍板：维持 8/12 视觉引导优先，语音辅助确认。清掉活文档里的「语音优先」现在时。8/06 安全边界不动。"
+    },
+    {
+      "id": "board-item2",
+      "agent": "user",
+      "role": "用户",
+      "type": "QA",
+      "ts": "2026-09-22T11:00:00+08:00",
+      "body": "第2条拍板：当前只四项核心；读文字/看周围/切模型改历史队列；timeout/断开可见/不隐藏安全变化留在当前阶段。"
+    },
+    {
+      "id": "board-item3",
+      "agent": "user",
+      "role": "用户",
+      "type": "QA",
+      "ts": "2026-09-22T11:05:00+08:00",
+      "body": "第3条拍板：推翻 9/21「不能当产品默认」。TwinLite 就是现在的产品默认，文档按这个写。旧文「仍二值 Fast-SCNN」作废。"
+    },
+    {
+      "id": "board-item4",
+      "agent": "user",
+      "role": "用户",
+      "type": "QA",
+      "ts": "2026-09-22T11:10:00+08:00",
+      "body": "第4条拍板：产品车道看 TwinLite 出的线/车道图。UFLDv2 是下一阶段真·几何线。CamVid 像素分割只做评测。本条不切代码。"
+    },
+    {
+      "id": "board-item5",
+      "agent": "user",
+      "role": "用户",
+      "type": "QA",
+      "ts": "2026-09-22T11:15:00+08:00",
+      "body": "第5条拍板：本条就把引擎、OTA、case_store 里的三区删干净。这是实现项，会动代码和评测。8/25 可见框已下，深层删除纳入本轮执行而不是只写文档。"
+    },
+    {
+      "id": "board-item6",
+      "agent": "user",
+      "role": "用户",
+      "type": "QA",
+      "ts": "2026-09-22T11:20:00+08:00",
+      "body": "第6条拍板：产品仍要提示台阶/路沿；YOLO 不加这两个类。CURRENT 分列意图 vs 能力。"
+    },
+    {
+      "id": "board-item7",
+      "agent": "user",
+      "role": "用户",
+      "type": "QA",
+      "ts": "2026-09-22T11:25:00+08:00",
+      "body": "第7条拍板：CURRENT 当新宪法，和 dated 决策打架时以 CURRENT 为准。三审曾反对（会变成最新 wiki 覆盖历史）；用户否决该反对。"
+    },
+    {
+      "id": "board-item8",
+      "agent": "user",
+      "role": "用户",
+      "type": "QA",
+      "ts": "2026-09-22T11:30:00+08:00",
+      "body": "第8条拍板：本轮按视觉优先 + TwinLite + 四项核心，把 architecture 设计包和图重写。"
+    },
+    {
+      "id": "board-item9",
+      "agent": "user",
+      "role": "用户",
+      "type": "QA",
+      "ts": "2026-09-22T11:35:00+08:00",
+      "body": "第9条拍板：尺子拆开。可走区/障碍仍用 CamVid；产品车道线不以 CamVid 像素当唯一真值；UFLDv2 阶段用 CULane。"
+    },
+    {
+      "id": "board-item10",
+      "agent": "user",
+      "role": "用户",
+      "type": "QA",
+      "ts": "2026-09-22T11:40:00+08:00",
+      "body": "第10条拍板：决策文档里的数字全部删掉。乔布斯注明：按字面执行 docs/decisions；evolution/model-lab 数字默认不动。"
+    },
+    {
+      "id": "qa-execute",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "QA",
+      "ts": "2026-09-22T11:41:00+08:00",
+      "body": "十条全部拍完。请用户确认是否现在执行。范围含文档（CURRENT 宪法、roadmap/README 去语音优先、architecture 重写、decisions 删数字）以及代码（三区深层删除）。"
+    },
+    {
+      "id": "exec-1",
+      "agent": "opus-executor",
+      "role": "乔布斯",
+      "type": "EXECUTION",
+      "ts": "2026-09-22T12:20:00+08:00",
+      "body": "用户确认 execute_all 后已落地：CURRENT 宪法、roadmap/README/architecture/decisions 数字、三区引擎/OTA/case 删除。pytest server-vqa/tests 388 passed；harness swift build 通过。App-only SwiftUI 未用完整 Xcode 编译。701 帧旧 jsonl 未重跑，新适配器不再写三区真值。"
+    },
+    {
+      "id": "rev-gemini-full-1",
+      "agent": "gemini-reviewer",
+      "role": "综合审阅",
+      "type": "REVIEW",
+      "ts": "2026-09-22T10:55:00+08:00",
+      "body": "态度：有条件同意。\n\n判断：活文档把 8 月中旬写成现在时，这个病诊断对。P0 要一份现状索引、P1 不改日期 lab、TwinLite 代码默认 vs 9/21 否决单独立项、auto_execute=false，这四件同意。不能原样同意的是「CURRENT.md 一页当前真源」+「CURRENT 优于日期文档」——这会把记忆系统从可追溯决策改成最新 wiki 覆盖历史。Sonnet 的分层是对的：CURRENT 只能是派生索引。提案方向克制，但第 4、6 条（0001 写「优于」、整篇 decision superseded）会诱发一次大扫文档，必须收窄。\n\n1) CURRENT.md 会不会变成第三真源？会。tech-radar/index.md 已漏磁盘上的 2026-08-26 pedestrian 卡，索引已经在腐化。再写「优于日期文档」就是第四真源。防止：AGENTS=宪法，decisions=规范史，lab=永不改写证据，CURRENT=派生视图；每条截至日期+证据链；禁止算法细节；冲突改 CURRENT 不改决策。做不到证据链就不要建 CURRENT。\n\n2) 8/10 transcript：历史快照，禁止再当项目知识。保留聊天，不搬进 docs/。CURRENT/0001 写禁止引用；需要时只写「当时是 Qwen/语音/四模式，已被 8/12 与 8/27·9/13 取代」。\n\n3) vqasee-skills-draft 低视力优先：误用风险中等偏高。正式调度只认 .agents/skills（已视觉优先）；draft product-review/ui-polish 仍写低视力/语音优先。检索/「按乔布斯 skill 做」会命中草案。每个 draft SKILL.md 文首加禁止调度即可，不重写正文。\n\n4) tech-radar/index 漏 08-26 pedestrian：应列入（至少 L2，情报已写、指标对齐未闭环）。这是索引完整性，不是扫文档；CURRENT 若不链这张卡，核心能力#2 的 SOTA 对 Agent 隐形。\n\n5) 提案方向克制，清单不够克制。「一页真源 / 优于日期文档 / 整篇 superseded / 去掉措辞」会诱发大扫。本轮白名单：派生索引、0001 分层、活文档文首横幅、roadmap 安全和稳定留下、8/25 不 superseded、index 补一行。不改 lab/代码。\n\n6) 同意 Sonnet 四条，并加两条：8/10 只作快照；index 补 08-26。\n\n风险排序：CURRENT 变第四真源 > 整篇盖戳丢掉为什么 > ROI 未闭环被说成已完成 > 车道三选一切代码 > draft 检索救活低视力默认 > 8/10 对话继续当需求。\n最小可验证改动：CURRENT 派生索引；0001 不覆盖；横幅；draft 文首禁止调度；index 补行。验证：grep「语音优先」「三区已退役」「CURRENT 优于」；index 行数=卡片数（除 template）。\n需要证据：README 现在时段落清单；design-pack 全量；TwinLite 是否 live 加载成功；draft 是否会被语义检索命中。\n\n注：本 REVIEW 针对提案原文与 Sonnet 四条。用户后续第7条拍板「CURRENT 当新宪法」是否决三审反对；记忆系统风险并不因此消失，只是变成已接受的产品选择，更需要证据链和腐化检测。"
+    },
+    {
+      "id": "vote-gemini-full-1",
+      "agent": "gemini-reviewer",
+      "role": "综合审阅",
+      "type": "VOTE",
+      "ts": "2026-09-22T10:55:00+08:00",
+      "body": "VOTE: approve_with_changes。同意诊断 + P0 现状索引 + 活文档盖戳（不是改正文）+ P1 不改 lab + TwinLite/ROI 深层删除分列 P2 + auto_execute=false。必须改：CURRENT 是派生索引不得优于 dated decisions；roadmap 安全和稳定留在当前阶段；8/25 不 superseded；车道三列禁止三选一改代码。Gemini 加码：8/10 transcript 只作历史快照、禁止当项目知识；tech-radar/index 补 08-26 pedestrian 卡；draft skill 每个文件文首禁止调度，不重写正文。"
+    }
+  ]
+}
