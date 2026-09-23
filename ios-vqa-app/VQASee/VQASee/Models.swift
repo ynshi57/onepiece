@@ -54,7 +54,16 @@ struct StreamingLimits {
     static let maxImageDimension: CGFloat = 448
     static let jpegQuality: CGFloat = 0.45
     static let maxJPEGBytes = 120_000
-    static let minFrameInterval: CFTimeInterval = 2.0
+
+    /// Local TwinLite/YOLO overlay cadence. Legacy `minFrameInterval` was 2.0s
+    /// (Qwen upload era) and made overlays look frozen / “not realtime”.
+    static let minLocalPerceptionInterval: CFTimeInterval = 0.20
+
+    /// Remote Qwen JPEG upload cadence (still latest-frame-wins downstream).
+    static let minRemoteUploadInterval: CFTimeInterval = 2.0
+
+    /// Backward-compatible alias — prefer the local/remote-specific constants.
+    static let minFrameInterval: CFTimeInterval = minRemoteUploadInterval
 }
 
 struct FrameEncodingProfile: Equatable {

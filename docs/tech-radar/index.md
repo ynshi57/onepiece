@@ -25,6 +25,7 @@
 
 | 日期 | 主题 | 等级 | 相关角色 | 状态 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-23 | 室内 OOD / 竞品形态 / 感知≠视频流 | L2 | 乔/罗/思/全 | 情报已写；帧率拆分已代码；OOD 门闩待实验 | [卡片](2026-09-23-indoor-ood-competitors-realtime.md) |
 | 2026-09-20 | 更快开源 VLM 压 Qwen VQA 延迟 | L2 | 乔/罗/思/全 | 情报已写；未跑对照实验 | [卡片](2026-09-20-fast-open-vlm-for-qwen-latency.md) |
 | 2026-08-26 | 行人可通行区 SOTA（SENSATION-DS / WalkGPT） | L2 | 乔/罗/全/思 | 情报已写；指标对齐未闭环 | [卡片](2026-08-26-pedestrian-traversability-sota.md) |
 | 2026-08-18 | BDD100K open dataset adapter MVP | L2 | 乔/罗/全/思 | 已落地 | [卡片](2026-08-18-bdd100k-open-dataset-adapter.md) |

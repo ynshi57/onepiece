@@ -86,6 +86,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     @Published var isRemoteVQAEnabled: Bool = RemoteVQASessionPolicy.isEnabled() {
         didSet {
             UserDefaults.standard.set(isRemoteVQAEnabled, forKey: Self.remoteVQAEnabledDefaultsKey)
+            syncCaptureEncodingMode()
             Task { @MainActor in
                 await self.handleRemoteVQAToggleChanged()
             }
@@ -260,8 +261,14 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                 )
             }
         }
+        syncCaptureEncodingMode()
         configureCameraSession()
         configureSpeechController()
+    }
+
+    private func syncCaptureEncodingMode() {
+        frameCaptureProxy.encodesJPEGForRemote = isRemoteVQAEnabled
+        arFrameCaptureProxy.encodesJPEGForRemote = isRemoteVQAEnabled
     }
 
     var selectableModelOptions: [VqaModelOption] {

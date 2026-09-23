@@ -154,7 +154,7 @@ struct AssistanceScreen: View {
 
     /// One-line tip before local session starts — no opaque multi-line card.
     private var localIdleHint: some View {
-        Text("点「开始观察」即可本地看路")
+        Text("户外街景点「开始观察」；咖啡店等室内暂不画车道")
             .font(Theme.Typography.caption)
             .foregroundStyle(.secondary)
             .padding(.horizontal, Theme.Spacing.md)
@@ -164,7 +164,7 @@ struct AssistanceScreen: View {
                 Capsule(style: .continuous)
                     .fill(.ultraThinMaterial)
             }
-            .accessibilityLabel("点开始观察即可本地看路，无需连接 Mac")
+            .accessibilityLabel("适用于户外街景。点开始观察即可本地看路。室内场景暂不画车道与可走区。")
     }
 
     @ViewBuilder

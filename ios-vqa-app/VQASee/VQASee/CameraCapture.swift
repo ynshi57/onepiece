@@ -5,14 +5,87 @@ import UIKit
 
 // MARK: - Camera capture & preview
 //
-// Frame-capture delegate and the SwiftUI camera preview, extracted verbatim from
-// ContentView.swift.
+// Frame-capture delegate and the SwiftUI camera preview.
+// Perception runs async on a copied pixel buffer so the live preview never stalls.
+
+enum PixelBufferCopy {
+    /// Deep-copy a camera/AR buffer so analysis can leave the capture callback.
+    static func deepCopy(_ source: CVPixelBuffer) -> CVPixelBuffer? {
+        let width = CVPixelBufferGetWidth(source)
+        let height = CVPixelBufferGetHeight(source)
+        let format = CVPixelBufferGetPixelFormatType(source)
+        var destination: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary
+        ]
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            format,
+            attrs as CFDictionary,
+            &destination
+        )
+        guard status == kCVReturnSuccess, let destination else {
+            return nil
+        }
+
+        CVPixelBufferLockBaseAddress(source, .readOnly)
+        CVPixelBufferLockBaseAddress(destination, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(source, .readOnly)
+            CVPixelBufferUnlockBaseAddress(destination, [])
+        }
+
+        let planeCount = CVPixelBufferGetPlaneCount(source)
+        if planeCount == 0 {
+            guard
+                let src = CVPixelBufferGetBaseAddress(source),
+                let dst = CVPixelBufferGetBaseAddress(destination)
+            else {
+                return nil
+            }
+            let srcBytesPerRow = CVPixelBufferGetBytesPerRow(source)
+            let dstBytesPerRow = CVPixelBufferGetBytesPerRow(destination)
+            let rowBytes = min(srcBytesPerRow, dstBytesPerRow)
+            for y in 0..<height {
+                memcpy(dst.advanced(by: y * dstBytesPerRow), src.advanced(by: y * srcBytesPerRow), rowBytes)
+            }
+        } else {
+            for plane in 0..<planeCount {
+                guard
+                    let src = CVPixelBufferGetBaseAddressOfPlane(source, plane),
+                    let dst = CVPixelBufferGetBaseAddressOfPlane(destination, plane)
+                else {
+                    continue
+                }
+                let planeHeight = CVPixelBufferGetHeightOfPlane(source, plane)
+                let srcBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(source, plane)
+                let dstBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(destination, plane)
+                let rowBytes = min(srcBytesPerRow, dstBytesPerRow)
+                for y in 0..<planeHeight {
+                    memcpy(
+                        dst.advanced(by: y * dstBytesPerRow),
+                        src.advanced(by: y * srcBytesPerRow),
+                        rowBytes
+                    )
+                }
+            }
+        }
+        return destination
+    }
+}
 
 final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    /// Delivers the encoded JPEG, on-device encode time, and local fast-vision signal.
+    /// Delivers optional JPEG (empty when remote upload is off), encode ms, and local vision.
     var onFrame: (@Sendable (Data, Double, LocalVisionSignal) -> Void)?
-    private var lastFrameTime: CFTimeInterval = 0
-    private let minInterval: CFTimeInterval = StreamingLimits.minFrameInterval
+    /// When false (local-only product path), skip JPEG encode — overlays do not need it.
+    var encodesJPEGForRemote: Bool = false
+
+    private var lastPerceptionTime: CFTimeInterval = 0
+    private var isPerceptionBusy = false
+    private let stateLock = NSLock()
+    private let perceptionQueue = DispatchQueue(label: "vqasee.local-perception", qos: .userInitiated)
     private let localVisionAnalyzer = LocalVisionAnalyzer()
     private var encodingProfile = FrameEncodingProfile(
         maxDimension: StreamingLimits.maxImageDimension,
@@ -34,55 +107,87 @@ final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        // `minInterval` is the only throttle: it caps how often we send frames so
-        // we don't flood the model, but every frame past the interval IS sent.
-        // We deliberately do NOT try to guess "the scene didn't change" and drop
-        // frames here — for a vision-assistance app that hides real changes from
-        // the user (e.g. panning the camera to new content), which is unsafe.
-        // Whether to *speak* the result is decided downstream by SpeechGate so we
-        // still avoid repeating ourselves without ever hiding the current frame.
+        // Preview stays on the AVCapture path. Perception is throttled + async so a
+        // slow TwinLite forward never freezes the live camera layer.
         let now = CACurrentMediaTime()
-        guard now - lastFrameTime >= minInterval else {
+        stateLock.lock()
+        let tooSoon = now - lastPerceptionTime < StreamingLimits.minLocalPerceptionInterval
+        let busy = isPerceptionBusy
+        if tooSoon || busy {
+            stateLock.unlock()
             return
         }
-        lastFrameTime = now
+        lastPerceptionTime = now
+        isPerceptionBusy = true
+        stateLock.unlock()
 
-        let localVisionSignal = localVisionAnalyzer.analyze(sampleBuffer: sampleBuffer)
-        let encodeStart = CACurrentMediaTime()
-        guard let jpegData = encode(sampleBuffer: sampleBuffer) else {
+        guard
+            let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+            let copied = PixelBufferCopy.deepCopy(pixelBuffer)
+        else {
+            stateLock.lock()
+            isPerceptionBusy = false
+            stateLock.unlock()
             return
         }
-        let encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0
-        onFrame?(jpegData, encodeMs, localVisionSignal)
+
+        let encodesJPEG = encodesJPEGForRemote
+        let profile = encodingProfile
+        perceptionQueue.async { [weak self] in
+            defer {
+                self?.stateLock.lock()
+                self?.isPerceptionBusy = false
+                self?.stateLock.unlock()
+            }
+            guard let self else {
+                return
+            }
+            let localVisionSignal = self.localVisionAnalyzer.analyze(pixelBuffer: copied)
+            var jpegData = Data()
+            var encodeMs = 0.0
+            if encodesJPEG {
+                let encodeStart = CACurrentMediaTime()
+                if let encoded = FrameJPEGEncoder.encode(
+                    pixelBuffer: copied,
+                    maxDimension: profile.maxDimension,
+                    quality: profile.jpegQuality,
+                    maxBytes: profile.maxJPEGBytes
+                ) {
+                    jpegData = encoded
+                    encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0
+                }
+            }
+            self.onFrame?(jpegData, encodeMs, localVisionSignal)
+        }
     }
 
     /// Let the next captured frame skip the min-interval throttle so a
     /// user-initiated capture (single-shot / voice question) is answered promptly.
     func forceNextFrame() {
-        lastFrameTime = 0
+        stateLock.lock()
+        lastPerceptionTime = 0
+        stateLock.unlock()
     }
 
     /// Clears throttle state so a fresh stream always sends its first frame immediately.
     func resetGateState() {
-        lastFrameTime = 0
+        stateLock.lock()
+        lastPerceptionTime = 0
+        isPerceptionBusy = false
+        stateLock.unlock()
         localVisionAnalyzer.reset()
-    }
-
-    private func encode(sampleBuffer: CMSampleBuffer) -> Data? {
-        FrameJPEGEncoder.encode(
-            sampleBuffer: sampleBuffer,
-            maxDimension: encodingProfile.maxDimension,
-            quality: encodingProfile.jpegQuality,
-            maxBytes: encodingProfile.maxJPEGBytes
-        )
     }
 }
 
 
 final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
     var onFrame: (@Sendable (Data, Double, LocalVisionSignal) -> Void)?
-    private var lastFrameTime: CFTimeInterval = 0
-    private let minInterval: CFTimeInterval = StreamingLimits.minFrameInterval
+    var encodesJPEGForRemote: Bool = false
+
+    private var lastPerceptionTime: CFTimeInterval = 0
+    private var isPerceptionBusy = false
+    private let stateLock = NSLock()
+    private let perceptionQueue = DispatchQueue(label: "vqasee.ar-local-perception", qos: .userInitiated)
     private let localVisionAnalyzer = LocalVisionAnalyzer()
     private var encodingProfile = FrameEncodingProfile(
         maxDimension: StreamingLimits.maxImageDimension,
@@ -120,38 +225,71 @@ final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
     }
 
     func forceNextFrame() {
-        lastFrameTime = 0
+        stateLock.lock()
+        lastPerceptionTime = 0
+        stateLock.unlock()
     }
 
     func resetGateState() {
-        lastFrameTime = 0
+        stateLock.lock()
+        lastPerceptionTime = 0
+        isPerceptionBusy = false
+        stateLock.unlock()
         localVisionAnalyzer.reset()
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         let now = CACurrentMediaTime()
-        guard now - lastFrameTime >= minInterval else {
+        stateLock.lock()
+        let tooSoon = now - lastPerceptionTime < StreamingLimits.minLocalPerceptionInterval
+        let busy = isPerceptionBusy
+        if tooSoon || busy {
+            stateLock.unlock()
             return
         }
-        lastFrameTime = now
+        lastPerceptionTime = now
+        isPerceptionBusy = true
+        stateLock.unlock()
 
-        let depthCues = ARDepthCueExtractor.extract(from: frame)
-        let localVisionSignal = localVisionAnalyzer.analyze(
-            pixelBuffer: frame.capturedImage,
-            depthCues: depthCues,
-            depthCapability: .active
-        )
-        let encodeStart = CACurrentMediaTime()
-        guard let jpegData = FrameJPEGEncoder.encode(
-            pixelBuffer: frame.capturedImage,
-            maxDimension: encodingProfile.maxDimension,
-            quality: encodingProfile.jpegQuality,
-            maxBytes: encodingProfile.maxJPEGBytes
-        ) else {
+        guard let copied = PixelBufferCopy.deepCopy(frame.capturedImage) else {
+            stateLock.lock()
+            isPerceptionBusy = false
+            stateLock.unlock()
             return
         }
-        let encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0
-        onFrame?(jpegData, encodeMs, localVisionSignal)
+        let depthCues = ARDepthCueExtractor.extract(from: frame)
+        let encodesJPEG = encodesJPEGForRemote
+        let profile = encodingProfile
+        perceptionQueue.async { [weak self] in
+            defer {
+                self?.stateLock.lock()
+                self?.isPerceptionBusy = false
+                self?.stateLock.unlock()
+            }
+            guard let self else {
+                return
+            }
+            let localVisionSignal = self.localVisionAnalyzer.analyze(
+                pixelBuffer: copied,
+                depthCues: depthCues,
+                depthCapability: .active
+            )
+            var jpegData = Data()
+            var encodeMs = 0.0
+            if encodesJPEG {
+                let encodeStart = CACurrentMediaTime()
+                if let encoded = FrameJPEGEncoder.encode(
+                    pixelBuffer: copied,
+                    maxDimension: profile.maxDimension,
+                    quality: profile.jpegQuality,
+                    maxBytes: profile.maxJPEGBytes
+                ) {
+                    jpegData = encoded
+                    encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0
+                }
+            }
+            self.onFrame?(jpegData, encodeMs, localVisionSignal)
+        }
     }
 }
 
