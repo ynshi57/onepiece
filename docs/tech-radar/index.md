@@ -25,6 +25,8 @@
 
 | 日期 | 主题 | 等级 | 相关角色 | 状态 | 文档 |
 | --- | --- | --- | --- | --- | --- |
+| 2026-09-29 | 经典 UNet vs TwinLite 车道（速度/准） | L1 | 乔/罗/思/全 | 不建议换主航道；要抬准则优先 UFLD/TwinLite+ | [卡片](2026-09-29-unet-vs-twinlite-lane.md) |
+| 2026-09-29 | Jev / 决策型模型 vs TwinLite 感知 | L1 | 乔/罗/思/全 | 情报已写；不改 App；远程 typed schema 可选 backlog | [卡片](2026-09-29-jev-vs-perception-decision-models.md) |
 | 2026-09-23 | 室内 OOD / 竞品形态 / 感知≠视频流 | L2 | 乔/罗/思/全 | 情报已写；帧率拆分已代码；OOD 门闩待实验 | [卡片](2026-09-23-indoor-ood-competitors-realtime.md) |
 | 2026-09-20 | 更快开源 VLM 压 Qwen VQA 延迟 | L2 | 乔/罗/思/全 | 情报已写；未跑对照实验 | [卡片](2026-09-20-fast-open-vlm-for-qwen-latency.md) |
 | 2026-08-26 | 行人可通行区 SOTA（SENSATION-DS / WalkGPT） | L2 | 乔/罗/全/思 | 情报已写；指标对齐未闭环 | [卡片](2026-08-26-pedestrian-traversability-sota.md) |

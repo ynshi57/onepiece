@@ -267,7 +267,7 @@ HF_ENDPOINT=https://hf-mirror.com bash setup_mac.sh --hf-mirror   # HF 走镜像
 - `qwen`：本地 Qwen 运行时（Ollama + `qwen2.5vl:3b`，数 GB）。
 - `ios`：完整 iOS 构建工具链（**需完整 Xcode + Ruby ≥ 3.2**）；签名与 TestFlight 需 Apple 账号，人工完成。
 
-脚本结尾会打印每项「已装 / 跳过 / 失败」摘要和下一步命令。仓库已自带 `YOLO11nObject.mlmodelc`；分割模型、深度模型、服务器 ONNX 预测器在 `.gitignore` 中，由上面步骤按需安装。
+脚本结尾会打印每项「已装 / 跳过 / 失败」摘要和下一步命令。App 模型资源统一位于 `ios-vqa-app/VQASee/ModelResources/`；仓库已自带 `YOLO11nObject.mlmodelc`，分割模型、深度模型、服务器 ONNX 预测器在 `.gitignore` 中，由上面步骤按需安装。
 
 ### 手动分步
 

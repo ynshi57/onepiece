@@ -76,14 +76,26 @@ enum PixelBufferCopy {
     }
 }
 
+/// Time provenance for a local result. `resultAgeMs` measures the picture the
+/// user is seeing, not merely the Core ML wall-clock duration.
+struct LocalPerceptionDelivery: Sendable, Equatable {
+    let capturedAt: CFTimeInterval
+    let completedAt: CFTimeInterval
+    let resultAgeMs: Double
+    let replacedFrameCount: Int
+}
+
 final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     /// Delivers optional JPEG (empty when remote upload is off), encode ms, and local vision.
-    var onFrame: (@Sendable (Data, Double, LocalVisionSignal) -> Void)?
+    var onFrame: (@Sendable (Data, Double, LocalVisionSignal, LocalPerceptionDelivery) -> Void)?
     /// When false (local-only product path), skip JPEG encode — overlays do not need it.
     var encodesJPEGForRemote: Bool = false
 
     private var lastPerceptionTime: CFTimeInterval = 0
     private var isPerceptionBusy = false
+    private var sessionGeneration: UInt64 = 0
+    private var pendingFrame: (pixelBuffer: CVPixelBuffer, capturedAt: CFTimeInterval, generation: UInt64)?
+    private var replacedFrameCount = 0
     private let stateLock = NSLock()
     private let perceptionQueue = DispatchQueue(label: "vqasee.local-perception", qos: .userInitiated)
     private let localVisionAnalyzer = LocalVisionAnalyzer()
@@ -112,53 +124,20 @@ final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         let now = CACurrentMediaTime()
         stateLock.lock()
         let tooSoon = now - lastPerceptionTime < StreamingLimits.minLocalPerceptionInterval
-        let busy = isPerceptionBusy
-        if tooSoon || busy {
+        if tooSoon {
             stateLock.unlock()
             return
         }
         lastPerceptionTime = now
-        isPerceptionBusy = true
         stateLock.unlock()
 
         guard
             let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
             let copied = PixelBufferCopy.deepCopy(pixelBuffer)
         else {
-            stateLock.lock()
-            isPerceptionBusy = false
-            stateLock.unlock()
             return
         }
-
-        let encodesJPEG = encodesJPEGForRemote
-        let profile = encodingProfile
-        perceptionQueue.async { [weak self] in
-            defer {
-                self?.stateLock.lock()
-                self?.isPerceptionBusy = false
-                self?.stateLock.unlock()
-            }
-            guard let self else {
-                return
-            }
-            let localVisionSignal = self.localVisionAnalyzer.analyze(pixelBuffer: copied)
-            var jpegData = Data()
-            var encodeMs = 0.0
-            if encodesJPEG {
-                let encodeStart = CACurrentMediaTime()
-                if let encoded = FrameJPEGEncoder.encode(
-                    pixelBuffer: copied,
-                    maxDimension: profile.maxDimension,
-                    quality: profile.jpegQuality,
-                    maxBytes: profile.maxJPEGBytes
-                ) {
-                    jpegData = encoded
-                    encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0
-                }
-            }
-            self.onFrame?(jpegData, encodeMs, localVisionSignal)
-        }
+        enqueueLatest(copied, capturedAt: now)
     }
 
     /// Let the next captured frame skip the min-interval throttle so a
@@ -172,20 +151,87 @@ final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDel
     /// Clears throttle state so a fresh stream always sends its first frame immediately.
     func resetGateState() {
         stateLock.lock()
+        sessionGeneration &+= 1
         lastPerceptionTime = 0
-        isPerceptionBusy = false
+        pendingFrame = nil
+        replacedFrameCount = 0
         stateLock.unlock()
-        localVisionAnalyzer.reset()
+        // Do not clear `isPerceptionBusy`: an old Core ML call may still be
+        // running. Its completion starts the latest frame for this generation.
+        // Reset on the same serial queue so analyzer state never races analysis.
+        perceptionQueue.async { [weak self] in self?.localVisionAnalyzer.reset() }
+    }
+
+    private func enqueueLatest(_ pixelBuffer: CVPixelBuffer, capturedAt: CFTimeInterval) {
+        stateLock.lock()
+        let generation = sessionGeneration
+        if isPerceptionBusy {
+            if pendingFrame != nil { replacedFrameCount += 1 }
+            pendingFrame = (pixelBuffer, capturedAt, generation)
+            stateLock.unlock()
+            return
+        }
+        isPerceptionBusy = true
+        let replacementCount = replacedFrameCount
+        replacedFrameCount = 0
+        stateLock.unlock()
+        process(pixelBuffer, capturedAt: capturedAt, replacementCount: replacementCount, generation: generation)
+    }
+
+    private func process(_ pixelBuffer: CVPixelBuffer, capturedAt: CFTimeInterval, replacementCount: Int, generation: UInt64) {
+        let encodesJPEG = encodesJPEGForRemote
+        let profile = encodingProfile
+        perceptionQueue.async { [weak self] in
+            guard let self else { return }
+            let localVisionSignal = self.localVisionAnalyzer.analyze(pixelBuffer: pixelBuffer)
+            var jpegData = Data()
+            var encodeMs = 0.0
+            if encodesJPEG {
+                let encodeStart = CACurrentMediaTime()
+                if let encoded = FrameJPEGEncoder.encode(pixelBuffer: pixelBuffer, maxDimension: profile.maxDimension, quality: profile.jpegQuality, maxBytes: profile.maxJPEGBytes) {
+                    jpegData = encoded
+                    encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0
+                }
+            }
+            let completedAt = CACurrentMediaTime()
+            if self.isCurrentGeneration(generation) {
+                self.onFrame?(jpegData, encodeMs, localVisionSignal, LocalPerceptionDelivery(capturedAt: capturedAt, completedAt: completedAt, resultAgeMs: (completedAt - capturedAt) * 1000.0, replacedFrameCount: replacementCount))
+            }
+            self.finishProcessing(generation: generation)
+        }
+    }
+
+    private func isCurrentGeneration(_ generation: UInt64) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return sessionGeneration == generation
+    }
+
+    private func finishProcessing(generation _: UInt64) {
+        stateLock.lock()
+        guard let pending = pendingFrame else {
+            isPerceptionBusy = false
+            stateLock.unlock()
+            return
+        }
+        pendingFrame = nil
+        let replacementCount = replacedFrameCount
+        replacedFrameCount = 0
+        stateLock.unlock()
+        process(pending.pixelBuffer, capturedAt: pending.capturedAt, replacementCount: replacementCount, generation: pending.generation)
     }
 }
 
 
 final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
-    var onFrame: (@Sendable (Data, Double, LocalVisionSignal) -> Void)?
+    var onFrame: (@Sendable (Data, Double, LocalVisionSignal, LocalPerceptionDelivery) -> Void)?
     var encodesJPEGForRemote: Bool = false
 
     private var lastPerceptionTime: CFTimeInterval = 0
     private var isPerceptionBusy = false
+    private var sessionGeneration: UInt64 = 0
+    private var pendingFrame: (pixelBuffer: CVPixelBuffer, depthCues: LocalDepthCueSignal, capturedAt: CFTimeInterval, generation: UInt64)?
+    private var replacedFrameCount = 0
     private let stateLock = NSLock()
     private let perceptionQueue = DispatchQueue(label: "vqasee.ar-local-perception", qos: .userInitiated)
     private let localVisionAnalyzer = LocalVisionAnalyzer()
@@ -232,45 +278,55 @@ final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
 
     func resetGateState() {
         stateLock.lock()
+        sessionGeneration &+= 1
         lastPerceptionTime = 0
-        isPerceptionBusy = false
+        pendingFrame = nil
+        replacedFrameCount = 0
         stateLock.unlock()
-        localVisionAnalyzer.reset()
+        perceptionQueue.async { [weak self] in self?.localVisionAnalyzer.reset() }
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         let now = CACurrentMediaTime()
         stateLock.lock()
         let tooSoon = now - lastPerceptionTime < StreamingLimits.minLocalPerceptionInterval
-        let busy = isPerceptionBusy
-        if tooSoon || busy {
+        if tooSoon {
             stateLock.unlock()
             return
         }
         lastPerceptionTime = now
-        isPerceptionBusy = true
         stateLock.unlock()
 
         guard let copied = PixelBufferCopy.deepCopy(frame.capturedImage) else {
-            stateLock.lock()
-            isPerceptionBusy = false
-            stateLock.unlock()
             return
         }
         let depthCues = ARDepthCueExtractor.extract(from: frame)
+        enqueueLatest(copied, depthCues: depthCues, capturedAt: now)
+    }
+
+    private func enqueueLatest(_ pixelBuffer: CVPixelBuffer, depthCues: LocalDepthCueSignal, capturedAt: CFTimeInterval) {
+        stateLock.lock()
+        let generation = sessionGeneration
+        if isPerceptionBusy {
+            if pendingFrame != nil { replacedFrameCount += 1 }
+            pendingFrame = (pixelBuffer, depthCues, capturedAt, generation)
+            stateLock.unlock()
+            return
+        }
+        isPerceptionBusy = true
+        let replacementCount = replacedFrameCount
+        replacedFrameCount = 0
+        stateLock.unlock()
+        process(pixelBuffer, depthCues: depthCues, capturedAt: capturedAt, replacementCount: replacementCount, generation: generation)
+    }
+
+    private func process(_ pixelBuffer: CVPixelBuffer, depthCues: LocalDepthCueSignal, capturedAt: CFTimeInterval, replacementCount: Int, generation: UInt64) {
         let encodesJPEG = encodesJPEGForRemote
         let profile = encodingProfile
         perceptionQueue.async { [weak self] in
-            defer {
-                self?.stateLock.lock()
-                self?.isPerceptionBusy = false
-                self?.stateLock.unlock()
-            }
-            guard let self else {
-                return
-            }
+            guard let self else { return }
             let localVisionSignal = self.localVisionAnalyzer.analyze(
-                pixelBuffer: copied,
+                pixelBuffer: pixelBuffer,
                 depthCues: depthCues,
                 depthCapability: .active
             )
@@ -279,7 +335,7 @@ final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
             if encodesJPEG {
                 let encodeStart = CACurrentMediaTime()
                 if let encoded = FrameJPEGEncoder.encode(
-                    pixelBuffer: copied,
+                    pixelBuffer: pixelBuffer,
                     maxDimension: profile.maxDimension,
                     quality: profile.jpegQuality,
                     maxBytes: profile.maxJPEGBytes
@@ -288,8 +344,32 @@ final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
                     encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0
                 }
             }
-            self.onFrame?(jpegData, encodeMs, localVisionSignal)
+            let completedAt = CACurrentMediaTime()
+            if self.isCurrentGeneration(generation) {
+                self.onFrame?(jpegData, encodeMs, localVisionSignal, LocalPerceptionDelivery(capturedAt: capturedAt, completedAt: completedAt, resultAgeMs: (completedAt - capturedAt) * 1000.0, replacedFrameCount: replacementCount))
+            }
+            self.finishProcessing(generation: generation)
         }
+    }
+
+    private func isCurrentGeneration(_ generation: UInt64) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return sessionGeneration == generation
+    }
+
+    private func finishProcessing(generation _: UInt64) {
+        stateLock.lock()
+        guard let pending = pendingFrame else {
+            isPerceptionBusy = false
+            stateLock.unlock()
+            return
+        }
+        pendingFrame = nil
+        let replacementCount = replacedFrameCount
+        replacedFrameCount = 0
+        stateLock.unlock()
+        process(pending.pixelBuffer, depthCues: pending.depthCues, capturedAt: pending.capturedAt, replacementCount: replacementCount, generation: pending.generation)
     }
 }
 

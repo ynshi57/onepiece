@@ -9,6 +9,12 @@ import XCTest
 
 final class VQASeeUITestsLaunchTests: XCTestCase {
 
+    private func makeApp() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-ui-testing"]
+        return app
+    }
+
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
         true
     }
@@ -19,15 +25,13 @@ final class VQASeeUITestsLaunchTests: XCTestCase {
 
     @MainActor
     func testLaunch() throws {
-        let app = XCUIApplication()
+        let app = makeApp()
         app.launch()
 
-        // Insert steps here to perform after app launch but before taking a screenshot,
-        // such as logging into a test account or navigating somewhere in the app
-
-        let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = "Launch Screen"
-        attachment.lifetime = .keepAlways
-        add(attachment)
+        // `app.screenshot()` asks CoreSimulator for a window-server snapshot. That
+        // service can time out independently of the app (notably on a freshly
+        // booted CI simulator), producing a false launch failure. Assert the
+        // observable launch contract instead.
+        XCTAssertEqual(app.state, .runningForeground)
     }
 }

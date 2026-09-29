@@ -79,14 +79,15 @@ func parseArguments() -> Arguments {
         fail("missing required --manifest <path.jsonl>")
     }
 
-    // Default model dir: the app's VQASee source dir (holds YOLO11nObject.mlmodelc),
+    // Default model dir: the app's separately bundled model-resource directory
+    // (holds YOLO11nObject.mlmodelc),
     // resolved relative to this source file so it works from any CWD.
     let defaultModelDir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent() // PerceptionHarness
         .deletingLastPathComponent() // Sources
         .deletingLastPathComponent() // perception-harness
         .deletingLastPathComponent() // ios-vqa-app
-        .appendingPathComponent("VQASee/VQASee")
+        .appendingPathComponent("VQASee/ModelResources")
         .path
 
     return Arguments(

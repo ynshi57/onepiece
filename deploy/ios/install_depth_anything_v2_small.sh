@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-MODEL_DIR="${ROOT_DIR}/ios-vqa-app/VQASee/VQASee"
+MODEL_DIR="${ROOT_DIR}/ios-vqa-app/VQASee/ModelResources"
 MODEL_NAME="DepthAnythingV2SmallF16.mlpackage"
 HF_REPO="apple/coreml-depth-anything-v2-small"
 

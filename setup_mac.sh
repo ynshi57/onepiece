@@ -29,6 +29,7 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODEL_RESOURCE_DIR="${ROOT_DIR}/ios-vqa-app/VQASee/ModelResources"
 cd "${ROOT_DIR}"
 
 # --- options ----------------------------------------------------------------
@@ -194,7 +195,7 @@ profile_core() {
     add_summary "SKIP|core|swift 缺失，未编译 harness（xcode-select --install）"
   fi
 
-  if [ -d ios-vqa-app/VQASee/VQASee/YOLO11nObject.mlmodelc ]; then
+  if [ -d "${MODEL_RESOURCE_DIR}/YOLO11nObject.mlmodelc" ]; then
     add_summary "OK|core|YOLO11nObject.mlmodelc 在位（随仓库提交）"
   else
     add_summary "WARN|core|YOLO 模型缺失（应随仓库；检查 clone 是否完整）"
@@ -248,7 +249,7 @@ profile_models() {
     log "使用 HF 镜像 HF_ENDPOINT=${HF_ENDPOINT}"
   fi
 
-  local seg_dir="ios-vqa-app/VQASee/VQASee/VQASeeTraversabilitySegmentation.mlmodelc"
+  local seg_dir="${MODEL_RESOURCE_DIR}/VQASeeTraversabilitySegmentation.mlmodelc"
   if [ -d "${seg_dir}" ]; then
     add_summary "OK|models|通行分割模型已存在（跳过下载）"
   else
@@ -282,14 +283,14 @@ profile_models() {
   # harness 用 --seg-model + --config docs/datasets/harness-config-{walk,drive}.json
   # 做角色化闭环评测）。依赖：本 profile 已下的 Cityscapes 权重 + camvid manifest。
   add_summary "INFO|models|角色多类分割 mc5：训练 python deploy/ios/finetune_fast_scnn_camvid_multiclass.py ...；shipping 384² 变体 python deploy/ios/export_mc5_coreml.py --size 384（不重训）→ 已作 VQASeeTraversabilitySeg5.mlmodelc 提交进 App（新机走 git 即得，同 YOLO/二值分割）。live 默认关（use_multiclass_segmentation），待罗根真机延迟签字后翻转。"
-  if [ -d ios-vqa-app/VQASee/VQASee/VQASeeTraversabilitySeg5.mlmodelc ]; then
+  if [ -d "${MODEL_RESOURCE_DIR}/VQASeeTraversabilitySeg5.mlmodelc" ]; then
     add_summary "OK|models|mc5 角色分割模型在位（随仓库提交，staged 默认关）"
   fi
-  if [ -d ios-vqa-app/VQASee/VQASee/VQASeeLaneSegmentation.mlmodelc ]; then
+  if [ -d "${MODEL_RESOURCE_DIR}/VQASeeLaneSegmentation.mlmodelc" ]; then
     add_summary "OK|models|车道分割模型在位（随仓库提交，端上默认开，OTA use_lane_segmentation 可关）"
   fi
-  add_summary "INFO|models|TwinLiteNet 实验路面模型：python deploy/ios/convert_twinlite_coreml.py → xcrun coremlcompiler compile ~/.cache/vqasee/models/VQASeeTwinLiteNet.mlpackage ~/.cache/vqasee/models/twinlite-compiled → 拷到 ios-vqa-app/VQASee/VQASee/VQASeeTwinLiteNet.mlmodelc。live 默认 road_backend=twinlite（实验叠图，不是行人可走区）。换模型只改 PerceptionConfig.roadBackend / RoadSurfaceBackend，不改 analyzer。"
-  if [ -d ios-vqa-app/VQASee/VQASee/VQASeeTwinLiteNet.mlmodelc ]; then
+  add_summary "INFO|models|TwinLiteNet 实验路面模型：python deploy/ios/convert_twinlite_coreml.py → xcrun coremlcompiler compile ~/.cache/vqasee/models/VQASeeTwinLiteNet.mlpackage ~/.cache/vqasee/models/twinlite-compiled → 拷到 ios-vqa-app/VQASee/ModelResources/VQASeeTwinLiteNet.mlmodelc。live 默认 road_backend=twinlite（实验叠图，不是行人可走区）。换模型只改 PerceptionConfig.roadBackend / RoadSurfaceBackend，不改 analyzer。"
+  if [ -d "${MODEL_RESOURCE_DIR}/VQASeeTwinLiteNet.mlmodelc" ]; then
     add_summary "OK|models|TwinLiteNet 实验路面模型在位（~1MB，live 默认开，OTA road_backend 可切 mc5/off）"
   fi
   deactivate 2>/dev/null || true

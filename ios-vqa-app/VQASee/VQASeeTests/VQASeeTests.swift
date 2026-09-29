@@ -1418,9 +1418,11 @@ final class VQASeeTests: XCTestCase {
         let points = path?.primary?.points ?? []
         XCTAssertGreaterThanOrEqual(points.count, 3)
         XCTAssertEqual(points[0].x, 0.50, accuracy: 0.02)
-        XCTAssertEqual(points[0].y, 0.30, accuracy: 0.02)
+        // GuidancePath is ordered from the user's near field (small bottom-left
+        // y) forward, per its public coordinate contract.
+        XCTAssertEqual(points[0].y, 0.0, accuracy: 0.02)
         XCTAssertEqual(points.last?.x ?? 0, 0.50, accuracy: 0.02)
-        XCTAssertEqual(points.last?.y ?? 0, 0.0, accuracy: 0.02)
+        XCTAssertEqual(points.last?.y ?? 0, 0.30, accuracy: 0.02)
     }
 
     func testUFLDFallsBackToTwinLiteWhenNoPolylines() {
@@ -1462,6 +1464,160 @@ final class VQASeeTests: XCTestCase {
         XCTAssertTrue(RemoteVQASessionPolicy.shouldSendFrameToBackend(remoteEnabled: true, streamingActive: true))
         XCTAssertFalse(RemoteVQASessionPolicy.shouldSendFrameToBackend(remoteEnabled: true, streamingActive: false))
         XCTAssertTrue(RemoteVQASessionPolicy.shouldAllowVoiceQuestion(remoteEnabled: true))
+    }
+
+    // MARK: - Temporal fusion (design 2026-09-28 A+B+C)
+
+    func testStaleResultPolicySeparatesRiskOnlyFromGeometry() {
+        XCTAssertEqual(
+            StaleResultPolicy.disposition(
+                resultAgeMs: 200,
+                maxUsableResultAgeMs: 500,
+                hasPriorityRisk: false
+            ),
+            .publishFullGeometry
+        )
+        XCTAssertEqual(
+            StaleResultPolicy.disposition(
+                resultAgeMs: 600,
+                maxUsableResultAgeMs: 500,
+                hasPriorityRisk: false
+            ),
+            .discard
+        )
+        XCTAssertEqual(
+            StaleResultPolicy.disposition(
+                resultAgeMs: 600,
+                maxUsableResultAgeMs: 500,
+                hasPriorityRisk: true
+            ),
+            .publishRiskOnly
+        )
+    }
+
+    func testRiskLatchUpgradesImmediatelyAndHoldsDowngrade() {
+        var latch = RiskLatch()
+        XCTAssertTrue(latch.observe(measured: .high, at: 1.0))
+        XCTAssertEqual(latch.level, .high)
+        // Immediate lower observation must not drop yet.
+        XCTAssertFalse(latch.observe(measured: .low, at: 1.1))
+        XCTAssertEqual(latch.level, .high)
+        XCTAssertTrue(latch.observe(measured: .low, at: 1.7)) // ≥500ms hold
+        XCTAssertEqual(latch.level, .low)
+    }
+
+    func testObjectFusionRequiresTwoHitsUnlessPriorityRisk() {
+        let fusion = LocalObjectTemporalFusion()
+        let box = CGRect(x: 0.4, y: 0.2, width: 0.2, height: 0.3)
+        let sign = makeVisionSignal(
+            objects: [
+                LocalPerceptionObject(kind: .sign, direction: .center, confidence: 0.9, normalizedBoundingBox: box)
+            ]
+        )
+        let afterOne = fusion.fuse(sign, capturedAt: 1.0, resultAgeMs: 50)
+        XCTAssertTrue(afterOne.signal.perception.objects.isEmpty, "ordinary object stays tentative on first hit")
+
+        let afterTwo = fusion.fuse(sign, capturedAt: 1.2, resultAgeMs: 50)
+        XCTAssertEqual(afterTwo.signal.perception.objects.count, 1)
+
+        fusion.reset()
+        let person = makeVisionSignal(
+            objects: [
+                LocalPerceptionObject(kind: .person, direction: .center, confidence: 0.8, normalizedBoundingBox: box)
+            ]
+        )
+        let firstRisk = fusion.fuse(person, capturedAt: 2.0, resultAgeMs: 50)
+        XCTAssertEqual(firstRisk.signal.perception.objects.count, 1, "priority risk bypasses confirmation")
+    }
+
+    func testObjectFusionExpiresPredictedBoxAfterAgeWindow() {
+        let fusion = LocalObjectTemporalFusion()
+        let box = CGRect(x: 0.3, y: 0.2, width: 0.25, height: 0.4)
+        let person = makeVisionSignal(
+            objects: [
+                LocalPerceptionObject(kind: .person, direction: .center, confidence: 0.9, normalizedBoundingBox: box)
+            ]
+        )
+        _ = fusion.fuse(person, capturedAt: 1.0, resultAgeMs: 40)
+        let empty = makeVisionSignal(objects: [])
+        let predicted = fusion.fuse(empty, capturedAt: 1.15, resultAgeMs: 40)
+        XCTAssertEqual(predicted.signal.perception.objects.count, 1, "one miss within 250ms keeps prediction")
+        let expired = fusion.fuse(empty, capturedAt: 1.40, resultAgeMs: 40)
+        XCTAssertTrue(expired.signal.perception.objects.isEmpty, "prediction must expire after age window")
+    }
+
+    func testStalePriorityRiskStripsRoadGeometry() {
+        let fusion = LocalObjectTemporalFusion()
+        let person = LocalPerceptionObject(
+            kind: .person,
+            direction: .center,
+            confidence: 0.9,
+            normalizedBoundingBox: CGRect(x: 0.4, y: 0.2, width: 0.2, height: 0.4)
+        )
+        var perception = LocalPerceptionSignal.empty
+        perception.objects = [person]
+        perception.lanePolylines = [LanePolyline(laneIndex: 1, source: .rowAnchor, points: [CGPoint(x: 0.2, y: 0.3), CGPoint(x: 0.3, y: 0.9)])]
+        perception.guidancePath = GuidancePath(
+            status: .ok,
+            coverage: 0.6,
+            lines: [GuidanceLine(points: [
+                GuidancePoint(x: 0.5, y: 0.1, halfWidth: 0.2),
+                GuidancePoint(x: 0.5, y: 0.5, halfWidth: 0.15),
+                GuidancePoint(x: 0.5, y: 0.8, halfWidth: 0.1),
+            ])]
+        )
+        perception.traversableGrid = TraversableGrid(cols: 1, rows: 1, cells: [1])
+        let result = fusion.fuse(makeVisionSignal(perception: perception), capturedAt: 1.0, resultAgeMs: 700)
+        XCTAssertEqual(result.disposition, .publishRiskOnly)
+        XCTAssertEqual(result.signal.perception.objects.count, 1)
+        XCTAssertTrue(result.signal.perception.lanePolylines.isEmpty)
+        XCTAssertNil(result.signal.perception.guidancePath)
+        XCTAssertNil(result.signal.perception.traversableGrid)
+    }
+
+    func testLaneAndGuidanceUseFreshSmallDeltaSmoothingOnly() {
+        let fusion = LocalObjectTemporalFusion()
+        let first = perceptionWithGeometry(laneX: 0.40, pathX: 0.50)
+        let second = perceptionWithGeometry(laneX: 0.42, pathX: 0.52)
+        _ = fusion.fuse(makeVisionSignal(perception: first), capturedAt: 1.0, resultAgeMs: 40)
+        let smooth = fusion.fuse(makeVisionSignal(perception: second), capturedAt: 1.2, resultAgeMs: 40).signal.perception
+        XCTAssertEqual(smooth.lanePolylines[0].points[0].x, 0.412, accuracy: 0.001)
+        XCTAssertEqual(smooth.guidancePath?.primary?.points[0].x ?? -1, 0.512, accuracy: 0.001)
+
+        let jump = perceptionWithGeometry(laneX: 0.75, pathX: 0.82)
+        let unsmoothed = fusion.fuse(makeVisionSignal(perception: jump), capturedAt: 1.4, resultAgeMs: 40).signal.perception
+        XCTAssertEqual(unsmoothed.lanePolylines[0].points[0].x, 0.75, accuracy: 0.001)
+        XCTAssertEqual(unsmoothed.guidancePath?.primary?.points[0].x ?? -1, 0.82, accuracy: 0.001)
+    }
+
+    private func perceptionWithGeometry(laneX: CGFloat, pathX: Double) -> LocalPerceptionSignal {
+        var perception = LocalPerceptionSignal.empty
+        perception.lanePolylines = [LanePolyline(laneIndex: 1, source: .rowAnchor, points: [
+            CGPoint(x: laneX, y: 0.35), CGPoint(x: laneX + 0.05, y: 0.9),
+        ])]
+        perception.guidancePath = GuidancePath(status: .ok, coverage: 0.6, lines: [GuidanceLine(points: [
+            GuidancePoint(x: pathX, y: 0.1, halfWidth: 0.2),
+            GuidancePoint(x: pathX, y: 0.5, halfWidth: 0.15),
+            GuidancePoint(x: pathX, y: 0.8, halfWidth: 0.1),
+        ])])
+        return perception
+    }
+
+    private func makeVisionSignal(objects: [LocalPerceptionObject] = [], perception: LocalPerceptionSignal? = nil) -> LocalVisionSignal {
+        var perception = perception ?? .empty
+        if perception.objects.isEmpty {
+            perception.objects = objects
+        }
+        return LocalVisionSignal(
+            hasHuman: perception.objects.contains { $0.kind == .person },
+            humanDirection: .center,
+            brightness: 0.5,
+            sceneChangeScore: 0.1,
+            isTooDark: false,
+            isLikelyCovered: false,
+            analyzerFailed: false,
+            perception: perception
+        )
     }
 
 }

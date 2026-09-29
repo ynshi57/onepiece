@@ -20,6 +20,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         let jpegData: Data
         let encodeMs: Double
         let localVisionSignal: LocalVisionSignal
+        let delivery: LocalPerceptionDelivery
         let queuedAt: CFTimeInterval
     }
 
@@ -75,6 +76,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     /// localized `riskText` so the UI can pick a semantic color without parsing
     /// display strings (which breaks once the text is localized).
     @Published var currentRiskLevel: String = "low"
+    /// Latched on-device risk. It is composed with (never silently overwritten
+    /// by) the slower remote result while a local risk is still being confirmed.
+    @Published private(set) var localRiskLevel: RiskLevel = .low
     @Published var actionText: String = String(localized: "点「开始观察」即可本地看路。需要文字解释时，在设置打开远程风险解释。")
     @Published var debugText: String = "waiting"
     @Published var latencyText: String = "--"
@@ -83,7 +87,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     @Published var isProcessing = false
     @Published var nearbyServerText: String = String(localized: "本地看路，无需 Mac")
     /// When false (default), 「开始观察」 is on-device only. Mac/Qwen connect is Settings opt-in.
-    @Published var isRemoteVQAEnabled: Bool = RemoteVQASessionPolicy.isEnabled() {
+    @Published var isRemoteVQAEnabled: Bool = ProcessInfo.processInfo.arguments.contains("-ui-testing")
+        ? false
+        : RemoteVQASessionPolicy.isEnabled() {
         didSet {
             UserDefaults.standard.set(isRemoteVQAEnabled, forKey: Self.remoteVQAEnabledDefaultsKey)
             syncCaptureEncodingMode()
@@ -121,6 +127,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     @Published var voiceStatusText = String(localized: "语音待命")
     @Published var speechInputLevel: Double = 0
     @Published var localPerceptionSignal: LocalPerceptionSignal = .empty
+    /// Current visual-result age; diagnostics use the exact value, while the
+    /// main UI remains intentionally quiet about engineering timings.
+    @Published private(set) var localPerceptionResultAgeMs: Double?
     @Published var isDiagnosticRecordingEnabled = false {
         didSet {
             if isDiagnosticRecordingEnabled {
@@ -149,9 +158,23 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private let frameCaptureProxy = FrameCaptureProxy()
     private let arFrameCaptureProxy = ARFrameCaptureProxy()
     private let diagnosticRecorder = DiagnosticCaptureRecorder()
+    private let temporalFusion = LocalObjectTemporalFusion()
+    private var backendRiskLevel: RiskLevel = .low
     private var isSessionConfigured = false
     private var latestGPS: (lat: Double, lon: Double)?
     private var isStreamingActive = false
+
+    /// Keep the display awake only while observation is active (Maps-style).
+    /// Without this, iOS dims then auto-locks after the user's Auto-Lock interval.
+    private func setStreamingActive(_ active: Bool) {
+        isStreamingActive = active
+        refreshScreenWakePolicy(isForeground: true)
+    }
+
+    /// Call from scene lifecycle so backgrounding releases the idle-timer hold.
+    func refreshScreenWakePolicy(isForeground: Bool) {
+        UIApplication.shared.isIdleTimerDisabled = isStreamingActive && isForeground
+    }
     private var isRequestInFlight = false
     private var pendingSingleShotOnly = false
     private var pendingLatestFrame: PendingLatestFrame?
@@ -193,6 +216,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private let inFlightTimeoutSeconds: UInt64 = 50
 
     init(transport: VideoTransporting = WebSocketSignalingTransport()) {
+        let isUITesting = ProcessInfo.processInfo.arguments.contains("-ui-testing")
         self.transport = transport
         let savedServerURL = UserDefaults.standard.string(forKey: Self.serverURLDefaultsKey)
         self.serverURLInput = savedServerURL ?? Self.defaultServerURL
@@ -233,10 +257,12 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         } else {
             nearbyServerText = String(localized: "本地看路，无需 Mac")
         }
-        configureSpeechAudioSession()
+        if !isUITesting {
+            configureSpeechAudioSession()
+        }
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
-        frameCaptureProxy.onFrame = { [weak self] jpegData, encodeMs, localVisionSignal in
+        frameCaptureProxy.onFrame = { [weak self] jpegData, encodeMs, localVisionSignal, delivery in
             guard let self else {
                 return
             }
@@ -244,12 +270,13 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                 await self.sendFrame(
                     jpegData: jpegData,
                     encodeMs: encodeMs,
-                    localVisionSignal: localVisionSignal
+                    localVisionSignal: localVisionSignal,
+                    delivery: delivery
                 )
             }
         }
         arSession.delegate = arFrameCaptureProxy
-        arFrameCaptureProxy.onFrame = { [weak self] jpegData, encodeMs, localVisionSignal in
+        arFrameCaptureProxy.onFrame = { [weak self] jpegData, encodeMs, localVisionSignal, delivery in
             guard let self else {
                 return
             }
@@ -257,13 +284,18 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                 await self.sendFrame(
                     jpegData: jpegData,
                     encodeMs: encodeMs,
-                    localVisionSignal: localVisionSignal
+                    localVisionSignal: localVisionSignal,
+                    delivery: delivery
                 )
             }
         }
         syncCaptureEncodingMode()
-        configureCameraSession()
-        configureSpeechController()
+        // UI tests validate the SwiftUI hierarchy, not camera/mic hardware. Do
+        // not wait on simulator privacy services before the first screenshot.
+        if !isUITesting {
+            configureCameraSession()
+            configureSpeechController()
+        }
     }
 
     private func syncCaptureEncodingMode() {
@@ -651,7 +683,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         do {
             try await connectRemoteTransport(normalizedURL: normalizedURL)
             locationManager.requestLocation()
-            isStreamingActive = true
+            setStreamingActive(true)
             streamStatus = .streaming
             if let host = normalizedURL.host {
                 nearbyServerText = String(localized: "已连接 Mac 后端：\(host)")
@@ -676,7 +708,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         prepareStreamingSession(remote: false)
         startVisualCaptureIfNeeded()
         locationManager.requestLocation()
-        isStreamingActive = true
+        setStreamingActive(true)
         streamStatus = .streaming
         nearbyServerText = String(localized: "本地看路中")
         if isVoiceEnabled {
@@ -711,7 +743,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             latencyText = "--"
             isProcessing = false
         }
-        currentRiskLevel = "low"
+        backendRiskLevel = .low
+        localRiskLevel = .low
+        currentRiskLevel = RiskLevel.low.rawValue
     }
 
     private func connectRemoteTransport(normalizedURL: URL) async throws {
@@ -951,7 +985,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
 
     func stopStreaming() async {
         clearInFlightWatchdog()
-        isStreamingActive = false
+        setStreamingActive(false)
         isRequestInFlight = false
         isProcessing = false
         pendingSingleShotOnly = false
@@ -960,6 +994,11 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         currentVoiceIntent = nil
         clearQuestionAfterNextResult = false
         localPerceptionSignal = .empty
+        localPerceptionResultAgeMs = nil
+        temporalFusion.reset()
+        localRiskLevel = .low
+        backendRiskLevel = .low
+        currentRiskLevel = RiskLevel.low.rawValue
         if isDiagnosticRecordingEnabled {
             isDiagnosticRecordingEnabled = false
         }
@@ -1040,7 +1079,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             guard isStreamingActive, isRemoteVQAEnabled else {
                 return
             }
-            isStreamingActive = false
+            setStreamingActive(false)
             await startStreaming()
         }
     }
@@ -1172,7 +1211,8 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             summaryText = hasOCROverride ? ReadTextPresentation.summary(for: ocrOverride) : result.summary
             spatialText = hasOCROverride ? String(localized: "已从画面中读取文字。") : result.spatialDescription
             riskText = hasOCROverride ? String(localized: "安全：正在读文字") : "\(riskTitle(for: result.riskLevel))：\(result.riskMessage)"
-            currentRiskLevel = result.riskLevel
+            backendRiskLevel = RiskLevel(rawValue: result.riskLevel.lowercased()) ?? .low
+            updateDisplayedRiskLevel()
             actionText = hasOCROverride ? ReadTextPresentation.action(for: ocrOverride) : result.suggestedAction
             debugText = "scene: \(result.scene), objects: \(result.objects.joined(separator: ",")), desc: \(result.description)"
             if let sentAt = inFlightSentAt {
@@ -1216,7 +1256,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                 clearQuestionAfterNextResult = false
             }
             if pendingSingleShotOnly {
-                isStreamingActive = false
+                setStreamingActive(false)
                 pendingSingleShotOnly = false
             }
             currentVoiceIntent = nil
@@ -1239,11 +1279,31 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private func sendFrame(
         jpegData: Data,
         encodeMs: Double,
-        localVisionSignal: LocalVisionSignal
+        localVisionSignal rawLocalVisionSignal: LocalVisionSignal,
+        delivery: LocalPerceptionDelivery
     ) async {
         guard isStreamingActive else {
             return
         }
+        let fusion = temporalFusion.fuse(
+            rawLocalVisionSignal,
+            capturedAt: delivery.capturedAt,
+            resultAgeMs: delivery.resultAgeMs
+        )
+        localPerceptionResultAgeMs = delivery.resultAgeMs
+        // A stale normal result cannot overwrite anything. A stale priority risk
+        // reaches the overlay as risk-only, with road/lane/path data stripped.
+        if fusion.disposition == .discard {
+            debugText = String(
+                format: "stale local result suppressed age=%.0fms replaced=%d",
+                delivery.resultAgeMs,
+                delivery.replacedFrameCount
+            )
+            return
+        }
+        localRiskLevel = fusion.riskLevel
+        updateDisplayedRiskLevel()
+        let localVisionSignal = fusion.signal
         localPerceptionSignal = localVisionSignal.perception
         let currentQuestion = questionInput
         let observationRoute = ObservationRoute.resolve(
@@ -1270,6 +1330,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                 jpegData: jpegData,
                 encodeMs: encodeMs,
                 localVisionSignal: localVisionSignal,
+                delivery: delivery,
                 queuedAt: CACurrentMediaTime()
             )
             latestFrameReplacementCount += 1
@@ -1403,7 +1464,8 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             await self.sendFrame(
                 jpegData: pending.jpegData,
                 encodeMs: pending.encodeMs,
-                localVisionSignal: pending.localVisionSignal
+                localVisionSignal: pending.localVisionSignal,
+                delivery: pending.delivery
             )
         }
     }
@@ -1514,7 +1576,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         debugText = "timeout waiting for \(frameID)"
         errorText = String(localized: "等待结果超时（\(inFlightTimeoutSeconds)s）：可能是模型太慢或连接中断。可重试或切换到更快的 3B 模型。")
         if pendingSingleShotOnly {
-            isStreamingActive = false
+            setStreamingActive(false)
             pendingSingleShotOnly = false
         }
         currentVoiceIntent = nil
@@ -1530,6 +1592,15 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         default:
             return String(localized: "安全")
         }
+    }
+
+    private func updateDisplayedRiskLevel() {
+        let displayed = max(localRiskLevel, backendRiskLevel)
+        currentRiskLevel = displayed.rawValue
+        guard isRemoteVQAEnabled, localRiskLevel > backendRiskLevel else { return }
+        // Keep the remote answer card semantically honest while its slower
+        // interpretation catches up with a locally latched priority risk.
+        riskText = String(localized: "注意：本地发现前方风险，正在确认。")
     }
 
     private func notifyForRisk(level: String) {

@@ -6,6 +6,14 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		B00100000000000000000001 /* VQASeeTwinLiteNet.mlmodelc in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000011 /* VQASeeTwinLiteNet.mlmodelc */; };
+		B00100000000000000000002 /* VQASeeLaneSegmentation.mlmodelc in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000012 /* VQASeeLaneSegmentation.mlmodelc */; };
+		B00100000000000000000003 /* VQASeeTraversabilitySegmentation.mlmodelc in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000013 /* VQASeeTraversabilitySegmentation.mlmodelc */; };
+		B00100000000000000000004 /* VQASeeTraversabilitySeg5.mlmodelc in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000014 /* VQASeeTraversabilitySeg5.mlmodelc */; };
+		B00100000000000000000005 /* YOLO11nObject.mlmodelc in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000015 /* YOLO11nObject.mlmodelc */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		4210DF752FCFFECB00080AA6 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,17 +35,16 @@
 		4210DF672FCFFEC900080AA6 /* VQASee.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VQASee.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4210DF742FCFFECB00080AA6 /* VQASeeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VQASeeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4210DF7E2FCFFECB00080AA6 /* VQASeeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VQASeeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B00100000000000000000011 /* VQASeeTwinLiteNet.mlmodelc */ = {isa = PBXFileReference; lastKnownFileType = folder; path = VQASeeTwinLiteNet.mlmodelc; sourceTree = "<group>"; };
+		B00100000000000000000012 /* VQASeeLaneSegmentation.mlmodelc */ = {isa = PBXFileReference; lastKnownFileType = folder; path = VQASeeLaneSegmentation.mlmodelc; sourceTree = "<group>"; };
+		B00100000000000000000013 /* VQASeeTraversabilitySegmentation.mlmodelc */ = {isa = PBXFileReference; lastKnownFileType = folder; path = VQASeeTraversabilitySegmentation.mlmodelc; sourceTree = "<group>"; };
+		B00100000000000000000014 /* VQASeeTraversabilitySeg5.mlmodelc */ = {isa = PBXFileReference; lastKnownFileType = folder; path = VQASeeTraversabilitySeg5.mlmodelc; sourceTree = "<group>"; };
+		B00100000000000000000015 /* YOLO11nObject.mlmodelc */ = {isa = PBXFileReference; lastKnownFileType = folder; path = YOLO11nObject.mlmodelc; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		4210DF692FCFFEC900080AA6 /* VQASee */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			explicitFileTypes = {
-				VQASeeLaneSegmentation.mlmodelc = wrapper.mlmodelc;
-				VQASeeTraversabilitySeg5.mlmodelc = wrapper.mlmodelc;
-				VQASeeTwinLiteNet.mlmodelc = wrapper.mlmodelc;
-				YOLO11nObject.mlmodelc = wrapper.mlmodelc;
-			};
 			path = VQASee;
 			sourceTree = "<group>";
 		};
@@ -82,6 +89,7 @@
 			isa = PBXGroup;
 			children = (
 				4210DF692FCFFEC900080AA6 /* VQASee */,
+				B00100000000000000000010 /* ModelResources */,
 				4210DF772FCFFECB00080AA6 /* VQASeeTests */,
 				4210DF812FCFFECB00080AA6 /* VQASeeUITests */,
 				4210DF682FCFFEC900080AA6 /* Products */,
@@ -96,6 +104,18 @@
 				4210DF7E2FCFFECB00080AA6 /* VQASeeUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B00100000000000000000010 /* ModelResources */ = {
+			isa = PBXGroup;
+			children = (
+				B00100000000000000000011 /* VQASeeTwinLiteNet.mlmodelc */,
+				B00100000000000000000012 /* VQASeeLaneSegmentation.mlmodelc */,
+				B00100000000000000000013 /* VQASeeTraversabilitySegmentation.mlmodelc */,
+				B00100000000000000000014 /* VQASeeTraversabilitySeg5.mlmodelc */,
+				B00100000000000000000015 /* YOLO11nObject.mlmodelc */,
+			);
+			path = ModelResources;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -219,6 +239,11 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B00100000000000000000001 /* VQASeeTwinLiteNet.mlmodelc in Resources */,
+				B00100000000000000000002 /* VQASeeLaneSegmentation.mlmodelc in Resources */,
+				B00100000000000000000003 /* VQASeeTraversabilitySegmentation.mlmodelc in Resources */,
+				B00100000000000000000004 /* VQASeeTraversabilitySeg5.mlmodelc in Resources */,
+				B00100000000000000000005 /* YOLO11nObject.mlmodelc in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

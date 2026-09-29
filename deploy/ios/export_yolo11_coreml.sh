@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
-APP_MODEL_DIR="${ROOT_DIR}/ios-vqa-app/VQASee/VQASee"
+APP_MODEL_DIR="${ROOT_DIR}/ios-vqa-app/VQASee/ModelResources"
 WORK_DIR="${TMPDIR:-/tmp}/vqasee-yolo-export"
 COMPILED_DIR="${TMPDIR:-/tmp}/vqasee-yolo-compiled"
 COREML_COMPILER="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/coremlcompiler"
