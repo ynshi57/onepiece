@@ -76,16 +76,66 @@ enum PixelBufferCopy {
     }
 }
 
-/// Time provenance for a local result. `resultAgeMs` measures the picture the
-/// user is seeing, not merely the Core ML wall-clock duration.
+/// Monotonic callback-to-completion provenance. `capturedAt` is callback entry,
+/// not sensor exposure time; resultAgeMs does not include the later UI publish.
 struct LocalPerceptionDelivery: Sendable, Equatable {
     let capturedAt: CFTimeInterval
     let completedAt: CFTimeInterval
     let resultAgeMs: Double
     let replacedFrameCount: Int
+    var frameID: String = UUID().uuidString
+    var processingStartedAt: Double? = nil
+    var timings = PerceptionFrameTimings()
+    var roadStatus: String = "unknown"
+    var roadReason: String? = nil
+    var diagnosticJPEG: Data? = nil
+    var diagnosticEncodeMs: Double = 0
+    var configVersion: Int? = nil
+    var imageWidth: Int? = nil
+    var imageHeight: Int? = nil
+}
+
+/// Explicitly enabled, bounded image sampling; independent of remote uploads.
+private final class FieldDiagnosticImageSampler {
+    private let lock = NSLock()
+    private var enabled = false
+    private var lastAttempt: Double = -.infinity
+    private var generation: UInt64 = 0
+
+    func setEnabled(_ value: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard enabled != value else { return }
+        enabled = value
+        generation &+= 1
+        lastAttempt = -.infinity
+    }
+
+    func encode(_ pixelBuffer: CVPixelBuffer) -> (Data?, Double) {
+        lock.lock()
+        let now = CACurrentMediaTime()
+        guard enabled, now - lastAttempt >= 0.5 else {
+            lock.unlock()
+            return (nil, 0)
+        }
+        lastAttempt = now
+        let startedGeneration = generation
+        lock.unlock()
+        let jpeg = FrameJPEGEncoder.encode(pixelBuffer: pixelBuffer, maxDimension: 640, quality: 0.55, maxBytes: 160_000)
+        let elapsed = (CACurrentMediaTime() - now) * 1000
+        lock.lock()
+        let stillEnabled = enabled && generation == startedGeneration
+        lock.unlock()
+        return (stillEnabled ? jpeg : nil, elapsed)
+    }
 }
 
 final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    private let diagnosticImages = FieldDiagnosticImageSampler()
+
+    func setDiagnosticCaptureEnabled(_ enabled: Bool) {
+        diagnosticImages.setEnabled(enabled)
+    }
     /// Delivers optional JPEG (empty when remote upload is off), encode ms, and local vision.
     var onFrame: (@Sendable (Data, Double, LocalVisionSignal, LocalPerceptionDelivery) -> Void)?
     /// When false (local-only product path), skip JPEG encode — overlays do not need it.
@@ -183,6 +233,7 @@ final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         let profile = encodingProfile
         perceptionQueue.async { [weak self] in
             guard let self else { return }
+            let processingStartedAt = CACurrentMediaTime()
             let localVisionSignal = self.localVisionAnalyzer.analyze(pixelBuffer: pixelBuffer)
             var jpegData = Data()
             var encodeMs = 0.0
@@ -193,9 +244,18 @@ final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDel
                     encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0
                 }
             }
+            let (diagnosticJPEG, diagnosticEncodeMs) = self.diagnosticImages.encode(pixelBuffer)
             let completedAt = CACurrentMediaTime()
             if self.isCurrentGeneration(generation) {
-                self.onFrame?(jpegData, encodeMs, localVisionSignal, LocalPerceptionDelivery(capturedAt: capturedAt, completedAt: completedAt, resultAgeMs: (completedAt - capturedAt) * 1000.0, replacedFrameCount: replacementCount))
+                self.onFrame?(jpegData, encodeMs, localVisionSignal, LocalPerceptionDelivery(
+                    capturedAt: capturedAt, completedAt: completedAt,
+                    resultAgeMs: (completedAt - capturedAt) * 1000.0, replacedFrameCount: replacementCount,
+                    processingStartedAt: processingStartedAt, timings: self.localVisionAnalyzer.lastTimings,
+                    roadStatus: self.localVisionAnalyzer.lastRoadStatus, roadReason: self.localVisionAnalyzer.lastRoadReason,
+                    diagnosticJPEG: diagnosticJPEG, diagnosticEncodeMs: diagnosticEncodeMs,
+                    configVersion: self.localVisionAnalyzer.diagnosticConfigVersion,
+                    imageWidth: CVPixelBufferGetWidth(pixelBuffer), imageHeight: CVPixelBufferGetHeight(pixelBuffer)
+                ))
             }
             self.finishProcessing(generation: generation)
         }
@@ -224,6 +284,11 @@ final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDel
 
 
 final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
+    private let diagnosticImages = FieldDiagnosticImageSampler()
+
+    func setDiagnosticCaptureEnabled(_ enabled: Bool) {
+        diagnosticImages.setEnabled(enabled)
+    }
     var onFrame: (@Sendable (Data, Double, LocalVisionSignal, LocalPerceptionDelivery) -> Void)?
     var encodesJPEGForRemote: Bool = false
 
@@ -325,6 +390,7 @@ final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
         let profile = encodingProfile
         perceptionQueue.async { [weak self] in
             guard let self else { return }
+            let processingStartedAt = CACurrentMediaTime()
             let localVisionSignal = self.localVisionAnalyzer.analyze(
                 pixelBuffer: pixelBuffer,
                 depthCues: depthCues,
@@ -344,9 +410,18 @@ final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
                     encodeMs = (CACurrentMediaTime() - encodeStart) * 1000.0
                 }
             }
+            let (diagnosticJPEG, diagnosticEncodeMs) = self.diagnosticImages.encode(pixelBuffer)
             let completedAt = CACurrentMediaTime()
             if self.isCurrentGeneration(generation) {
-                self.onFrame?(jpegData, encodeMs, localVisionSignal, LocalPerceptionDelivery(capturedAt: capturedAt, completedAt: completedAt, resultAgeMs: (completedAt - capturedAt) * 1000.0, replacedFrameCount: replacementCount))
+                self.onFrame?(jpegData, encodeMs, localVisionSignal, LocalPerceptionDelivery(
+                    capturedAt: capturedAt, completedAt: completedAt,
+                    resultAgeMs: (completedAt - capturedAt) * 1000.0, replacedFrameCount: replacementCount,
+                    processingStartedAt: processingStartedAt, timings: self.localVisionAnalyzer.lastTimings,
+                    roadStatus: self.localVisionAnalyzer.lastRoadStatus, roadReason: self.localVisionAnalyzer.lastRoadReason,
+                    diagnosticJPEG: diagnosticJPEG, diagnosticEncodeMs: diagnosticEncodeMs,
+                    configVersion: self.localVisionAnalyzer.diagnosticConfigVersion,
+                    imageWidth: CVPixelBufferGetWidth(pixelBuffer), imageHeight: CVPixelBufferGetHeight(pixelBuffer)
+                ))
             }
             self.finishProcessing(generation: generation)
         }

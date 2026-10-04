@@ -130,6 +130,12 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     /// Current visual-result age; diagnostics use the exact value, while the
     /// main UI remains intentionally quiet about engineering timings.
     @Published private(set) var localPerceptionResultAgeMs: Double?
+    let fieldDiagnostics = FieldDiagnosticStore()
+    @Published private(set) var localDiagnosticSummary = "等待本地感知帧"
+    private var diagnosticSubscriptions = Set<AnyCancellable>()
+    private var lastDiagnosticFrameAt: CFTimeInterval?
+    private var lastStallEventAt: CFTimeInterval = 0
+    private var latestDiagnosticLocation: CLLocation?
     @Published var isDiagnosticRecordingEnabled = false {
         didSet {
             if isDiagnosticRecordingEnabled {
@@ -153,6 +159,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private var speechPeakLevel: Double = 0
     private let nearbyServerBrowser = NearbyServerBrowser()
     private let locationManager = CLLocationManager()
+    private var locationRetryTask: Task<Void, Never>?
+    private var locationRetryCount = 0
+    private let maxLocationRetryCount = 1
     private let videoOutput = AVCaptureVideoDataOutput()
     private let videoOutputQueue = DispatchQueue(label: "vqa.video.output.queue")
     private let frameCaptureProxy = FrameCaptureProxy()
@@ -290,6 +299,15 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             }
         }
         syncCaptureEncodingMode()
+        fieldDiagnostics.$captureImagesEnabled
+            .sink { [weak self] enabled in
+                self?.frameCaptureProxy.setDiagnosticCaptureEnabled(enabled)
+                self?.arFrameCaptureProxy.setDiagnosticCaptureEnabled(enabled)
+            }
+            .store(in: &diagnosticSubscriptions)
+        Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+            .sink { [weak self] _ in self?.checkDiagnosticStall() }
+            .store(in: &diagnosticSubscriptions)
         // UI tests validate the SwiftUI hierarchy, not camera/mic hardware. Do
         // not wait on simulator privacy services before the first screenshot.
         if !isUITesting {
@@ -682,7 +700,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
 
         do {
             try await connectRemoteTransport(normalizedURL: normalizedURL)
-            locationManager.requestLocation()
+            requestCurrentLocation()
             setStreamingActive(true)
             streamStatus = .streaming
             if let host = normalizedURL.host {
@@ -707,7 +725,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         showServerPicker = false
         prepareStreamingSession(remote: false)
         startVisualCaptureIfNeeded()
-        locationManager.requestLocation()
+        requestCurrentLocation()
         setStreamingActive(true)
         streamStatus = .streaming
         nearbyServerText = String(localized: "本地看路中")
@@ -720,6 +738,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         // Local sessions skip `.preparing` ("连接中") — there is no Mac handshake.
         streamStatus = remote ? .preparing : .streaming
         errorText = nil
+        locationRetryTask?.cancel()
+        locationRetryTask = nil
+        locationRetryCount = 0
         frameCaptureProxy.resetGateState()
         arFrameCaptureProxy.resetGateState()
         frameCaptureProxy.setEncodingProfile(ObservationRoute.riskObserve.encodingProfile)
@@ -984,6 +1005,8 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     func stopStreaming() async {
+        fieldDiagnostics.stop()
+        lastDiagnosticFrameAt = nil
         clearInFlightWatchdog()
         setStreamingActive(false)
         isRequestInFlight = false
@@ -1089,7 +1112,11 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             return
         }
         locationText = LocationTextFormatter.format(lat: location.coordinate.latitude, lon: location.coordinate.longitude)
+        locationRetryCount = 0
+        locationRetryTask?.cancel()
+        locationRetryTask = nil
         latestGPS = (lat: location.coordinate.latitude, lon: location.coordinate.longitude)
+        latestDiagnosticLocation = location
         refreshPlaceLabelIfNeeded(for: location)
         guard isRemoteVQAEnabled else {
             return
@@ -1139,7 +1166,27 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        errorText = String(localized: "定位更新失败：\(error.localizedDescription)")
+        switch LocationFailurePolicy.disposition(for: error) {
+        case .retrySilently where locationRetryCount < maxLocationRetryCount:
+            locationRetryCount += 1
+            debugText = String(localized: "定位暂时不可用，稍后会再试。")
+            locationRetryTask?.cancel()
+            locationRetryTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                self?.requestCurrentLocation()
+            }
+        case .permissionUnavailable:
+            locationText = String(localized: "定位未开启")
+            debugText = String(localized: "定位未开启，本地看路仍可用。")
+        case .retrySilently, .unavailable:
+            locationText = String(localized: "位置暂不可用")
+            debugText = String(localized: "定位暂不可用，本地看路仍可用。")
+        }
+    }
+
+    private func requestCurrentLocation() {
+        locationManager.requestLocation()
     }
 
     private func configureCameraSession() {
@@ -1276,6 +1323,71 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         }
     }
 
+    private func recordFieldDiagnostic(raw: LocalVisionSignal, fusion: TemporalFusionResult, delivery: LocalPerceptionDelivery) {
+        let now = CACurrentMediaTime()
+        lastDiagnosticFrameAt = now
+        let publishAge = max(0, (now - delivery.capturedAt) * 1000)
+        let disposition: String
+        switch fusion.disposition {
+        case .publishFullGeometry: disposition = "publish_full_geometry"
+        case .publishRiskOnly: disposition = "publish_risk_only"
+        case .discard: disposition = "discard_keep_previous_overlay"
+        }
+        func milliseconds(_ value: Double?) -> String {
+            value.map { String(format: "%.0f ms", $0) } ?? "未执行/无数据"
+        }
+        localDiagnosticSummary = "道路：\(delivery.roadStatus)\nYOLO：\(milliseconds(delivery.timings.yoloMs)) · 路面：\(milliseconds(delivery.timings.segmentationMs))\n分析：\(milliseconds(delivery.timings.totalMs)) · 回调到发布决策：\(Int(publishAge)) ms\n发布：\(disposition) · 等待帧替换：\(delivery.replacedFrameCount)"
+        guard fieldDiagnostics.isRecording else { return }
+        var locationMetadata: [String: Any]?
+        if fieldDiagnostics.captureLocationEnabled, let location = latestDiagnosticLocation {
+            var values: [String: Any] = [
+                "latitude": location.coordinate.latitude,
+                "longitude": location.coordinate.longitude,
+                "sampled_at": location.timestamp.timeIntervalSince1970,
+                "age_seconds": max(0, Date().timeIntervalSince(location.timestamp)),
+                "horizontal_accuracy_m": location.horizontalAccuracy,
+                "valid": location.horizontalAccuracy >= 0,
+            ]
+            if location.speed >= 0 { values["speed_mps"] = location.speed }
+            locationMetadata = values
+        }
+        var issue: String?
+        if raw.analyzerFailed { issue = "analyzer_failed" }
+        else if delivery.roadStatus != "ok" { issue = "road_\(delivery.roadStatus)" }
+        else if fusion.disposition != .publishFullGeometry { issue = disposition }
+        else if raw.perception.lanePolylines.isEmpty { issue = "no_lane_geometry" }
+        if let metadata = FieldDiagnosticTelemetry.metadata(
+            raw: raw, fused: fusion.signal, delivery: delivery,
+            disposition: disposition, publishedAt: now, location: locationMetadata
+        ) {
+            fieldDiagnostics.ingest(metadata: metadata, jpeg: delivery.diagnosticJPEG, issue: issue)
+        } else {
+            fieldDiagnostics.stop()
+            localDiagnosticSummary += "\n诊断序列化失败，记录已停止"
+        }
+    }
+
+    private func checkDiagnosticStall() {
+        guard fieldDiagnostics.isRecording, isStreamingActive else { return }
+        let now = CACurrentMediaTime()
+        guard let last = lastDiagnosticFrameAt else {
+            lastDiagnosticFrameAt = now
+            return
+        }
+        guard now - last > 3 else { return }
+        localDiagnosticSummary = "感知结果已停止更新 \(Int(now - last)) 秒；上次输出不能视为当前结果"
+        guard now - lastStallEventAt >= 10 else { return }
+        lastStallEventAt = now
+        let event: [String: Any] = [
+            "schema_version": 1, "frame_id": "event-\(UUID().uuidString)",
+            "event": "no_perception_result", "timestamp": Date().timeIntervalSince1970,
+            "seconds_since_result": now - last,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: event) {
+            fieldDiagnostics.ingest(metadata: data, jpeg: nil, issue: "no_perception_result")
+        }
+    }
+
     private func sendFrame(
         jpegData: Data,
         encodeMs: Double,
@@ -1291,6 +1403,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             resultAgeMs: delivery.resultAgeMs
         )
         localPerceptionResultAgeMs = delivery.resultAgeMs
+        recordFieldDiagnostic(raw: rawLocalVisionSignal, fusion: fusion, delivery: delivery)
         // A stale normal result cannot overwrite anything. A stale priority risk
         // reaches the overlay as risk-only, with road/lane/path data stripped.
         if fusion.disposition == .discard {

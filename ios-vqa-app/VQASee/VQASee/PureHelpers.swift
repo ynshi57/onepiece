@@ -248,6 +248,31 @@ struct LocationTextFormatter {
     }
 }
 
+/// Location enriches remote scene context, but must never make the local visual
+/// assistance path look failed. Core Location reports `.locationUnknown` while
+/// it is warming up; that case is transient and gets one quiet retry.
+enum LocationFailureDisposition: Equatable {
+    case retrySilently
+    case permissionUnavailable
+    case unavailable
+}
+
+struct LocationFailurePolicy {
+    static func disposition(for error: Error) -> LocationFailureDisposition {
+        guard let locationError = error as? CLError else {
+            return .unavailable
+        }
+        switch locationError.code {
+        case .locationUnknown, .network:
+            return .retrySilently
+        case .denied:
+            return .permissionUnavailable
+        default:
+            return .unavailable
+        }
+    }
+}
+
 /// Turns a reverse-geocoded placemark into a short Chinese place label used as a
 /// physical anchor in the prompt context, e.g. "中关村南路附近" / "海淀区附近".
 /// Pure (no I/O) so it can be unit-tested without CLGeocoder.

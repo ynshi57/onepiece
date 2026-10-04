@@ -32,6 +32,17 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("本机诊断") {
+                    NavigationLink {
+                        FieldDiagnosticsView(viewModel: viewModel, store: viewModel.fieldDiagnostics)
+                    } label: {
+                        Label("现场记录与回看", systemImage: "waveform.path.ecg")
+                    }
+                    Text("无需连接 Mac。查看本机识别状态、记录问题并按需导出。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     Toggle("远程风险解释", isOn: $viewModel.isRemoteVQAEnabled)
                     Text("默认关闭。打开后才会连接 Mac 上的 Qwen 问答；关闭时只用本机车道线、可走区和障碍叠层。")

@@ -151,7 +151,8 @@ enum WalkingFrameSendPolicy {
 /// harness/telemetry read-out — it is NOT wired into any product decision — so a
 /// consolidated on-device perception budget (p50/p95) can be reported honestly
 /// instead of only per-model numbers.
-struct PerceptionFrameTimings: Sendable, Equatable {
+struct PerceptionFrameTimings: Sendable, Equatable, Codable {
+    var humanMs: Double?
     var yoloMs: Double?
     var segmentationMs: Double?
     var depthMs: Double?
@@ -166,6 +167,9 @@ final class LocalVisionAnalyzer {
     /// Latency of the LAST `analyze` call, per stage. Read by the offline harness
     /// to print a consolidated perception latency budget. Updated every frame.
     private(set) var lastTimings = PerceptionFrameTimings()
+    private(set) var lastRoadStatus = "unknown"
+    private(set) var lastRoadReason: String?
+    var diagnosticConfigVersion: Int { config.version }
     private var previousFingerprint: [Double]?
     private let perceptionRunner: LocalPerceptionCoreMLRunner
     private let monocularDepthRunner: LocalMonocularDepthRunner
@@ -265,7 +269,9 @@ final class LocalVisionAnalyzer {
         let previous = previousFingerprint
         previousFingerprint = luminance.fingerprint
         let sceneChangeScore = Self.changeScore(current: luminance.fingerprint, previous: previous)
+        let humanStart = DispatchTime.now()
         let human = Self.detectHuman(pixelBuffer: pixelBuffer, orientation: orientation)
+        timings.humanMs = Self.elapsedMs(since: humanStart)
         let yoloStart = DispatchTime.now()
         var perception = perceptionRunner
             .analyze(pixelBuffer: pixelBuffer, orientation: orientation)
@@ -273,6 +279,8 @@ final class LocalVisionAnalyzer {
         timings.yoloMs = Self.elapsedMs(since: yoloStart)
         var twinliteGuidance: GuidancePath?
         var twinlitePolylines: [LanePolyline] = []
+        lastRoadStatus = config.roadBackend == .off ? "off" : "missing_model"
+        lastRoadReason = config.roadBackend == .off ? "Road backend disabled in configuration" : "Configured road backend unavailable"
         if let roadBackend {
             let segStart = DispatchTime.now()
             if let maps = roadBackend.infer(
@@ -292,8 +300,16 @@ final class LocalVisionAnalyzer {
                 if let cues = maps.segmentationCues {
                     perception.segmentationCues = cues
                 }
-                timings.segmentationMs = roadBackend.lastInferenceMs ?? Self.elapsedMs(since: segStart)
+                lastRoadStatus = roadBackend.diagnosticStatus == "unknown"
+                    ? (maps.traversableGrid.map { $0.cells.contains { $0 != 0 } ? "ok" : "empty_road" } ?? "ok")
+                    : roadBackend.diagnosticStatus
+                lastRoadReason = roadBackend.diagnosticReason
+            } else {
+                lastRoadStatus = roadBackend.diagnosticStatus == "unknown" ? "inference_failed" : roadBackend.diagnosticStatus
+                lastRoadReason = roadBackend.diagnosticReason ?? "Road backend returned no result"
             }
+            // Include failed calls; a missing measurement must never look like a fast model.
+            timings.segmentationMs = Self.elapsedMs(since: segStart)
         }
         if let lanePolylineRunner {
             let laneStart = DispatchTime.now()

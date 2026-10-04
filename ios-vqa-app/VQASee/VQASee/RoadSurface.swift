@@ -28,12 +28,19 @@ struct RoadSurfaceMaps: Sendable, Equatable {
 protocol RoadSurfaceBackend: AnyObject {
     var id: RoadBackendID { get }
     var lastInferenceMs: Double? { get }
+    var diagnosticStatus: String { get }
+    var diagnosticReason: String? { get }
     func infer(
         pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation,
         config: PerceptionConfig,
         emitGrid: Bool
     ) -> RoadSurfaceMaps?
+}
+
+extension RoadSurfaceBackend {
+    var diagnosticStatus: String { "unknown" }
+    var diagnosticReason: String? { nil }
 }
 
 enum RoadSurfaceBackends {
@@ -48,8 +55,7 @@ enum RoadSurfaceBackends {
             if let twinliteURL {
                 return TwinLiteNetRoadBackend(compiledModelURL: twinliteURL)
             }
-            let runner = TwinLiteNetRoadBackend(bundle: bundle)
-            return runner.isAvailable ? runner : nil
+            return TwinLiteNetRoadBackend(bundle: bundle)
         case .mc5:
             let runner = mc5Runner ?? LocalTraversabilitySegmentationRunner(
                 bundle: bundle,
@@ -67,6 +73,8 @@ enum RoadSurfaceBackends {
 final class TwinLiteNetRoadBackend: RoadSurfaceBackend {
     let id: RoadBackendID = .twinlite
     private(set) var lastInferenceMs: Double?
+    private(set) var diagnosticStatus = "missing_model"
+    private(set) var diagnosticReason: String?
     private let visionModel: VNCoreMLModel?
 
     var isAvailable: Bool { visionModel != nil }
@@ -78,6 +86,7 @@ final class TwinLiteNetRoadBackend: RoadSurfaceBackend {
             loaded = visionModel
         }
         self.visionModel = loaded
+        diagnosticReason = loaded == nil ? "TwinLite model resource missing or Core ML loading failed" : nil
     }
 
     init?(compiledModelURL: URL) {
@@ -93,14 +102,24 @@ final class TwinLiteNetRoadBackend: RoadSurfaceBackend {
         config: PerceptionConfig,
         emitGrid: Bool
     ) -> RoadSurfaceMaps? {
-        guard let visionModel else { return nil }
         let start = DispatchTime.now()
+        defer {
+            lastInferenceMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000.0
+        }
+        diagnosticReason = nil
+        guard let visionModel else {
+            diagnosticStatus = "missing_model"
+            diagnosticReason = "TwinLite model resource missing or Core ML loading failed"
+            return nil
+        }
         let request = VNCoreMLRequest(model: visionModel)
         request.imageCropAndScaleOption = .scaleFill
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
         do {
             try handler.perform([request])
         } catch {
+            diagnosticStatus = "inference_failed"
+            diagnosticReason = "TwinLite Vision request failed: \(error.localizedDescription)"
             return nil
         }
         var daArray: MLMultiArray?
@@ -121,6 +140,8 @@ final class TwinLiteNetRoadBackend: RoadSurfaceBackend {
         }
         guard let daSampler = Self.binarySampler(from: daArray),
               let laneSampler = Self.binarySampler(from: laneArray) else {
+            diagnosticStatus = "invalid_output"
+            diagnosticReason = "Expected two binary DA/lane tensors; DA shape=\(daArray?.shape.description ?? "missing"), lane shape=\(laneArray?.shape.description ?? "missing")"
             return nil
         }
         _ = emitGrid
@@ -183,7 +204,10 @@ final class TwinLiteNetRoadBackend: RoadSurfaceBackend {
             cols: LocalLaneSegmentationRunner.gridCols,
             rows: LocalLaneSegmentationRunner.gridRows
         )
-        lastInferenceMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000.0
+        diagnosticStatus = pavementMaskNative.contains(true) ? "ok" : "empty_road"
+        if diagnosticStatus == "empty_road" {
+            diagnosticReason = "TwinLite completed but no road pixel met the configured threshold"
+        }
         return RoadSurfaceMaps(
             backend: .twinlite,
             guidancePath: path,
