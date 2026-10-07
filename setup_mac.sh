@@ -174,6 +174,11 @@ profile_core() {
   fi
 
   log "冒烟测试：pytest server-vqa/tests（会导入含 PIL 的 app.main）"
+  if ! PYTHONPATH=server-vqa python -c "from app.device_debug_server import app; assert app"; then
+    add_summary "FAIL|core|真机调试服务依赖不完整"
+    deactivate 2>/dev/null || true
+    return 1
+  fi
   if pytest server-vqa/tests -q; then
     add_summary "OK|core|venv + 依赖 + pytest 全绿"
   else

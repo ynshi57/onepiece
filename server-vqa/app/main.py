@@ -7,6 +7,8 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from time import perf_counter
 
 from app.diagnostic_api import router as diagnostic_router
+from app.device_debug_api import router as device_debug_router
+from app.device_debug_page import router as device_debug_page_router
 from app.discovery import BonjourAdvertiser
 from app.fusion import fuse_vqa_result
 from app.models import VqaRequest, VqaResponse
@@ -49,6 +51,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Local VQA Server", version="0.1.0", lifespan=lifespan)
 app.include_router(diagnostic_router)
+app.include_router(device_debug_router)
+app.include_router(device_debug_page_router)
 
 
 @app.get("/health")

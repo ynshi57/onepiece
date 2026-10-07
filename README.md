@@ -126,6 +126,14 @@ bash ./start_worker.sh
 
 ## 闭环进化平台
 
+### iPhone 真机调试
+
+运行 `bash start_device_debug.sh`，Mac 会打开真机调试页。手机 VQASee 菜单 → 真机调试 → 选择附近的 Mac；首次在 Mac 页面核对数字并点击“允许连接”，然后在手机点击“开始共享 App 屏幕”。下次连接会记住授权，无需复制地址或密钥。手机与 Mac 需在同一可信局域网；如需原始采样，显式打开“同时允许发送原始测试样本”。本功能共享 App 屏幕（最多 1 Hz），不启用前摄或录音，不保证包含系统弹窗。新 iOS 代码须先构建安装。
+
+调试服务默认 9001，仅暴露配对调试 API，与原平台 9000 的模型/管理接口隔离。启动器每次生成新密钥，写入被 Git 忽略的 `build/device-debug/pairing.json`（权限 600）；证据位于 `build/device-debug/sessions/`。不要提交或分享该目录。Mac 页面显示屏幕、事件、样本、Codex 报告和复测关联，断流标注历史状态。
+
+Codex 本地读取：`.venv/bin/python server-vqa/tools/device_debug_codex.py --pairing-file build/device-debug/pairing.json list`。使用 `inspect`、`download`、`watch`、`report-submit` 等命令读取和回写证据分析（实际命令见 `--help`）。工具不会自动生成根因；需要运行中的 Codex 读取真实证据、审查代码、提交报告并复测。详见 [真机闭环设计](docs/evolution/2026-10-06-device-debug-loop.md)。安装依赖沿用 `setup_mac.sh` core profile，无新增第三方包。
+
 每个功能都必须**形成闭环**，而不是"做完一个页面"。平台把这个闭环变得具体、可检查，
 入口在 `http://127.0.0.1:9000/diagnostics/ui`。
 

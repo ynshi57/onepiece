@@ -1,0 +1,115 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VQASee · 真机调试</title>
+<style>
+:root{color-scheme:dark;font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0c1015;color:#e7edf5}*{box-sizing:border-box}body{margin:0}header{padding:24px 32px;border-bottom:1px solid #29323e;display:flex;justify-content:space-between;align-items:center}h1{font-size:23px;margin:4px 0}h2{font-size:18px;margin:0 0 16px}h3{font-size:15px}p{line-height:1.65}small,.muted{color:#97a7b9}.brand{color:#64e3cb;font-size:12px;letter-spacing:2px}button,input,select{font:inherit;border:1px solid #354459;border-radius:10px;padding:10px 12px;background:#17212e;color:inherit}button{cursor:pointer}button:hover{border-color:#62d8c3}button.primary{background:#70e0c8;color:#102722;font-weight:650}input{min-width:0}main{padding:24px 32px;max-width:1700px;margin:auto}.pair{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:22px}.pair input{flex:1}.grid{display:grid;grid-template-columns:230px minmax(280px,400px) minmax(350px,1fr);gap:20px}.card{background:#141c27;border:1px solid #293444;border-radius:18px;padding:20px}.sessions{display:flex;flex-direction:column;gap:10px}.sessions button{text-align:left}.sessions button.active{border-color:#70e0c8;background:#213630}.phone{background:#050709;border-radius:24px;min-height:450px;display:flex;align-items:center;justify-content:center;overflow:hidden;border:1px solid #354459}.phone img{width:100%;max-height:650px;object-fit:contain}.phone p{padding:32px;text-align:center;color:#a4b2c2}.badge{display:inline-block;padding:5px 10px;border-radius:20px;background:#283244;font-size:12px}.live{background:#153e35;color:#8ae7cb}.stale{background:#49321f;color:#ffcf8d}.error{color:#ffb09d;white-space:pre-wrap}.stats{display:flex;gap:18px;margin:18px 0}.stats b{font-size:23px;display:block}.tabs{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap}.event{padding:12px 0;border-bottom:1px solid #2a3545}.event code{font-size:12px;word-break:break-all;white-space:pre-wrap}.timeline{max-height:440px;overflow:auto}.finding{padding:16px;border:1px solid #344357;border-radius:12px;margin:12px 0}.finding p{white-space:pre-wrap;margin:8px 0}.report-empty{padding:24px;background:#1b2635;border-radius:12px}.hidden{display:none!important}a{color:#80dacb}#scrub{width:100%}pre{white-space:pre-wrap;word-break:break-word}label{font-size:13px;color:#b0bdcc}.topline{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px}@media(max-width:1050px){.grid{grid-template-columns:180px 1fr}.analysis{grid-column:1/-1}}@media(max-width:650px){main,header{padding:16px}.grid{display:flex;flex-direction:column}.pair{align-items:stretch;flex-direction:column}}
+</style>
+<header><div><div class="brand">VQASEE / DEVICE LAB</div><h1>真机调试</h1><small>看到真实操作，让每个问题都有证据</small></div><a href="/diagnostics/ui">返回闭环平台</a></header>
+<main><section class="card"><div class="topline"><div><h2 id="connection">正在准备…</h2><p id="instructions">在 iPhone 的 VQASee 菜单打开「真机调试」，选择这台 Mac。</p></div><span class="badge" id="hostName"></span></div><p class="muted" id="discovery"></p><div id="pending"></div><button id="retryConnection" class="hidden">重新连接本机服务</button><details><summary>已允许的设备</summary><div id="trusted"></div><p class="muted">移除后，该设备需要再次取得允许。已保存的会话不会被删除。</p></details></section>
+<p id="error" class="error" role="alert"></p>
+<div class="grid"><aside class="card"><h2>调试会话</h2><button id="latestSession">跟随最新会话 · 已开启</button><p id="sessionHint" class="muted"></p><div id="sessions" class="sessions"><p class="muted">还没有调试会话。</p></div></aside>
+<section class="card"><div class="topline"><h2>iPhone 画面</h2><span class="badge" id="stream">等待连接</span></div><div class="phone"><img id="screen" class="hidden" alt="手机上传的 App 屏幕"><p id="placeholder">手机连接后，点击「开始共享 App 屏幕」，画面将出现在这里。</p></div><p id="frameInfo" class="muted">尚无画面</p><p id="imageError" class="error" role="alert"></p><input type="range" id="scrub" min="0" max="0" value="0" disabled aria-label="历史画面"><button id="live">回到最新画面</button><p class="muted">App 屏幕低频采样，非连续视频；系统弹窗可能不在录屏中。旧画面始终标注时间。</p></section>
+<section class="card analysis"><div class="topline"><h2 id="sessionTitle">会话详情</h2><span id="sessionDate" class="muted"></span></div><p id="sessionID" class="muted">选择会话后，Codex 与此页面读取同一份证据。</p><div class="stats"><div><b id="nframes">0</b><small>屏幕帧</small></div><div><b id="nevents">0</b><small>操作与状态</small></div><div><b id="nsamples">0</b><small>样本文件</small></div></div>
+<div class="tabs"><button data-tab="report">Codex 分析</button><button data-tab="events">操作时间轴</button><button data-tab="samples">采样证据</button></div>
+<div id="report"><div class="report-empty">尚未收到 Codex 分析。收到数据不代表已经定位根因。<p class="muted">Codex 读取会话后，将在这里展示信息总结、问题分解、根因证据、解决方案和复测关联。</p></div></div>
+<div id="events" class="timeline hidden"></div><div id="samples" class="timeline hidden"></div><hr style="border:0;border-top:1px solid #293444;margin:24px 0"><button id="copySession">复制会话 ID</button><button id="delete">删除本机此会话</button><p id="retest" class="muted"></p></section></div></main>
+<script>
+const $=id=>document.getElementById(id);let token='',sid='',session=null,follow=true,lastImage='',objectURL=null,loading=false,connected=false;
+let imageGeneration=0,followSessions=true,pendingImageKey='';
+document.querySelector('header a').href='http://127.0.0.1:9000/diagnostics/ui';
+document.querySelector('.analysis').style.overflowWrap='anywhere';
+const stateNames={live:'正在接收',stale:'画面已断流',waiting:'等待首帧',stopped:'已停止'};
+const fmt=t=>t?new Date(t*1000).toLocaleTimeString():'—';
+function text(tag,value,cls){const e=document.createElement(tag);e.textContent=value;if(cls)e.className=cls;return e}
+async function api(path,options={}){const r=await fetch('/device-debug'+path,{...options,headers:{'X-Device-Debug-Token':token,...options.headers},cache:'no-store',signal:AbortSignal.timeout(5000)});if(!r.ok){const body=await r.text();throw Error(r.status===401?'本机连接已失效，请重新连接':`${r.status} · ${body}`)}return r}
+async function copy(value){try{await navigator.clipboard.writeText(value)}catch{window.prompt('请复制以下内容',value)}}
+async function bootstrap(){
+ $('connection').textContent='正在准备…';
+ try {
+  const response=await fetch('/device-debug/local/bootstrap',{headers:{'X-VQASee-Local':'1'},cache:'no-store',signal:AbortSignal.timeout(5000)});
+  if(!response.ok)throw Error('请在运行调试服务的这台 Mac 上打开此页面。');
+  const config=await response.json();token=config.admin_token;connected=true;
+  $('hostName').textContent=config.server_name;
+  $('discovery').textContent=config.discovery.message;
+  $('connection').textContent=config.discovery.state==='ready'?'等待 iPhone 连接':'附近发现暂不可用';
+  $('retryConnection').classList.add('hidden');
+  await refresh();await refreshPairing();
+ } catch(e){connected=false;fail(e);$('retryConnection').classList.remove('hidden')}
+}
+$('retryConnection').onclick=bootstrap;
+let pairingLoading=false,pairingSignature='';
+async function refreshPairing(){
+ if(pairingLoading)return;pairingLoading=true;
+ try {
+  const requests=await(await api('/pairing/pending')).json();
+  const devices=await(await api('/pairing/devices')).json();
+  const signature=JSON.stringify([requests,devices]);
+  if(signature===pairingSignature)return;
+  pairingSignature=signature;$('pending').replaceChildren();$('trusted').replaceChildren();
+  for(const request of requests){
+   const row=text('div','','finding');row.append(text('h3',request.device_name+' 请求连接'),text('p','核对手机显示的数字：'+request.code));
+   for(const [action,label] of [['approve','允许连接'],['deny','拒绝']]){
+    const button=text('button',label,action==='approve'?'primary':'');
+    button.onclick=async()=>{button.disabled=true;try{await api('/pairing/requests/'+request.id+'/'+action,{method:'POST'});pairingSignature='';$('connection').textContent=action==='approve'?'已允许 iPhone · 请在手机开始共享':'已拒绝连接';}catch(e){fail(e)}finally{button.disabled=false;refreshPairing()}};
+    row.append(button);
+   }
+   $('pending').append(row);
+  }
+  for(const device of devices){const row=text('div','','event');row.append(text('span',device.device_name+' '));const button=text('button','移除授权');button.onclick=async()=>{if(!confirm('移除这台设备的连接授权？正在上传的资料将被拒绝。'))return;try{await api('/pairing/devices/'+device.device_id,{method:'DELETE'});pairingSignature='';await refreshPairing()}catch(e){fail(e)}};row.append(button);$('trusted').append(row)}
+  if(!devices.length)$('trusted').append(text('p','尚无已允许的设备','muted'));
+ }finally{pairingLoading=false}
+}
+$('copySession').onclick=()=>sid&&copy(sid);
+$('delete').onclick=async()=>{if(!sid||!confirm('删除此会话的全部本机画面、样本和报告？'))return;try{await api('/sessions/'+sid,{method:'DELETE'});sid='';session=null;await refresh()}catch(e){fail(e)}};
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>['report','events','samples'].forEach(id=>$(id).classList.toggle('hidden',id!==b.dataset.tab)));
+$('scrub').oninput=()=>{follow=false;imageGeneration++;pendingImageKey='';showFrame()};$('live').onclick=()=>{follow=true;imageGeneration++;pendingImageKey='';showFrame()};
+function fail(e){$('error').textContent=e.message;$('connection').textContent='连接异常 · 当前显示可能为历史数据';$('stream').textContent='连接中断';$('stream').className='badge stale';$('retryConnection').classList.remove('hidden')}
+$('latestSession').onclick=()=>{followSessions=true;follow=true;$('latestSession').textContent='跟随最新会话 · 已开启';refresh().catch(fail)};
+async function refresh(){
+ if(loading)return;loading=true;
+ try{
+  const list=await(await api('/sessions')).json();
+  const newest=list[0];
+  if((followSessions||!sid)&&newest&&sid!==newest.id){sid=newest.id;session=null;follow=true;reset()}
+  $('sessionHint').textContent=!followSessions&&newest&&sid!==newest.id?'正在查看历史记录；点击上方按钮查看最新共享。':'';
+  $('sessions').replaceChildren();
+  if(!list.length)$('sessions').append(text('p','还没有调试会话。请在手机开始共享。','muted'));
+  for(const s of list){
+   const b=text('button',s.label||'无法读取的会话',s.id===sid?'active':'');
+   b.append(text('small',' · '+fmt(s.created_at)+' · '+(s.issue||stateNames[s.stream_state]||s.stream_state)));
+   b.onclick=()=>{followSessions=false;$('latestSession').textContent='跟随最新会话 · 已暂停';sid=s.id;session=null;follow=true;reset();refresh().catch(fail)};
+   $('sessions').append(b);
+  }
+  if(sid){const requestedSid=sid;const value=await(await api('/sessions/'+requestedSid)).json();if(sid===requestedSid){session=value;render()}}
+  else{reset()}
+  $('error').textContent='';$('retryConnection').classList.add('hidden');
+  $('connection').textContent=session?.stream_state==='live'?'正在接收 iPhone 画面':session?.stream_state==='stale'?'画面已断流 · 请在手机检查共享状态':'Mac 已就绪 · 等待 iPhone 共享';
+ }finally{loading=false}
+}
+function reset(){imageGeneration++;pendingImageKey='';lastImage='';$('imageError').textContent='';if(objectURL){URL.revokeObjectURL(objectURL);objectURL=null;}$('screen').classList.add('hidden');$('placeholder').classList.remove('hidden');$('stream').textContent='等待会话';$('events').replaceChildren();$('samples').replaceChildren();$('report').replaceChildren(text('p','尚无会话或分析报告。','report-empty'));['nframes','nevents','nsamples'].forEach(k=>$(k).textContent='0');$('sessionTitle').textContent='会话详情';$('sessionID').textContent='尚无会话';$('retest').textContent='';$('frameInfo').textContent='尚无画面';$('scrub').disabled=true}
+function render(){const s=session,frames=s.evidence.filter(x=>x.kind==='screen'),samples=s.evidence.filter(x=>x.kind!=='screen');$('sessionTitle').textContent=s.label;$('sessionID').textContent=s.id;$('sessionDate').textContent=fmt(s.created_at);$('stream').textContent=stateNames[s.stream_state]||s.stream_state;$('stream').className='badge '+s.stream_state;$('nframes').textContent=frames.length;$('nevents').textContent=s.events.length;$('nsamples').textContent=samples.length;$('scrub').max=Math.max(0,frames.length-1);$('scrub').disabled=!frames.length;showFrame();$('events').replaceChildren();for(const e of [...s.events].reverse()){const row=text('div','', 'event');row.append(text('small',fmt(e.received_at)+' 接收 · '+e.kind),text('pre',JSON.stringify(e.details,null,2)));$('events').append(row)}$('samples').replaceChildren();for(const e of samples){const row=text('div','', 'event');row.append(text('p',e.filename+' · '+Math.round(e.bytes/1024)+' KB'),text('small','SHA256 '+e.sha256));const b=text('button','下载证据');b.onclick=async()=>{try{const blob=await(await api(`/sessions/${sid}/files/${e.id}`)).blob(),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=e.filename;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}catch(err){fail(err)}};row.append(b);$('samples').append(row)}if(!samples.length)$('samples').append(text('p','尚无原始采样。需在手机显式开启原始样本共享，并执行采样。','muted'));const r=s.report;$('report').replaceChildren();if(!r){$('report').append(text('div','尚未收到 Codex 分析。数据已接收不代表根因已确认。','report-empty'))}else{$('report').append(text('h3','信息总结'),text('p',r.summary));for(const f of r.findings){const box=text('article','', 'finding');box.append(text('span',({confirmed:'已确认',hypothesis:'待验证假设',unknown:'根因未知'})[f.status]||f.status,'badge'),text('h3',f.problem),text('p','根因：'+f.root_cause),text('p','解决方案：'+f.proposal),text('small','证据：'+f.evidence_ids.join(' · ')));$('report').append(box)}$('report').append(text('small','报告更新 '+fmt(r.updated_at)))}$('retest').textContent=(s.previous_session_id?'复测来源：'+s.previous_session_id+'。 ':'')+(r?.retest_session_ids?.length?'关联复测：'+r.retest_session_ids.join('、'):'尚未关联同场景复测。')}
+async function showFrame(){
+ if(!session)return;
+ const frames=session.evidence.filter(x=>x.kind==='screen');
+ if(!frames.length){
+  imageGeneration++;pendingImageKey='';$('screen').classList.add('hidden');$('placeholder').classList.remove('hidden');
+  $('placeholder').textContent=session.stop_reason||'手机已连接，等待首张画面。';$('frameInfo').textContent='本次会话未收到画面';return;
+ }
+ const index=follow?frames.length-1:Math.min(Number($('scrub').value),frames.length-1);
+ $('scrub').value=index;const f=frames[index],requestSid=sid;
+ const key=requestSid+'/'+f.id;
+ if(pendingImageKey)return;
+ $('frameInfo').textContent=`${follow?'最新收到':'历史回放'} · ${fmt(f.received_at)} · 第 ${index+1}/${frames.length} 帧 · 设备时间 ${f.client_timestamp??'未提供'}`;
+ if(lastImage===f.id||pendingImageKey===key)return;
+ const generation=++imageGeneration;pendingImageKey=key;
+ $('screen').classList.add('hidden');$('placeholder').classList.remove('hidden');$('placeholder').textContent='正在加载所选画面…';
+ try{
+  const blob=await(await api(`/sessions/${requestSid}/files/${f.id}`)).blob();
+  if(sid!==requestSid||generation!==imageGeneration)return;
+  if(objectURL)URL.revokeObjectURL(objectURL);
+  objectURL=URL.createObjectURL(blob);$('screen').src=objectURL;$('screen').classList.remove('hidden');$('placeholder').classList.add('hidden');lastImage=f.id;$('imageError').textContent='';
+ }catch(e){if(sid!==requestSid||generation!==imageGeneration)return;lastImage='';$('imageError').textContent='画面加载失败：'+e.message+'；正在重试。'}
+ finally{if(pendingImageKey===key)pendingImageKey=''}
+}
+setInterval(()=>{if(connected){refresh().catch(fail);refreshPairing().catch(fail)}},1500);
+bootstrap();
+</script></html>
