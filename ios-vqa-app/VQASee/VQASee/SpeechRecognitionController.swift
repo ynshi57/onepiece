@@ -214,7 +214,7 @@ final class SpeechRecognitionController: NSObject {
         if remaining > 0 {
             deferredStopTask?.cancel()
             deferredStopTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+                do { try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000)) } catch { return }
                 await MainActor.run {
                     self?.endAudioCapture()
                 }
@@ -222,6 +222,15 @@ final class SpeechRecognitionController: NSObject {
         } else {
             endAudioCapture()
         }
+    }
+
+    /// Leaving the voice feature must release the microphone without emitting a question.
+    func cancelRecording() {
+        guard isRunning else { return }
+        isRunning = false
+        teardownAudio()
+        latestTranscript = ""
+        onStateChanged?(.idle)
     }
 
     private func endAudioCapture() {
