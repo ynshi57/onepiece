@@ -163,6 +163,8 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private var locationRetryCount = 0
     private let maxLocationRetryCount = 1
     private let videoOutput = AVCaptureVideoDataOutput()
+    private var isSuspendedForIndoorMemory = false
+    private let captureLifecycleQueue = DispatchQueue(label: "vqa.camera.lifecycle")
     private let videoOutputQueue = DispatchQueue(label: "vqa.video.output.queue")
     private let frameCaptureProxy = FrameCaptureProxy()
     private let arFrameCaptureProxy = ARFrameCaptureProxy()
@@ -173,17 +175,11 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     private var latestGPS: (lat: Double, lon: Double)?
     private var isStreamingActive = false
 
-    /// Keep the display awake only while observation is active (Maps-style).
-    /// Without this, iOS dims then auto-locks after the user's Auto-Lock interval.
+    /// Capture state is independent of display wakefulness; VQASeeApp owns that.
     private func setStreamingActive(_ active: Bool) {
         isStreamingActive = active
-        refreshScreenWakePolicy(isForeground: true)
     }
 
-    /// Call from scene lifecycle so backgrounding releases the idle-timer hold.
-    func refreshScreenWakePolicy(isForeground: Bool) {
-        UIApplication.shared.isIdleTimerDisabled = isStreamingActive && isForeground
-    }
     private var isRequestInFlight = false
     private var pendingSingleShotOnly = false
     private var pendingLatestFrame: PendingLatestFrame?
@@ -377,13 +373,17 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     func requestPermissions() {
+        guard !isSuspendedForIndoorMemory else { return }
         AVCaptureDevice.requestAccess(for: .video) { granted in
             if !granted {
                 Task { @MainActor in
                     self.errorText = String(localized: "相机权限被拒绝。")
                 }
             } else {
-                self.startCameraPreviewIfNeeded()
+                Task { @MainActor in
+                    guard !self.isSuspendedForIndoorMemory else { return }
+                    self.startCameraPreviewIfNeeded()
+                }
             }
         }
         locationManager.requestWhenInUseAuthorization()
@@ -436,6 +436,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
 
     /// Begin press-to-talk capture; mute any ongoing speech so it isn't recorded.
     func startVoiceQuestion() {
+        guard !isSuspendedForIndoorMemory else { return }
         guard isRemoteVQAEnabled else {
             let message = String(localized: "请先在设置打开「远程风险解释」，再提问。")
             speechStatusText = message
@@ -452,7 +453,8 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                     return
                 }
                 self.applySpeechState(state)
-                if case .idle = state, self.isVoicePressHeld {
+                if case .idle = state, self.isVoicePressHeld,
+                   !self.isSuspendedForIndoorMemory {
                     self.speechController.startRecording()
                 }
             }
@@ -469,6 +471,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     private func handleRecognizedQuestion(_ text: String?) {
+        guard !isSuspendedForIndoorMemory else { return }
         guard isRemoteVQAEnabled else {
             let message = String(localized: "请先在设置打开「远程风险解释」，再提问。")
             speechStatusText = message
@@ -672,6 +675,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     func startStreaming() async {
+        guard !isSuspendedForIndoorMemory else { return }
         if !isRemoteVQAEnabled {
             await startLocalOnlyStreaming()
             return
@@ -680,6 +684,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         // Discovery always runs when remote VQA is on; re-resolve after network changes.
         nearbyServerBrowser.start()
         await waitForNearbyServerIfNeeded()
+        guard !isSuspendedForIndoorMemory else { return }
 
 #if !targetEnvironment(simulator)
         if StreamingConfigValidator.isLoopbackHost(serverURLInput) {
@@ -696,10 +701,15 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         }
 
         prepareStreamingSession(remote: true)
-        startVisualCaptureIfNeeded()
+        await startVisualCaptureIfNeeded()
+        guard !isSuspendedForIndoorMemory else { return }
 
         do {
             try await connectRemoteTransport(normalizedURL: normalizedURL)
+            guard !isSuspendedForIndoorMemory else {
+                await transport.disconnect()
+                return
+            }
             requestCurrentLocation()
             setStreamingActive(true)
             streamStatus = .streaming
@@ -721,10 +731,12 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
 
     /// On-device TwinLite/YOLO session with no Mac/WebSocket requirement.
     private func startLocalOnlyStreaming() async {
+        guard !isSuspendedForIndoorMemory else { return }
         nearbyServerBrowser.stop()
         showServerPicker = false
         prepareStreamingSession(remote: false)
-        startVisualCaptureIfNeeded()
+        await startVisualCaptureIfNeeded()
+        guard !isSuspendedForIndoorMemory else { return }
         requestCurrentLocation()
         setStreamingActive(true)
         streamStatus = .streaming
@@ -787,6 +799,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
 
     /// Settings toggle side effects: discovery on/off; keep local session if connect fails.
     private func handleRemoteVQAToggleChanged() async {
+        guard !isSuspendedForIndoorMemory else { return }
         if isRemoteVQAEnabled {
             nearbyServerBrowser.start()
             if discoveredServers.isEmpty {
@@ -798,6 +811,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
                 return
             }
             await waitForNearbyServerIfNeeded()
+            guard !isSuspendedForIndoorMemory else { return }
 #if !targetEnvironment(simulator)
             if StreamingConfigValidator.isLoopbackHost(serverURLInput) {
                 errorText = String(localized: "远程风险解释已打开，但还没发现 Mac。本地看路继续；请确认同一 Wi‑Fi 并启动后端。")
@@ -811,6 +825,10 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
             }
             do {
                 try await connectRemoteTransport(normalizedURL: normalizedURL)
+                guard !isSuspendedForIndoorMemory else {
+                    await transport.disconnect()
+                    return
+                }
                 if let host = normalizedURL.host {
                     nearbyServerText = String(localized: "已连接 Mac 后端：\(host)")
                 } else {
@@ -1041,12 +1059,31 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         await transport.disconnect()
         speechSynthesizer.stopSpeaking(at: .immediate)
         arSession.pause()
-        if captureSession.isRunning {
-            DispatchQueue.global(qos: .userInitiated).async { [captureSession] in
-                captureSession.stopRunning()
+        await stopCameraCapture()
+        streamStatus = .idle
+    }
+
+    /// Permanently retire this outdoor controller before another screen owns the camera.
+    /// A fresh outdoor screen creates a fresh controller when returning.
+    func suspendForIndoorMemory() async {
+        isSuspendedForIndoorMemory = true
+        isVoicePressHeld = false
+        speechController.cancelRecording()
+        nearbyServerBrowser.stop()
+        locationRetryTask?.cancel()
+        locationRetryTask = nil
+        locationManager.stopUpdatingLocation()
+        geocoder.cancelGeocode()
+        await stopStreaming()
+    }
+
+    private func stopCameraCapture() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            captureLifecycleQueue.async { [captureSession] in
+                if captureSession.isRunning { captureSession.stopRunning() }
+                continuation.resume()
             }
         }
-        streamStatus = .idle
     }
 
     /// The backend socket dropped while we were streaming (server stopped, network lost).
@@ -1108,6 +1145,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard !isSuspendedForIndoorMemory else { return }
         guard let location = locations.last else {
             return
         }
@@ -1186,6 +1224,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     private func requestCurrentLocation() {
+        guard !isSuspendedForIndoorMemory else { return }
         locationManager.requestLocation()
     }
 
@@ -1228,6 +1267,7 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     private func handleTransportEvent(_ event: SignalingResponse) {
+        guard !isSuspendedForIndoorMemory else { return }
         switch event {
         case .serverReady:
             break
@@ -1800,13 +1840,11 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
         }
     }
 
-    private func startVisualCaptureIfNeeded() {
+    private func startVisualCaptureIfNeeded() async {
+        guard !isSuspendedForIndoorMemory else { return }
         if usesARDepthCapture, let configuration = ARFrameCaptureProxy.makeConfiguration() {
-            if captureSession.isRunning {
-                DispatchQueue.global(qos: .userInitiated).async { [captureSession] in
-                    captureSession.stopRunning()
-                }
-            }
+            await stopCameraCapture()
+            guard !isSuspendedForIndoorMemory else { return }
             arSession.run(configuration, options: [.resetTracking, .removeExistingAnchors])
         } else {
             usesARDepthCapture = false
@@ -1816,11 +1854,9 @@ final class StreamingViewModel: NSObject, ObservableObject, CLLocationManagerDel
     }
 
     private func startCameraPreviewIfNeeded() {
-        guard !captureSession.isRunning else {
-            return
-        }
-        DispatchQueue.global(qos: .userInitiated).async { [captureSession] in
-            captureSession.startRunning()
+        guard !isSuspendedForIndoorMemory else { return }
+        captureLifecycleQueue.async { [captureSession] in
+            if !captureSession.isRunning { captureSession.startRunning() }
         }
     }
 }

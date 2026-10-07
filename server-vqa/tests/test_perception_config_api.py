@@ -584,13 +584,19 @@ def test_optional_harness_model_flags_injects_lane_model(tmp_path, monkeypatch):
 
 
 def test_optional_harness_model_flags_never_injects_seg5_for_role_eval(tmp_path, monkeypatch):
-    from app.diagnostic_api import _optional_harness_model_flags, _seg5_model_path
+    from app import diagnostic_api
 
     monkeypatch.setenv("VQASEE_MODELS_DIR", str(tmp_path))
-    assert "--seg-model" not in _optional_harness_model_flags()
-    flags = _optional_harness_model_flags(eval_role="vehicle")
-    assert _seg5_model_path() is not None
-    assert "--seg-model" not in flags
+    monkeypatch.setattr(diagnostic_api, "_repo_root", lambda: tmp_path / "isolated-repo")
+    assert diagnostic_api._seg5_model_path() is None
+    assert "--seg-model" not in diagnostic_api._optional_harness_model_flags()
+    # Path-discovery fixture only: this test checks flag policy, not Core ML
+    # loading or inference. Never depend on a developer's bundled model files.
+    model = tmp_path / "VQASeeTraversabilitySeg5.mlmodelc"
+    model.mkdir()
+    assert diagnostic_api._seg5_model_path() == model
+    for role in (None, "pedestrian", "vehicle"):
+        assert "--seg-model" not in diagnostic_api._optional_harness_model_flags(eval_role=role)
 
 
 def test_harness_eta_for_drive_twinlite_stays_under_old_mc5_cap():
