@@ -1,0 +1,1328 @@
+{
+  "repository": "https://github.com/ArthurBrussee/brush",
+  "revision": "3edecbb2fe79d3e2c87eeab85b15e0b1dd10d486",
+  "license": "Apache-2.0",
+  "sourcePolicy": "fixed_official_git_blobs_plus_single_local_patch",
+  "patch": {
+    "path": "native/brush/patches/0001-small-image-header.patch",
+    "sha256": "61ce31dc6c47c463198662fad5f8eefa348041c0db3c23b0a6dee6c13f55386e",
+    "target": "crates/brush-dataset/src/scene.rs",
+    "patchedSHA256": "9411ffee99750e4da98427bac4caa687ea8fd0ba2bc207126a1d8e9a39e5005e"
+  },
+  "files": [
+    {
+      "path": ".cargo/config.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ea5d0d96746cf98ff58b310e4bd19c0f083e2516",
+      "size": 121,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/ea5d0d96746cf98ff58b310e4bd19c0f083e2516"
+    },
+    {
+      "path": "Cargo.lock",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d112c71c0bb5484a9b074d79c893cd1fd944eccb",
+      "size": 276663,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/d112c71c0bb5484a9b074d79c893cd1fd944eccb"
+    },
+    {
+      "path": "Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f7f9fc1406d2770303659a55b4ba0ea9abebaf2e",
+      "size": 10107,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/f7f9fc1406d2770303659a55b4ba0ea9abebaf2e"
+    },
+    {
+      "path": "LICENSE",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "size": 11358,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/d645695673349e3947e8e5ae42332d0ac3164cd7"
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9f2b198b3dad818b52ad0b3551d330b6dcaadb24",
+      "size": 7183,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/9f2b198b3dad818b52ad0b3551d330b6dcaadb24"
+    },
+    {
+      "path": "crates/brush-app/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2c858171a356484643f088ada8e0e5e57867dbdc",
+      "size": 2291,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/2c858171a356484643f088ada8e0e5e57867dbdc"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/AndroidManifest.xml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4a445ab4c44978ced041a77026b703c7125b805f",
+      "size": 893,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/4a445ab4c44978ced041a77026b703c7125b805f"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/java/com/splats/app/FilePicker.java",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "da0c0f424a474840b71bbac00ee06e3c88daf83f",
+      "size": 881,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/da0c0f424a474840b71bbac00ee06e3c88daf83f"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/java/com/splats/app/MainActivity.java",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f100e0fbf530174b976f0f36e70253c0fd507a37",
+      "size": 2920,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/f100e0fbf530174b976f0f36e70253c0fd507a37"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/drawable-v24/ic_launcher_foreground.xml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2b068d11462a4b96669193de13a711a3a36220a0",
+      "size": 1702,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/2b068d11462a4b96669193de13a711a3a36220a0"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/drawable/ic_launcher_background.xml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "07d5da9cbf141911847041df5d7b87f0dd5ef9d4",
+      "size": 5606,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/07d5da9cbf141911847041df5d7b87f0dd5ef9d4"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/layout/activity_main.xml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4fc244418b5fe524789352d1b1b52d1b22045f3a",
+      "size": 780,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/4fc244418b5fe524789352d1b1b52d1b22045f3a"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "eca70cfe52eac1ba66ba280a68ca7be8fcf88a16",
+      "size": 272,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/eca70cfe52eac1ba66ba280a68ca7be8fcf88a16"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "eca70cfe52eac1ba66ba280a68ca7be8fcf88a16",
+      "size": 272,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/eca70cfe52eac1ba66ba280a68ca7be8fcf88a16"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-hdpi/ic_launcher.webp",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c209e78ecd372343283f4157dcfd918ec5165bb3",
+      "size": 1404,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/c209e78ecd372343283f4157dcfd918ec5165bb3"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-hdpi/ic_launcher_round.webp",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b2dfe3d1ba5cf3ee31b3ecc1ced89044a1f3b7a9",
+      "size": 2898,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/b2dfe3d1ba5cf3ee31b3ecc1ced89044a1f3b7a9"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-mdpi/ic_launcher.webp",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4f0f1d64e58ba64d180ce43ee13bf9a17835fbca",
+      "size": 982,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/4f0f1d64e58ba64d180ce43ee13bf9a17835fbca"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-mdpi/ic_launcher_round.webp",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "62b611da081676d42f6c3f78a2c91e7bcedddedb",
+      "size": 1772,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/62b611da081676d42f6c3f78a2c91e7bcedddedb"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-xhdpi/ic_launcher.webp",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "948a3070fe34c611c42c0d3ad3013a0dce358be0",
+      "size": 1900,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/948a3070fe34c611c42c0d3ad3013a0dce358be0"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-xhdpi/ic_launcher_round.webp",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1b9a6956b3acdc11f40ce2bb3f6efbd845cc243f",
+      "size": 3918,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/1b9a6956b3acdc11f40ce2bb3f6efbd845cc243f"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-xxhdpi/ic_launcher.webp",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "28d4b77f9f036a47549d47db79c16788749dca10",
+      "size": 2884,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/28d4b77f9f036a47549d47db79c16788749dca10"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.webp",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9287f5083623b375139afb391af71cc533a7dd37",
+      "size": 5914,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/9287f5083623b375139afb391af71cc533a7dd37"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-xxxhdpi/ic_launcher.webp",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "aa7d6427e6fa1074b79ccd52ef67ac15c5637e85",
+      "size": 3844,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/aa7d6427e6fa1074b79ccd52ef67ac15c5637e85"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.webp",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9126ae37cbc3587421d6889eadd1d91fbf1994d4",
+      "size": 7778,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/9126ae37cbc3587421d6889eadd1d91fbf1994d4"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/values-night/themes.xml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ee8e48e2967badd7e5fcfabf2399882bd30a20c5",
+      "size": 700,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/ee8e48e2967badd7e5fcfabf2399882bd30a20c5"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/values/colors.xml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f8c6127d327620c93d2b2d00342a68e97b98a48d",
+      "size": 378,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/f8c6127d327620c93d2b2d00342a68e97b98a48d"
+    },
+    {
+      "path": "crates/brush-app/app/src/main/res/values/themes.xml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "502d3c6d54022a6cd60b4628dbc74e86d8310cdb",
+      "size": 700,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/502d3c6d54022a6cd60b4628dbc74e86d8310cdb"
+    },
+    {
+      "path": "crates/brush-app/assets/favicon.ico",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "61ad031aa5b8aadf968a2b864649c3bb84b91735",
+      "size": 15406,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/61ad031aa5b8aadf968a2b864649c3bb84b91735"
+    },
+    {
+      "path": "crates/brush-app/assets/icon-256.png",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7a4743cff18d6efd8688dff60df5f2338236ae02",
+      "size": 2772,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/7a4743cff18d6efd8688dff60df5f2338236ae02"
+    },
+    {
+      "path": "crates/brush-app/src/bin.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c316ed3940ff3681d475f0ab882430a87119fa5b",
+      "size": 3325,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/c316ed3940ff3681d475f0ab882430a87119fa5b"
+    },
+    {
+      "path": "crates/brush-app/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e743c323ad4511f243bcbf770416f16bd4266290",
+      "size": 1334,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/e743c323ad4511f243bcbf770416f16bd4266290"
+    },
+    {
+      "path": "crates/brush-bench-test/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c8b26d4710db8bb4d6a3bf3502ad73804d7599c9",
+      "size": 757,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/c8b26d4710db8bb4d6a3bf3502ad73804d7599c9"
+    },
+    {
+      "path": "crates/brush-bench-test/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d783ad94bc85ab4e19f9ca6614826179d919901e",
+      "size": 63,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/d783ad94bc85ab4e19f9ca6614826179d919901e"
+    },
+    {
+      "path": "crates/brush-bench-test/src/reference.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "179c353ae78f3a64190985afaf3cd42915fd6334",
+      "size": 7472,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/179c353ae78f3a64190985afaf3cd42915fd6334"
+    },
+    {
+      "path": "crates/brush-bench-test/src/safetensor_utils.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fd91b15c28363534e0ad9a6de1ecd313ca16a0fe",
+      "size": 1042,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/fd91b15c28363534e0ad9a6de1ecd313ca16a0fe"
+    },
+    {
+      "path": "crates/brush-bench-test/src/training_bench.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f6d16d42dc2303b0449bd46a3d9a914f4141458e",
+      "size": 12626,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/f6d16d42dc2303b0449bd46a3d9a914f4141458e"
+    },
+    {
+      "path": "crates/brush-cli/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ed8bb79bc9199af5fb1ecc633da6e4337552f52c",
+      "size": 419,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/ed8bb79bc9199af5fb1ecc633da6e4337552f52c"
+    },
+    {
+      "path": "crates/brush-cli/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5efdb05d0f31faf08e98df07484b64e760fa7043",
+      "size": 7787,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/5efdb05d0f31faf08e98df07484b64e760fa7043"
+    },
+    {
+      "path": "crates/brush-dataset/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1fbbacda67b8a7f698c2eb2a4a0bafa2bf6ff74a",
+      "size": 852,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/1fbbacda67b8a7f698c2eb2a4a0bafa2bf6ff74a"
+    },
+    {
+      "path": "crates/brush-dataset/src/config.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5c5af2e1483d913c4d1b97e9bd4bd5ae95578c7d",
+      "size": 963,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/5c5af2e1483d913c4d1b97e9bd4bd5ae95578c7d"
+    },
+    {
+      "path": "crates/brush-dataset/src/formats/colmap.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d9fe9fc02e18cad982ee169206b4f5b5d1695864",
+      "size": 7617,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/d9fe9fc02e18cad982ee169206b4f5b5d1695864"
+    },
+    {
+      "path": "crates/brush-dataset/src/formats/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5b821900df71ce5699d16edba66ddc7e3c32d3c3",
+      "size": 2976,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/5b821900df71ce5699d16edba66ddc7e3c32d3c3"
+    },
+    {
+      "path": "crates/brush-dataset/src/formats/nerfstudio.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d015d238988cca467f17ca1f4d0ba795216fbf7d",
+      "size": 9801,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/d015d238988cca467f17ca1f4d0ba795216fbf7d"
+    },
+    {
+      "path": "crates/brush-dataset/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1194da038b3ad817d6785fc008d3c4f6b8f39c7d",
+      "size": 6323,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/1194da038b3ad817d6785fc008d3c4f6b8f39c7d"
+    },
+    {
+      "path": "crates/brush-dataset/src/scene.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e189cd80f272e432d64fbadd0d9bd651dba4231b",
+      "size": 9154,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/e189cd80f272e432d64fbadd0d9bd651dba4231b"
+    },
+    {
+      "path": "crates/brush-dataset/src/scene_loader.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e87d02ffd2d7c0ffa133b2d52e6c3a61eb65bc22",
+      "size": 5540,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/e87d02ffd2d7c0ffa133b2d52e6c3a61eb65bc22"
+    },
+    {
+      "path": "crates/brush-kernel/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0781649e1285be949dac38880603924ec03696eb",
+      "size": 378,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/0781649e1285be949dac38880603924ec03696eb"
+    },
+    {
+      "path": "crates/brush-kernel/build.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f663f7bf458009c4be213bc76b0d428ed950bffc",
+      "size": 166,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/f663f7bf458009c4be213bc76b0d428ed950bffc"
+    },
+    {
+      "path": "crates/brush-kernel/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1b490b1c4be2937158fed24c8669fd77845cc212",
+      "size": 8779,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/1b490b1c4be2937158fed24c8669fd77845cc212"
+    },
+    {
+      "path": "crates/brush-kernel/src/shaders/wg.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "db47fed377f622dd9420b86616779d6704521f80",
+      "size": 939,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/db47fed377f622dd9420b86616779d6704521f80"
+    },
+    {
+      "path": "crates/brush-prefix-sum/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b336c8d35350ad89935fcf3b2d94d61f362837bf",
+      "size": 421,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/b336c8d35350ad89935fcf3b2d94d61f362837bf"
+    },
+    {
+      "path": "crates/brush-prefix-sum/build.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cfa464aff2964b6a8352836a9ddd6966dc0fcae3",
+      "size": 388,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/cfa464aff2964b6a8352836a9ddd6966dc0fcae3"
+    },
+    {
+      "path": "crates/brush-prefix-sum/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5fbb62d67e48bdbc84eba14866d597a0780aeb57",
+      "size": 6294,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/5fbb62d67e48bdbc84eba14866d597a0780aeb57"
+    },
+    {
+      "path": "crates/brush-prefix-sum/src/shaders/prefix_sum_add_scanned_sums.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5df89d850a970708d1cd2898922e8d1385d02d85",
+      "size": 307,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/5df89d850a970708d1cd2898922e8d1385d02d85"
+    },
+    {
+      "path": "crates/brush-prefix-sum/src/shaders/prefix_sum_helpers.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "14b8bafc7e6e3fb4364de6fd0725ae2b2cb001be",
+      "size": 606,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/14b8bafc7e6e3fb4364de6fd0725ae2b2cb001be"
+    },
+    {
+      "path": "crates/brush-prefix-sum/src/shaders/prefix_sum_scan.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c209e2d3b251ebeb7793919f707ae5b84561d6f4",
+      "size": 351,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/c209e2d3b251ebeb7793919f707ae5b84561d6f4"
+    },
+    {
+      "path": "crates/brush-prefix-sum/src/shaders/prefix_sum_scan_sums.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "90246c10fa68fe39d0a988dded8507fce955f533",
+      "size": 420,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/90246c10fa68fe39d0a988dded8507fce955f533"
+    },
+    {
+      "path": "crates/brush-process/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "485cd166783b90d0ab9f112c29f04cf0b88a70fe",
+      "size": 947,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/485cd166783b90d0ab9f112c29f04cf0b88a70fe"
+    },
+    {
+      "path": "crates/brush-process/src/config.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ca6a378070e883e7c6be31873110ce26efb1a463",
+      "size": 2476,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/ca6a378070e883e7c6be31873110ce26efb1a463"
+    },
+    {
+      "path": "crates/brush-process/src/emit_warnings.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "529d8145228662e9f69e1bbcfaf5175f84aa7b46",
+      "size": 541,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/529d8145228662e9f69e1bbcfaf5175f84aa7b46"
+    },
+    {
+      "path": "crates/brush-process/src/eval_export.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8e737863d232aaacc5addde3dc461a4f7b0eefe2",
+      "size": 1146,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/8e737863d232aaacc5addde3dc461a4f7b0eefe2"
+    },
+    {
+      "path": "crates/brush-process/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "21d95bff194ed2ffd76894571ce68b3a63c7fb22",
+      "size": 180,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/21d95bff194ed2ffd76894571ce68b3a63c7fb22"
+    },
+    {
+      "path": "crates/brush-process/src/message.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "56d43815c08e13aebfd1733827a642e3637794d4",
+      "size": 1533,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/56d43815c08e13aebfd1733827a642e3637794d4"
+    },
+    {
+      "path": "crates/brush-process/src/process.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1efe164ab8a3812f74b8a4517c5a5230492b4462",
+      "size": 1492,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/1efe164ab8a3812f74b8a4517c5a5230492b4462"
+    },
+    {
+      "path": "crates/brush-process/src/train_stream.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3e94dce494441a292286416e53c7502f55df074a",
+      "size": 10869,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/3e94dce494441a292286416e53c7502f55df074a"
+    },
+    {
+      "path": "crates/brush-process/src/view_stream.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "22bad205f0cb2910b75f5632556699c9d41402c1",
+      "size": 2368,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/22bad205f0cb2910b75f5632556699c9d41402c1"
+    },
+    {
+      "path": "crates/brush-process/src/visualize_tools.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a7c6f5d56c0ef6e61b6c515fe6e8ed21360186ad",
+      "size": 14649,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/a7c6f5d56c0ef6e61b6c515fe6e8ed21360186ad"
+    },
+    {
+      "path": "crates/brush-render-bwd/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ed455d9f6f63f54a76ebd2c0d9a9b917ecf17436",
+      "size": 561,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/ed455d9f6f63f54a76ebd2c0d9a9b917ecf17436"
+    },
+    {
+      "path": "crates/brush-render-bwd/build.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5f44f616339ba58b1e305e317acb3de70e161443",
+      "size": 334,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/5f44f616339ba58b1e305e317acb3de70e161443"
+    },
+    {
+      "path": "crates/brush-render-bwd/src/burn_glue.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "572ce859a365bda415c27a0754bb249e386dfea8",
+      "size": 13766,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/572ce859a365bda415c27a0754bb249e386dfea8"
+    },
+    {
+      "path": "crates/brush-render-bwd/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8b2c0fdf19f2d5a8f2a9c12a9b51f2edb796c84b",
+      "size": 48,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/8b2c0fdf19f2d5a8f2a9c12a9b51f2edb796c84b"
+    },
+    {
+      "path": "crates/brush-render-bwd/src/render_bwd.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e799d8b0fe6df8b968b64a50832a9fe5dcda7fdf",
+      "size": 6256,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/e799d8b0fe6df8b968b64a50832a9fe5dcda7fdf"
+    },
+    {
+      "path": "crates/brush-render-bwd/src/shaders/project_backwards.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "311b24c254b577c4b99b9031a9b047db904eb2e3",
+      "size": 13845,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/311b24c254b577c4b99b9031a9b047db904eb2e3"
+    },
+    {
+      "path": "crates/brush-render-bwd/src/shaders/rasterize_backwards.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1ed9ca9889ce4567d10ac9eb605d88c80e9a90d7",
+      "size": 9964,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/1ed9ca9889ce4567d10ac9eb605d88c80e9a90d7"
+    },
+    {
+      "path": "crates/brush-render/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "39e0b99e0be3aee4df220878b2af10a2eaaa9321",
+      "size": 863,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/39e0b99e0be3aee4df220878b2af10a2eaaa9321"
+    },
+    {
+      "path": "crates/brush-render/build.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ea6d8b89f0d91edff61bd2bf292bb2a96eabcc8f",
+      "size": 413,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/ea6d8b89f0d91edff61bd2bf292bb2a96eabcc8f"
+    },
+    {
+      "path": "crates/brush-render/src/bounding_box.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9f568fdc7c4b8d88a4ad6f618b6513fc58085345",
+      "size": 666,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/9f568fdc7c4b8d88a4ad6f618b6513fc58085345"
+    },
+    {
+      "path": "crates/brush-render/src/burn_glue.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6888888179e373a4fb62cb16d7863dcc763d7dff",
+      "size": 6710,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/6888888179e373a4fb62cb16d7863dcc763d7dff"
+    },
+    {
+      "path": "crates/brush-render/src/camera.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ec706e62ca840fae9b499f52f53ada6d06377f17",
+      "size": 1473,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/ec706e62ca840fae9b499f52f53ada6d06377f17"
+    },
+    {
+      "path": "crates/brush-render/src/dim_check.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c51491039fa3ed1c1992e031df700c7494e7eba8",
+      "size": 2277,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/c51491039fa3ed1c1992e031df700c7494e7eba8"
+    },
+    {
+      "path": "crates/brush-render/src/gaussian_splats.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c19ec3f757ca71682105821ead6dd937623ebcf9",
+      "size": 15077,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/c19ec3f757ca71682105821ead6dd937623ebcf9"
+    },
+    {
+      "path": "crates/brush-render/src/kernels.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6bce313c79c3d4ce52e88546dbfea88ee229f899",
+      "size": 402,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/6bce313c79c3d4ce52e88546dbfea88ee229f899"
+    },
+    {
+      "path": "crates/brush-render/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ef89ae488388bad0afbde254f53599d70d9287fd",
+      "size": 2799,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/ef89ae488388bad0afbde254f53599d70d9287fd"
+    },
+    {
+      "path": "crates/brush-render/src/render.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1e215e893c34166466d6c6264ffd15f17db719c9",
+      "size": 16286,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/1e215e893c34166466d6c6264ffd15f17db719c9"
+    },
+    {
+      "path": "crates/brush-render/src/render_aux.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4ead1ec5aef5db0129e7175d8fb3c0faf54efefc",
+      "size": 6391,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/4ead1ec5aef5db0129e7175d8fb3c0faf54efefc"
+    },
+    {
+      "path": "crates/brush-render/src/sh.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "032fd81417cf8857663e67875e9ec5623d19731c",
+      "size": 646,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/032fd81417cf8857663e67875e9ec5623d19731c"
+    },
+    {
+      "path": "crates/brush-render/src/shaders/helpers.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8fa301a781b0d8ed0c33253e5f50828dc3c0164e",
+      "size": 8108,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/8fa301a781b0d8ed0c33253e5f50828dc3c0164e"
+    },
+    {
+      "path": "crates/brush-render/src/shaders/map_gaussian_to_intersects.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5283c2e71d2dc5c0bc00137b697d181b40f229cc",
+      "size": 3093,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/5283c2e71d2dc5c0bc00137b697d181b40f229cc"
+    },
+    {
+      "path": "crates/brush-render/src/shaders/project_forward.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "177bf3494a108be75d70e1a8e2c19fd5ae1eec48",
+      "size": 2715,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/177bf3494a108be75d70e1a8e2c19fd5ae1eec48"
+    },
+    {
+      "path": "crates/brush-render/src/shaders/project_visible.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0be9926debce0b8bad99b7ba97f961cb3510b315",
+      "size": 7381,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/0be9926debce0b8bad99b7ba97f961cb3510b315"
+    },
+    {
+      "path": "crates/brush-render/src/shaders/rasterize.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7b3abd417e80d9d628547da3732e47247dd5bfc0",
+      "size": 4383,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/7b3abd417e80d9d628547da3732e47247dd5bfc0"
+    },
+    {
+      "path": "crates/brush-render/src/tests/grad.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8cfe942be79ea4bf05a329bde76c67bc21a3f388",
+      "size": 3117,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/8cfe942be79ea4bf05a329bde76c67bc21a3f388"
+    },
+    {
+      "path": "crates/brush-render/src/tests/knn_init.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "da78f7d37767093453189e582b2708c8b9745485",
+      "size": 936,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/da78f7d37767093453189e582b2708c8b9745485"
+    },
+    {
+      "path": "crates/brush-render/src/tests/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b247eed07586100510bcd8061c0774588d3bef6d",
+      "size": 26,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/b247eed07586100510bcd8061c0774588d3bef6d"
+    },
+    {
+      "path": "crates/brush-render/src/tests/render.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a0aeb64d9a5057369f435f86542538a6b81cd188",
+      "size": 2052,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/a0aeb64d9a5057369f435f86542538a6b81cd188"
+    },
+    {
+      "path": "crates/brush-render/src/validation.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bef10901936b61e3f5d731de5ec89031dc3131d8",
+      "size": 2759,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/bef10901936b61e3f5d731de5ec89031dc3131d8"
+    },
+    {
+      "path": "crates/brush-rerun/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2c2e988dcd4b97814aa6ed10678fb6c22da06276",
+      "size": 259,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/2c2e988dcd4b97814aa6ed10678fb6c22da06276"
+    },
+    {
+      "path": "crates/brush-rerun/src/burn_to_rerun.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "64b8dd83ecd83e2cd2cacb21ea7203168e26f59c",
+      "size": 2986,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/64b8dd83ecd83e2cd2cacb21ea7203168e26f59c"
+    },
+    {
+      "path": "crates/brush-rerun/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "97a316511fff98e9b20c3f94c7096098c99befbf",
+      "size": 88,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/97a316511fff98e9b20c3f94c7096098c99befbf"
+    },
+    {
+      "path": "crates/brush-serde/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "15e34f226d480eac58112df103ccfa5f5d420a00",
+      "size": 737,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/15e34f226d480eac58112df103ccfa5f5d420a00"
+    },
+    {
+      "path": "crates/brush-serde/src/export.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "885a2c50786f16da5ad24c66c43bdbdf7b6b16b1",
+      "size": 10794,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/885a2c50786f16da5ad24c66c43bdbdf7b6b16b1"
+    },
+    {
+      "path": "crates/brush-serde/src/import.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9955c94adbc822effdc0d55ff2f2da0d6157cb9b",
+      "size": 24078,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/9955c94adbc822effdc0d55ff2f2da0d6157cb9b"
+    },
+    {
+      "path": "crates/brush-serde/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "38a74b04e807c676c972459052b1c0a4b34352b9",
+      "size": 2029,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/38a74b04e807c676c972459052b1c0a4b34352b9"
+    },
+    {
+      "path": "crates/brush-serde/src/ply_gaussian.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7063dbd1fa99064585f7e77659e69d0b4dd0ceb3",
+      "size": 11187,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/7063dbd1fa99064585f7e77659e69d0b4dd0ceb3"
+    },
+    {
+      "path": "crates/brush-serde/src/quant.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c0648cea65ade0ca3c31e4343dc8e96865940f1c",
+      "size": 3284,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/c0648cea65ade0ca3c31e4343dc8e96865940f1c"
+    },
+    {
+      "path": "crates/brush-sort/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f6f952de3974fecd66c5157d8f90cf04c4a50d4f",
+      "size": 508,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/f6f952de3974fecd66c5157d8f90cf04c4a50d4f"
+    },
+    {
+      "path": "crates/brush-sort/build.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d9479d4113d49cce2660e3fa15e8f35bf22b0f6e",
+      "size": 436,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/d9479d4113d49cce2660e3fa15e8f35bf22b0f6e"
+    },
+    {
+      "path": "crates/brush-sort/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1b13d88da8b4a8bdf627da7e88ca97dd72703813",
+      "size": 9651,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/1b13d88da8b4a8bdf627da7e88ca97dd72703813"
+    },
+    {
+      "path": "crates/brush-sort/src/shaders/sort_count.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0e75150bb7dc6779b34946190157191c76b081c2",
+      "size": 1559,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/0e75150bb7dc6779b34946190157191c76b081c2"
+    },
+    {
+      "path": "crates/brush-sort/src/shaders/sort_reduce.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "39e12ad9f245ffa1c9adf0f54b219ecc754b988b",
+      "size": 1558,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/39e12ad9f245ffa1c9adf0f54b219ecc754b988b"
+    },
+    {
+      "path": "crates/brush-sort/src/shaders/sort_scan.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5fe1327244753592b2a61d1f45241fe02d703ea5",
+      "size": 2160,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/5fe1327244753592b2a61d1f45241fe02d703ea5"
+    },
+    {
+      "path": "crates/brush-sort/src/shaders/sort_scan_add.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "454d16e52bc070a28661894cc83e97de29d367b9",
+      "size": 2747,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/454d16e52bc070a28661894cc83e97de29d367b9"
+    },
+    {
+      "path": "crates/brush-sort/src/shaders/sort_scatter.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a654ccd20fe9ec7dcddecdabbf7572958bb451b0",
+      "size": 4758,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/a654ccd20fe9ec7dcddecdabbf7572958bb451b0"
+    },
+    {
+      "path": "crates/brush-sort/src/shaders/sorting.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4f1de078c7d55ec39c62f145fd9af271e9068304",
+      "size": 958,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/4f1de078c7d55ec39c62f145fd9af271e9068304"
+    },
+    {
+      "path": "crates/brush-train/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "487b33e2f2652c60a7eb79144a3ed0dca36dd170",
+      "size": 674,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/487b33e2f2652c60a7eb79144a3ed0dca36dd170"
+    },
+    {
+      "path": "crates/brush-train/src/adam_scaled.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3bcf07cb003d3445c53ce72cdd23d780718090f6",
+      "size": 4961,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/3bcf07cb003d3445c53ce72cdd23d780718090f6"
+    },
+    {
+      "path": "crates/brush-train/src/config.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "68df1f0eb6a966bd7330a587a6da2af08642897f",
+      "size": 3801,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/68df1f0eb6a966bd7330a587a6da2af08642897f"
+    },
+    {
+      "path": "crates/brush-train/src/eval.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fb08221d4896db61a11ee573d42d216ff479a434",
+      "size": 2137,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/fb08221d4896db61a11ee573d42d216ff479a434"
+    },
+    {
+      "path": "crates/brush-train/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2b93b8155a27fc088147b4333e5b66311af0a439",
+      "size": 157,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/2b93b8155a27fc088147b4333e5b66311af0a439"
+    },
+    {
+      "path": "crates/brush-train/src/msg.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "780d8c37a4c38e0452a5170a11f39f41e7a1e6f0",
+      "size": 485,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/780d8c37a4c38e0452a5170a11f39f41e7a1e6f0"
+    },
+    {
+      "path": "crates/brush-train/src/multinomial.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "54b69e041c1af8a52cbf45be256f9d4f8ad41ac5",
+      "size": 2446,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/54b69e041c1af8a52cbf45be256f9d4f8ad41ac5"
+    },
+    {
+      "path": "crates/brush-train/src/quat_vec.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "002ab264ce000fb5a3187016cdcb69fe4d3eb138",
+      "size": 2671,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/002ab264ce000fb5a3187016cdcb69fe4d3eb138"
+    },
+    {
+      "path": "crates/brush-train/src/ssim.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "eb8e72e6dc0a353d0853f1132ab188f69021a20c",
+      "size": 3734,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/eb8e72e6dc0a353d0853f1132ab188f69021a20c"
+    },
+    {
+      "path": "crates/brush-train/src/stats.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dca2ded63fe6abe5114d8fc7829bf31501924ad3",
+      "size": 1632,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/dca2ded63fe6abe5114d8fc7829bf31501924ad3"
+    },
+    {
+      "path": "crates/brush-train/src/train.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "47aa0710b0cc5150a8ac4fa90b5fe819073ef0f8",
+      "size": 25418,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/47aa0710b0cc5150a8ac4fa90b5fe819073ef0f8"
+    },
+    {
+      "path": "crates/brush-ui/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e2dd732bb1c8a6a9e73c2d85bebe038480ef3628",
+      "size": 957,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/e2dd732bb1c8a6a9e73c2d85bebe038480ef3628"
+    },
+    {
+      "path": "crates/brush-ui/src/app.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fcb94e7ccb825080908056cbe7e516ddd1cc4600",
+      "size": 7703,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/fcb94e7ccb825080908056cbe7e516ddd1cc4600"
+    },
+    {
+      "path": "crates/brush-ui/src/burn_texture.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "01b68c51131fd64618b1557c1327fba17ce76020",
+      "size": 5995,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/01b68c51131fd64618b1557c1327fba17ce76020"
+    },
+    {
+      "path": "crates/brush-ui/src/camera_controls.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4ed5471464557efbf2dc81052376133613206d23",
+      "size": 14356,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/4ed5471464557efbf2dc81052376133613206d23"
+    },
+    {
+      "path": "crates/brush-ui/src/datasets.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "39601582d58a45b8df7605d4d6e7e65fa48c3155",
+      "size": 13837,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/39601582d58a45b8df7605d4d6e7e65fa48c3155"
+    },
+    {
+      "path": "crates/brush-ui/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "82fb5765fb3c8ef6fd6b5d19e1be8f5498630bea",
+      "size": 2775,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/82fb5765fb3c8ef6fd6b5d19e1be8f5498630bea"
+    },
+    {
+      "path": "crates/brush-ui/src/mod.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "20a9faebedf2990ec25ff75b86209e4d7149ae09",
+      "size": 267,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/20a9faebedf2990ec25ff75b86209e4d7149ae09"
+    },
+    {
+      "path": "crates/brush-ui/src/panels.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7e6f4e0d794d6be1db9107407f33c0f7d6c51aa4",
+      "size": 843,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/7e6f4e0d794d6be1db9107407f33c0f7d6c51aa4"
+    },
+    {
+      "path": "crates/brush-ui/src/scene.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "254f6113c16e7157a11921edfbc80cc54841f468",
+      "size": 23311,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/254f6113c16e7157a11921edfbc80cc54841f468"
+    },
+    {
+      "path": "crates/brush-ui/src/settings.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0b41373527ff3c8670dbe640167c2fb34abdbc3f",
+      "size": 15259,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/0b41373527ff3c8670dbe640167c2fb34abdbc3f"
+    },
+    {
+      "path": "crates/brush-ui/src/shaders/widget_3d.wgsl",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "aec603ed620d6893da99ac27e11e353f3e489d69",
+      "size": 729,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/aec603ed620d6893da99ac27e11e353f3e489d69"
+    },
+    {
+      "path": "crates/brush-ui/src/stats.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "33246514e8592de9388cbb789b3631f7b5307e41",
+      "size": 8710,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/33246514e8592de9388cbb789b3631f7b5307e41"
+    },
+    {
+      "path": "crates/brush-ui/src/ui_process.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b7ea10735e3dfa874ca01018d6dd3180023fd9ad",
+      "size": 10719,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/b7ea10735e3dfa874ca01018d6dd3180023fd9ad"
+    },
+    {
+      "path": "crates/brush-ui/src/widget_3d.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2e6e3d766a7164b60911d932a81e75374c27aee6",
+      "size": 11381,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/2e6e3d766a7164b60911d932a81e75374c27aee6"
+    },
+    {
+      "path": "crates/brush-vfs/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3394b373bc1487a71b03875bed21ab68ee845bdb",
+      "size": 1052,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/3394b373bc1487a71b03875bed21ab68ee845bdb"
+    },
+    {
+      "path": "crates/brush-vfs/src/data_source.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "80a87c40d8972213e4fbdc111b39159b4c1bc96a",
+      "size": 5496,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/80a87c40d8972213e4fbdc111b39159b4c1bc96a"
+    },
+    {
+      "path": "crates/brush-vfs/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3e3c577ec9f418f5edea1c5e10cdf8e69868c960",
+      "size": 18271,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/3e3c577ec9f418f5edea1c5e10cdf8e69868c960"
+    },
+    {
+      "path": "crates/brush-wasm/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bb71b8090b47ee39421a16de54c91f6116375e8d",
+      "size": 1154,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/bb71b8090b47ee39421a16de54c91f6116375e8d"
+    },
+    {
+      "path": "crates/brush-wasm/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4147ac729e50952cecbc636e2c1a6cfcf931380d",
+      "size": 4200,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/4147ac729e50952cecbc636e2c1a6cfcf931380d"
+    },
+    {
+      "path": "crates/brush-wasm/src/three.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a58c1c7f52d356df79b35666bdd44fffcb20adc2",
+      "size": 533,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/a58c1c7f52d356df79b35666bdd44fffcb20adc2"
+    },
+    {
+      "path": "crates/brush-wgsl/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1f342b2581354a3063ea983f2f23d4cfe30ecefa",
+      "size": 353,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/1f342b2581354a3063ea983f2f23d4cfe30ecefa"
+    },
+    {
+      "path": "crates/brush-wgsl/src/codewriter.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dfe55c6239ce493bd8e66c95c7c0faf2be6e3720",
+      "size": 800,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/dfe55c6239ce493bd8e66c95c7c0faf2be6e3720"
+    },
+    {
+      "path": "crates/brush-wgsl/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e50ffa2fac74ade9401e7716895f92f58d9ab66e",
+      "size": 13657,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/e50ffa2fac74ade9401e7716895f92f58d9ab66e"
+    },
+    {
+      "path": "crates/colmap-reader/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2afebddb5b94d858f1092262e2de209610de8517",
+      "size": 298,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/2afebddb5b94d858f1092262e2de209610de8517"
+    },
+    {
+      "path": "crates/colmap-reader/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "833203a4a3b9b5e8fc93903ea04f9fabd14a5a01",
+      "size": 21244,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/833203a4a3b9b5e8fc93903ea04f9fabd14a5a01"
+    },
+    {
+      "path": "crates/lpips-convert/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "00c70b4819f3a7472aa3fe9a4053bc1d58fbc73d",
+      "size": 282,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/00c70b4819f3a7472aa3fe9a4053bc1d58fbc73d"
+    },
+    {
+      "path": "crates/lpips-convert/src/main.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8dcc12b4f46689f76b7c71a6ed4f683229a4c863",
+      "size": 1113,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/8dcc12b4f46689f76b7c71a6ed4f683229a4c863"
+    },
+    {
+      "path": "crates/lpips/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b750096baf1a949e2d5c335d4e3bf745952995f6",
+      "size": 231,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/b750096baf1a949e2d5c335d4e3bf745952995f6"
+    },
+    {
+      "path": "crates/lpips/burn_mapped.bin",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9ee45efe2a11660f5993cd0aa26b9adaa32be3fa",
+      "size": 29433386,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/9ee45efe2a11660f5993cd0aa26b9adaa32be3fa"
+    },
+    {
+      "path": "crates/lpips/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c5e4a9fce5652ce073b822cf2576b27ebde754b1",
+      "size": 6479,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/c5e4a9fce5652ce073b822cf2576b27ebde754b1"
+    },
+    {
+      "path": "crates/rrfd/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "67eab51903e9b030ace59c11bd77de6236cbcc29",
+      "size": 899,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/67eab51903e9b030ace59c11bd77de6236cbcc29"
+    },
+    {
+      "path": "crates/rrfd/src/android.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "30494db817f85f1ed03e49f249784e98be076371",
+      "size": 4060,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/30494db817f85f1ed03e49f249784e98be076371"
+    },
+    {
+      "path": "crates/rrfd/src/lib.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "00a067f319124149a21f5f8606e766dc6f912edf",
+      "size": 2334,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/00a067f319124149a21f5f8606e766dc6f912edf"
+    },
+    {
+      "path": "crates/rrfd/src/wasm.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8a3944851c903e29f471f8ca3b77cfafe45e7786",
+      "size": 5162,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/8a3944851c903e29f471f8ca3b77cfafe45e7786"
+    },
+    {
+      "path": "cubecl.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "68d3c598a06091fb64680544e40fe4c9769ce66e",
+      "size": 215,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/68d3c598a06091fb64680544e40fe4c9769ce66e"
+    },
+    {
+      "path": "examples/train-2d/Cargo.toml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0b6afc247cb64f22e2c94d73a28c192fd2d9d90f",
+      "size": 569,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/0b6afc247cb64f22e2c94d73a28c192fd2d9d90f"
+    },
+    {
+      "path": "examples/train-2d/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4a418d09636536b521fe1ef5b7b3a00f470a8515",
+      "size": 84,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/4a418d09636536b521fe1ef5b7b3a00f470a8515"
+    },
+    {
+      "path": "examples/train-2d/crab.jpg",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "afbb3276ec9182310c1439e3b55d16932600f331",
+      "size": 53049,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/afbb3276ec9182310c1439e3b55d16932600f331"
+    },
+    {
+      "path": "examples/train-2d/examples/train-2d.rs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "20ab4cc6700e24b4a04cb35cf6f598c0442f28ac",
+      "size": 6215,
+      "url": "https://api.github.com/repos/ArthurBrussee/brush/git/blobs/20ab4cc6700e24b4a04cb35cf6f598c0442f28ac"
+    }
+  ],
+  "requiredBinary": "brush_app",
+  "lpipsSHA256": "abb257f9aa223154f3ed476674dbfc0b6daee5b2e07618bd208918ee9600e2e7"
+}

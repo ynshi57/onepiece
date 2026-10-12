@@ -1,0 +1,72 @@
+{
+  "repository": "https://github.com/DepthAnything/Depth-Anything-V2",
+  "revision": "a561b849ebae10a6f5ef49e26c83cbbcd36c71bf",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "size": 11357
+    },
+    {
+      "path": "depth_anything_v2/dinov2.py",
+      "sha": "83d250818c721c6df3b30d3f4352945527701615",
+      "size": 15178
+    },
+    {
+      "path": "depth_anything_v2/dinov2_layers/__init__.py",
+      "sha": "8120f4bc83066cb3f825ce32daa3b437f88486f1",
+      "size": 382
+    },
+    {
+      "path": "depth_anything_v2/dinov2_layers/attention.py",
+      "sha": "815a2bf53dbec496f6a184ed7d03bcecb7124262",
+      "size": 2343
+    },
+    {
+      "path": "depth_anything_v2/dinov2_layers/block.py",
+      "sha": "25488f57cc0ad3c692f86b62555f6668e2a66db1",
+      "size": 9332
+    },
+    {
+      "path": "depth_anything_v2/dinov2_layers/drop_path.py",
+      "sha": "af05625984dd14682cc96a63bf0c97bab1f123b1",
+      "size": 1160
+    },
+    {
+      "path": "depth_anything_v2/dinov2_layers/layer_scale.py",
+      "sha": "ca5daa52bd81d3581adeb2198ea5b7dba2a3aea1",
+      "size": 823
+    },
+    {
+      "path": "depth_anything_v2/dinov2_layers/mlp.py",
+      "sha": "5e4b315f972f9a9f54aef1e4ef4e81b52976f018",
+      "size": 1272
+    },
+    {
+      "path": "depth_anything_v2/dinov2_layers/patch_embed.py",
+      "sha": "574abe41175568d700a389b8b96d1ba554914779",
+      "size": 2832
+    },
+    {
+      "path": "depth_anything_v2/dinov2_layers/swiglu_ffn.py",
+      "sha": "b3324b266fb0a50ccf8c3a0ede2ae10ac4dfa03e",
+      "size": 1859
+    },
+    {
+      "path": "depth_anything_v2/dpt.py",
+      "sha": "18d3e6f8b5c973aea5d4927ef783d43053ba6429",
+      "size": 7391
+    },
+    {
+      "path": "depth_anything_v2/util/blocks.py",
+      "sha": "382ea183a40264056142afffc201c992a2b01d37",
+      "size": 3987
+    },
+    {
+      "path": "depth_anything_v2/util/transform.py",
+      "sha": "b14aacd44ea086b01725a9ca68bb49eadcf37d73",
+      "size": 6075
+    }
+  ]
+}

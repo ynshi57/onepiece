@@ -1,0 +1,6 @@
+# Optional bounded CPU Gaussian reference experiment, not core backend.
+# Intel Mac wheels end at torch 2.2; require Python 3.9-3.12 for this profile.
+-r requirements.txt
+torch>=2.2,<2.3
+# torch 2.2 NumPy bridge does not support NumPy 2.x.
+numpy>=1.24,<2

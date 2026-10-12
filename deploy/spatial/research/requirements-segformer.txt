@@ -1,0 +1,11 @@
+# Isolated research experiment only; not an App/model distribution profile.
+# Model/code license: NVIDIA research/evaluation; review before product use.
+transformers==4.44.2
+huggingface-hub==0.24.7
+tokenizers==0.19.1
+safetensors>=0.4,<1
+numpy>=1.24,<2
+Pillow>=10,<12
+torch==2.2.2
+
+pycolmap==3.12.5

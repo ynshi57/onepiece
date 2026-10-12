@@ -1,0 +1,10 @@
+{
+  "tag": "4.11.0",
+  "commit": "31b0eeea0b44b370fd0712312df4214d4ae1b158",
+  "archiveSHA256": "bb15d5c85bab38c1377c0c7dd7ff201b078bcdb41cc4ff9f85ac61aa56b5f631",
+  "sourceURL": "https://github.com/opencv/opencv/tree/31b0eeea0b44b370fd0712312df4214d4ae1b158",
+  "files": {
+    "modules/features2d/src/sift.dispatch.cpp": "c92b6016fcbdf8a5451bfdc4382a906263b058080880218f7ee28b89f7d1ffd6",
+    "modules/features2d/src/sift.simd.hpp": "07f5084ef8ef0776652aca0ffe2218447560e5bf6ebf73700fc721637675ae08"
+  }
+}

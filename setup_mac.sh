@@ -22,6 +22,9 @@
 #                     [--with-depth] [--hf-mirror] [-y|--yes]
 #
 # Notes:
+#   --with-spatial-depth  install optional offline relative-depth CPU prior (not measurement truth)
+#   --with-spatial-gs  install bounded CPU Gaussian research runtime (optional)
+#   --with-spatial-brush  build fixed-source Brush CLI with verified local JPEG-header patch (optional)
 #   --with-depth  also install the optional DepthAnythingV2 Core ML model
 #   --hf-mirror   route Hugging Face downloads through https://hf-mirror.com
 #                 (or honor a pre-set HF_ENDPOINT)
@@ -38,6 +41,10 @@ DO_MODELS=1
 DO_QWEN=1
 DO_IOS=1
 WITH_DEPTH=0
+WITH_SPATIAL_GS=0
+WITH_SPATIAL_DEPTH=0
+WITH_SPATIAL_BRUSH=0
+INSTALL_FAILED=0
 HF_MIRROR=0
 ASSUME_YES=0
 
@@ -47,7 +54,10 @@ log()  { echo "[setup] $*"; }
 warn() { echo "[setup][warn] $*" >&2; }
 err()  { echo "[setup][error] $*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
-add_summary() { SUMMARY+=("$1"); }
+add_summary() {
+  SUMMARY+=("$1")
+  case "$1" in FAIL\|*) INSTALL_FAILED=1 ;; esac
+}
 
 # version_ge A B  -> true if A >= B (semantic-ish, via sort -V)
 version_ge() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
@@ -65,6 +75,9 @@ while [ $# -gt 0 ]; do
     --skip-qwen)   DO_QWEN=0 ;;
     --skip-ios)    DO_IOS=0 ;;
     --with-depth)  WITH_DEPTH=1 ;;
+    --with-spatial-gs) WITH_SPATIAL_GS=1 ;;
+    --with-spatial-depth) WITH_SPATIAL_DEPTH=1 ;;
+    --with-spatial-brush) WITH_SPATIAL_BRUSH=1 ;;
     --hf-mirror)   HF_MIRROR=1 ;;
     -y|--yes)      ASSUME_YES=1 ;;
     -h|--help)     usage; exit 0 ;;
@@ -82,7 +95,11 @@ ensure_venv() {
   if [ ! -d .venv ]; then
     local py=""
     local cand
-    for cand in python3.13 python3.12 python3.11 python3; do
+    local python_candidates="python3.13 python3.12 python3.11 python3"
+    if [ "${WITH_SPATIAL_DEPTH}" = 1 ]; then
+      python_candidates="python3.12 python3.11 python3"
+    fi
+    for cand in ${python_candidates}; do
       if have "${cand}"; then
         py="$(command -v "${cand}")"
         break
@@ -165,12 +182,31 @@ profile_core() {
   # checkout or a partial install fails loudly here instead of much later at
   # `uvicorn app.main:app` time (No Silent Failures).
   if ! python -c "import numpy, PIL" >/dev/null 2>&1; then
-    warn "numpy/Pillow 缺失（旧 checkout 或安装不完整）——补装一次"
-    if ! pip install numpy Pillow; then
-      add_summary "FAIL|core|numpy/Pillow 安装失败，app.main 无法导入"
+    warn "视觉处理依赖缺失（旧 checkout 或安装不完整）——按依赖清单修复"
+    if ! pip install -r server-vqa/requirements.txt; then
+      add_summary "FAIL|core|视觉处理依赖安装失败，空间扫描检查不可用"
       deactivate 2>/dev/null || true
       return 1
     fi
+  fi
+
+  log "构建项目内 SIFT 源码（不使用 Python OpenCV wheel）"
+  if ! command -v cmake >/dev/null 2>&1; then
+    if ! command -v brew >/dev/null 2>&1 || ! brew install cmake; then
+      add_summary "FAIL|core|缺少 CMake，请安装 CMake 后重新运行 core profile"
+      deactivate 2>/dev/null || true
+      return 1
+    fi
+  fi
+  if ! bash deploy/spatial/build_sift.sh; then
+    add_summary "FAIL|core|SIFT 源码编译失败，请检查 CMake 与 Xcode Command Line Tools"
+    deactivate 2>/dev/null || true
+    return 1
+  fi
+  if ! PYTHONPATH=server-vqa python -c "from app.spatial_sift_native import library; library()"; then
+    add_summary "FAIL|core|SIFT 本机库加载失败，请重新编译源码"
+    deactivate 2>/dev/null || true
+    return 1
   fi
 
   log "冒烟测试：pytest server-vqa/tests（会导入含 PIL 的 app.main）"
@@ -416,4 +452,35 @@ if [ "${DO_MODELS}" = 1 ]; then profile_models || warn "models profile 有失败
 if [ "${DO_QWEN}" = 1 ];   then profile_qwen   || warn "qwen profile 有失败项（见摘要）"; fi
 if [ "${DO_IOS}" = 1 ];    then profile_ios    || warn "ios profile 有失败项（见摘要）"; fi
 
+if [ "${WITH_SPATIAL_GS}" = 1 ]; then
+  if ensure_venv && python -m pip install -r server-vqa/requirements-spatial-gs.txt && PYTHONPATH=server-vqa python -c 'import torch; from app.spatial_splat_cpu import render; print("CPU Gaussian runtime", torch.__version__)'; then
+    add_summary "OK|spatial-gs|CPU参考高斯训练运行时；产品画质和实时性未验收"
+  else
+    add_summary "FAIL|spatial-gs|运行时不可用；检查Python版本/网络，并重跑 --with-spatial-gs"
+  fi
+else
+  add_summary "SKIP|spatial-gs|可选CPU高斯实验，使用 --with-spatial-gs 安装"
+fi
+
+if [ "${WITH_SPATIAL_DEPTH}" = 1 ]; then
+  if ensure_venv && bash deploy/spatial/install_depth_prior.sh; then
+    add_summary "OK|spatial-depth|官方Small相对深度先验；非实测墙体，精度与CPU耗时未验收"
+  else
+    add_summary "FAIL|spatial-depth|检查Python3.9–3.12/curl/网络和下载摘要；重跑 --with-spatial-depth"
+  fi
+else
+  add_summary "SKIP|spatial-depth|可选离线深度先验，使用 --with-spatial-depth 安装"
+fi
+
+if [ "${WITH_SPATIAL_BRUSH}" = 1 ]; then
+  if bash deploy/spatial/install_brush.sh; then
+    add_summary "OK|spatial-brush|固定官方源码、LPIPS权重和小图读取补丁已验证；真实训练画质未验收"
+  else
+    add_summary "FAIL|spatial-brush|检查Rust>=1.88/cargo/git/curl、网络及源码身份；重跑 --with-spatial-brush"
+  fi
+else
+  add_summary "SKIP|spatial-brush|可选Brush真实训练器，使用 --with-spatial-brush 安装"
+fi
+
 print_summary
+if [ "${INSTALL_FAILED}" = 1 ]; then exit 1; fi
