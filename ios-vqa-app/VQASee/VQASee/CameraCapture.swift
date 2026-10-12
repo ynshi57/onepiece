@@ -6,10 +6,14 @@ import UIKit
 // MARK: - Camera capture & preview
 //
 // Frame-capture delegate and the SwiftUI camera preview.
-// Perception runs async on a copied pixel buffer so the live preview never stalls.
+// Perception runs asynchronously with a strong, read-only pixel-buffer reference.
+// Each proxy owns at most one processing buffer and one latest pending buffer;
+// replacing/resetting the pending slot releases its reference. Consumers must not
+// mutate camera pixels or retain raw base-address pointers after unlocking.
 
 enum PixelBufferCopy {
-    /// Deep-copy a camera/AR buffer so analysis can leave the capture callback.
+    /// Independent storage for consumers that need long-lived or mutable pixels.
+    /// Leaving a capture callback alone does not require a deep copy.
     static func deepCopy(_ source: CVPixelBuffer) -> CVPixelBuffer? {
         let width = CVPixelBufferGetWidth(source)
         let height = CVPixelBufferGetHeight(source)
@@ -181,13 +185,12 @@ final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         lastPerceptionTime = now
         stateLock.unlock()
 
-        guard
-            let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-            let copied = PixelBufferCopy.deepCopy(pixelBuffer)
-        else {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return
         }
-        enqueueLatest(copied, capturedAt: now)
+        // The pending tuple / processing closure retains the CVPixelBuffer under
+        // ARC, keeping its storage alive after the sample-buffer callback returns.
+        enqueueLatest(pixelBuffer, capturedAt: now)
     }
 
     /// Let the next captured frame skip the min-interval throttle so a
@@ -196,6 +199,21 @@ final class FrameCaptureProxy: NSObject, AVCaptureVideoDataOutputSampleBufferDel
         stateLock.lock()
         lastPerceptionTime = 0
         stateLock.unlock()
+    }
+
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didDrop sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        let reason = CMGetAttachment(
+            sampleBuffer,
+            key: kCMSampleBufferAttachmentKey_DroppedFrameReason,
+            attachmentModeOut: nil
+        )
+        // In particular, OutOfBuffers exposes excessive source-buffer retention.
+        // Do not classify camera drops as successful latest-frame replacements.
+        NSLog("[VQASee camera] dropped frame: %@", reason.map { String(describing: $0) } ?? "unknown")
     }
 
     /// Clears throttle state so a fresh stream always sends its first frame immediately.
@@ -362,11 +380,10 @@ final class ARFrameCaptureProxy: NSObject, ARSessionDelegate {
         lastPerceptionTime = now
         stateLock.unlock()
 
-        guard let copied = PixelBufferCopy.deepCopy(frame.capturedImage) else {
-            return
-        }
+        // Retain only the image, not ARFrame and all of its tracking resources.
+        let pixelBuffer = frame.capturedImage
         let depthCues = ARDepthCueExtractor.extract(from: frame)
-        enqueueLatest(copied, depthCues: depthCues, capturedAt: now)
+        enqueueLatest(pixelBuffer, depthCues: depthCues, capturedAt: now)
     }
 
     private func enqueueLatest(_ pixelBuffer: CVPixelBuffer, depthCues: LocalDepthCueSignal, capturedAt: CFTimeInterval) {

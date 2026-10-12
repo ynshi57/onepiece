@@ -35,9 +35,9 @@ final class IndoorMemoryUITests: XCTestCase {
         app.buttons["device-debug-done"].tap()
         app.buttons["物品记忆选项"].tap()
         app.buttons["户外看路"].tap()
-        XCTAssertTrue(app.buttons["返回物品记忆"].waitForExistence(timeout: 10), "Mode transition must remain operable")
-        app.buttons["返回物品记忆"].tap()
-        XCTAssertTrue(app.buttons["物品记忆选项"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["返回空间扫描"].waitForExistence(timeout: 10), "Mode transition must remain operable")
+        app.buttons["返回空间扫描"].tap()
+        XCTAssertTrue(app.buttons["spatial.scan"].waitForExistence(timeout: 5))
     }
     @MainActor
     func testCaptureReplayShowsHistoricalFixtureAndDisallowsFakeAcquisition() throws {
@@ -66,19 +66,19 @@ final class IndoorMemoryUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-ui-testing"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["物品记忆"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["indoor-record"].exists)
-        XCTAssertFalse(app.buttons["indoor-record"].isEnabled, "Simulator has no AR tracking and must not permit fabricated anchors")
+        XCTAssertTrue(app.staticTexts["空间扫描"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["spatial.scan"].exists)
+        XCTAssertFalse(app.buttons["spatial.scan"].isEnabled, "Simulator has no AR tracking and must not permit fabricated geometry")
         let initial = XCTAttachment(screenshot: app.screenshot())
         initial.name = "Indoor unavailable — real simulator screen"
         initial.lifetime = .keepAlways
         add(initial)
-        app.buttons["物品记忆选项"].tap()
-        app.buttons["户外看路"].tap()
-        XCTAssertTrue(app.buttons["返回物品记忆"].waitForExistence(timeout: 10))
-        app.buttons["返回物品记忆"].tap()
-        XCTAssertTrue(app.staticTexts["物品记忆"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["indoor-record"].isEnabled)
+        app.buttons["spatial.more"].tap()
+        app.buttons["切换户外"].tap()
+        XCTAssertTrue(app.buttons["返回空间扫描"].waitForExistence(timeout: 10))
+        app.buttons["返回空间扫描"].tap()
+        XCTAssertTrue(app.staticTexts["空间扫描"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["spatial.scan"].isEnabled)
     }
     @MainActor
     func testExplicitLayoutFixtureNamingPhotoAndDeletion() throws {

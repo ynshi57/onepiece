@@ -32,6 +32,22 @@ final class DeviceDebugEvidenceBridge {
         do { enqueue(Item(session: sid, files: [(manifest.id.uuidString + "-manifest.json", try JSONEncoder().encode(manifest))])) }
         catch { debug.recordEvent("sample_export_failed", details: ["reason": "manifest_encoding"]) }
     }
+
+    /// Explicit debug sample consent also controls spatial RGB evidence transfer.
+    func spatial(_ document: SpatialScanDocument, directory: URL) {
+        guard let debug, debug.isActive, debug.shareOriginalSamples, let sid = debug.sessionID else { return }
+        do {
+            enqueue(Item(session: sid, files: [(document.id.uuidString + "-spatial.json", try JSONEncoder().encode(document))]))
+            // Bounded uploader: do not read all native-resolution JPEGs into memory.
+            for keyframe in document.keyframes.prefix(3) {
+                let data = try Data(contentsOf: directory.appendingPathComponent(keyframe.imageFile))
+                enqueue(Item(session: sid, files: [(keyframe.imageFile, data)]))
+            }
+            debug.recordEvent("spatial_saved", details: ["scan_id": document.id.uuidString,
+                "poses": String(document.poses.count), "surfaces": String(document.surfaces.count),
+                "keyframes": String(document.keyframes.count), "uploaded_image_scope": "first_three_only_full_scan_retained_locally"])
+        } catch { debug.reportAttachmentFailure(reason: "空间证据导出失败，本机扫描仍保留") }
+    }
     private func enqueue(_ item: Item) {
         guard queue.count < 4 else {
             debug?.reportAttachmentFailure(count: item.files.count, reason: "样本上传队列已满，本机样本仍保留，可在样本回放中补传")

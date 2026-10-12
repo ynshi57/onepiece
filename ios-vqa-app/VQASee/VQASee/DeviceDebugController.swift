@@ -222,7 +222,10 @@ final class DeviceDebugController: ObservableObject {
                             guard let self, self.generation == current else { return }
                             await self.stop(reason: "屏幕采集中断，请重新开始", failed: true)
                         }
-                    } else if type == .video { pipe.consume(sample) }
+                    } else if type == .video {
+                        SpatialScreenPerformanceProbe.shared.consume(sample) // small synchronous ROI, before 1 Hz upload admission
+                        pipe.consume(sample)
+                    }
                     // App audio and microphone samples are never retained or uploaded.
                 }, completionHandler: { error in
                     if let error { continuation.resume(throwing: error) }
@@ -233,6 +236,7 @@ final class DeviceDebugController: ObservableObject {
                 if recorder.isRecording { recorder.stopCapture(handler: nil) }
                 return
             }
+            SpatialScreenPerformanceProbe.shared.setSharing(true)
             state = .sharing; status = "已开始采集，等待首张画面送达"
             recordEvent("screen_share_started", details: ["sampling": "1 Hz maximum", "audio": "disabled", "scope": "app screen only", "original_samples_authorized": String(shareOriginalSamples)])
         } catch {
@@ -242,6 +246,7 @@ final class DeviceDebugController: ObservableObject {
     }
 
     func stop(reason: String = "已停止共享", failed: Bool = false) async {
+        SpatialScreenPerformanceProbe.shared.setSharing(false)
         guard isActive || state == .stopping else { return }
         guard state != .stopping else { return }
         state = .stopping; generation = UUID()

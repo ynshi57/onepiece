@@ -11,7 +11,7 @@ final class IndoorComparisonVisualizationTests: XCTestCase {
         let result = IndoorComparisonVisualizer.project(CGPoint(x: 0.3, y: 0.6), matrix: translation)
         XCTAssertEqual(result!.x, 0.5, accuracy: 0.0001)
         XCTAssertEqual(result!.y, 0.5, accuracy: 0.0001)
-        XCTAssertNil(IndoorComparisonVisualizer.project(.zero, matrix: simd_float3x3(repeating: 0)))
+        XCTAssertNil(IndoorComparisonVisualizer.project(.zero, matrix: simd_float3x3(0)))
     }
 
     func testRealMaskContoursRenderAtCorrectTopLeftCoordinates() throws {

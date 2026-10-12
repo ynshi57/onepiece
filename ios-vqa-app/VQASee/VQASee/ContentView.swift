@@ -12,7 +12,7 @@ struct OutdoorAssistanceRoot: View {
     var body: some View {
         AssistanceScreen(viewModel: viewModel, showingSettings: $showingSettings)
             .safeAreaInset(edge: .top) {
-                Button("返回物品记忆") {
+                Button("返回空间扫描") {
                     isLeaving = true
                     Task {
                         await viewModel.suspendForIndoorMemory()
@@ -31,6 +31,8 @@ struct OutdoorAssistanceRoot: View {
 /// Indoor and outdoor cameras are created on demand, never side by side.
 struct ContentView: View {
     @State private var outdoor = false
+    @State private var legacyMemory = ProcessInfo.processInfo.arguments.contains("-indoor-layout-preview")
+    @StateObject private var spatialController = SpatialScanController()
     @StateObject private var indoorController = IndoorMemoryController()
     @StateObject private var deviceDebug = DeviceDebugController()
     @State private var showingDeviceDebug = false
@@ -38,10 +40,19 @@ struct ContentView: View {
     var body: some View {
         Group {
             if outdoor {
-                OutdoorAssistanceRoot(onIndoor: { outdoor = false })
-            } else {
+                OutdoorAssistanceRoot(onIndoor: { outdoor = false; legacyMemory = false })
+            } else if legacyMemory {
                 IndoorMemoryScreen(controller: indoorController, onOutdoor: { outdoor = true },
                                    onDeviceDebug: { showingDeviceDebug = true })
+                    .safeAreaInset(edge: .top) {
+                        Button("返回空间扫描") { indoorController.stop(); legacyMemory = false }
+                            .buttonStyle(.borderedProminent)
+                    }
+            } else {
+                SpatialScanScreen(controller: spatialController,
+                    onOutdoor: { spatialController.stop(); outdoor = true },
+                    onLegacy: { spatialController.stop(); legacyMemory = true },
+                    onDebug: { showingDeviceDebug = true })
             }
         }
         .environmentObject(deviceDebug)
@@ -65,6 +76,7 @@ struct ContentView: View {
         .task {
             let bridge = DeviceDebugEvidenceBridge(debug: deviceDebug)
             evidenceBridge = bridge
+            spatialController.onSaved = { document, directory in bridge.spatial(document, directory: directory) }
             indoorController.capture.onSavedPacket = { packet, manifest in bridge.packet(packet, manifest: manifest) }
             indoorController.capture.onFinishedManifest = { manifest in bridge.manifest(manifest) }
             if deviceDebug.isLayoutPreview { showingDeviceDebug = true }
@@ -93,6 +105,13 @@ struct ContentView: View {
                     "telemetry_scope": "indoor_diagnostics_not_applicable",
                     "event_failures": String(deviceDebug.eventFailures),
                     "attachment_failures": String(deviceDebug.attachmentFailures)]
+        }
+        if !legacyMemory {
+            return ["mode": "spatial_scan", "camera_configuration": "rear_rgb_imu_no_depth",
+                    "status": spatialController.status, "poses": String(spatialController.document.poses.count),
+                    "surfaces": String(spatialController.document.surfaces.count),
+                    "keyframes": String(spatialController.document.keyframes.count),
+                    "error": spatialController.error ?? ""]
         }
         return ["mode": "indoor", "camera_configuration": "rear_world_tracking_no_face_tracking",
          "screen_awake": String(UIApplication.shared.isIdleTimerDisabled),
