@@ -259,7 +259,7 @@ onepiece/
 
 ### 在新 Mac 上一键安装
 
-已 clone 仓库后，用 `setup_mac.sh` 一次装好所需依赖、模型和工具（幂等，可重复跑）：
+已 clone 仓库后，用 `setup_mac.sh` 一次装好所需依赖、模型和工具（幂等，可重复跑）。任一摘要出现 `FAIL` 时最终返回非零；仍继续检查其余已选择的模块，方便一次看清失败项：
 
 ```bash
 bash setup_mac.sh                    # 默认装四块：core + models + qwen + ios
@@ -394,3 +394,51 @@ bash deploy/ios/test.sh            # iOS（需完整 Xcode）
 ---
 
 <sub>团队角色、工作协议和 skill 调度见 [`AGENTS.md`](AGENTS.md)。</sub>
+## 室内空间扫描（2026-10-10 实验版本）
+
+VQASee 默认入口为空间扫描：开始扫描，缓慢移动 iPhone 观察墙角与地面；结束后可旋转查看已观测结构、查看俯视运动轨迹、修正顶点、保存并从历史重开。此路径使用摄像头与 IMU，不要求 LiDAR，不请求深度。
+
+“导出扫描（含照片）”生成完整 ZIP。Mac 后端重启加载新代码后，从闭环主页的“空间扫描”进入 `/spatial-scans/ui`，导入包查看轨迹、观测面和关键帧。资料页面仅允许本机访问。照片默认仅存本机，导出由用户主动选择。
+
+页面的“检查扫描质量”使用项目内固定版本的 OpenCV SIFT 源码进行照片匹配，不依赖 Python `cv2` wheel 或系统 OpenCV。原版算法与必要支持模块保存在 `native/spatial_sift/`，来源、校验值与许可证随源码保存。参数和 C 接口可在项目内调整；独立几何校验仍使用可读的 NumPy 实现。它不上传照片，也不证明真实尺寸或漂移。
+
+本机结构线实验复用同一固定 OpenCV 源码中的 LSD 检测器，不新增 `cv2` wheel。只读取明确选定的训练照片和相机位姿，保留全部线对及第三训练视图的支持/失败记录，输出局部三维线候选；线段重复出现不等于独立米制墙面真值或完整房间。源码库由上述 core 安装流程一并构建。
+
+“建立真实稀疏重建”使用同一扫描的多视角照片与逐帧相机参数生成空间点，首次计算约一分钟（随数据和机器变化）。时间轴同步照片、位姿与视锥；三维视图支持拖动旋转和滚轮缩放。重建点与支持点轮廓明确为最终结果，不能当作逐帧历史。照片显示重投影及红色留出核对失败；通过者误差和全部核对误差分开统计，完整证据可下载。最多240帧、320个帧对、20000点；容量限制与拒绝原因可见，原扫描不改写。三视图核对失败说明几何尚不一致，不能把小幅移动当纯旋转误差或将点云轮廓称完整墙面。没有新增第三方依赖，仍使用上述源码构建与 NumPy/Pillow。
+
+统一安装：`bash setup_mac.sh --skip-models --skip-qwen --skip-ios`。core profile 检查/安装 CMake、使用 C++ 编译器构建源码并验证本机库。单独重编译：`bash deploy/spatial/build_sift.sh`，需要 CMake 与 Xcode Command Line Tools；缺少编译产物时页面明确显示不可用，不静默退回旧算法。Mac 构建产物不适用于 iPhone；端上移植与实时预算需另行验收。
+
+当前是已观测空间草图与采集闭环，尚非自动完整房间/门窗模型；3DGS 重建尚未实现。真机精度与实时性未验收，详见 [实现与验收记录](docs/evolution/2026-10-10-spatial-scan-first-implementation.md)。旧物品记录仍在菜单中。
+
+空间高斯重建的 CPU 参考实验是可选依赖，可在 Python 3.9–3.12 环境运行：
+`bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-gs`。
+训练和照片处理均在本机执行。该低分辨率研究实现具有真实高斯参数、透明度合成、
+独立留出照片与 PLY 产物，但没有生产版密度控制或高阶外观，不能等同完整房间、
+精确尺寸或实时 3DGS 已通过验收。训练状态、失败与留出渲染在空间采集页面显示。
+
+保存照片的离线深度先验实验默认关闭，按需安装：
+`bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-depth`。
+需已有仓库 `.venv`（先运行 core profile）；使用 Python 3.9–3.12、torch 2.2.2、
+torchvision 0.17.2、NumPy<2、OpenCV headless 4.10.0.84 与 curl。
+固定官方 Depth Anything V2 Small 源码和99.2MB权重，下载支持续传，完整SHA256通过后才可使用。
+默认权重保存在已忽略的 `server-vqa/models/depth-anything-v2-small/`；
+`VQASEE_SPATIAL_DEPTH_WEIGHTS=/本机/已验证权重.pth` 可指定已有文件（例如本轮临时下载文件），
+安装器仍检查同一完整摘要。可用 `bash deploy/spatial/install_depth_prior.sh --check-only`
+进行不联网、不安装的依赖与身份检查。来源与许可详见 [官方源码记录](native/depth-anything-v2/README.md)。
+模型在本机处理照片；结果是模型估计的相对深度，不能当实测墙体或尺寸。
+尺度对齐仅使用训练证据，留出照片用于独立核对；白墙未知区域、核对失败与CPU耗时须明确呈现。
+安装通过不代表真实画质、精度或实时性通过验收。
+
+官方 Brush 的本机离线训练实验默认关闭，安装入口：
+`bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-brush`。
+需 Rust `rustc >= 1.88`、cargo、git、curl 和 Python 3；缺少 Rust 时安装器给出官方 rustup 修复指引，
+不会运行未经校验的 `curl | sh`。安装器固定 Brush 提交、逐份核对 164 个官方 Git blob，
+其中包含编译必需的 29.43 MB LPIPS 权重；随后只应用仓库记录的小图片读取补丁并校验补丁后源码。
+默认源码和编译产物分别位于已忽略的 `server-vqa/models/spatial-brush/source/` 与
+`server-vqa/models/spatial-brush/target/release/brush_app`，可用
+`VQASEE_SPATIAL_BRUSH_BINARY` 指定同结构的 `target/release/brush_app` 路径。
+`bash deploy/spatial/install_brush.sh --check-only` 只检查本机源码、补丁、Rust版本和二进制回执，
+不联网、不安装。安装成功只证明训练器可用；训练失败、留出照片画质和真实房间几何仍须单独验收。
+来源、补丁与限制见 [Brush 本地实验说明](native/brush/README.md)。
+自由视角页面需要支持 WebGL2、浮点颜色缓冲及浮点混合的浏览器；缺失时明确提示无法预览，
+原生训练器验证照片与模型下载仍可使用。网页预览匹配训练器不代表重建几何或画质已通过验收。
