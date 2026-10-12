@@ -639,6 +639,7 @@ async function deleteSession(sessionId) {
     # fail". Kept one tap away, not spread across the landing page.
     drilldown = """
 <div class='grid'>
+  <div class='card'><h2>空间扫描</h2><p class='muted'>导入手机扫描包，查看轨迹、已观测结构与原始照片。</p><p><a href='/spatial-scans/ui'>打开空间扫描 →</a></p></div>
   <div class='card'><h2>真机调试</h2><p class='muted'>查看 iPhone App 画面、操作、原始样本，以及 Codex 的证据分析与复测记录。</p><p><a href='http://127.0.0.1:9001/device-debug/ui'>打开真机调试 →</a></p><p class='hint'>先运行 bash start_device_debug.sh；独立配对端口，不开放其他管理接口到局域网。</p></div>
   <div class='card'><h2>逐帧识别效果</h2><p class='muted'>逐帧看 iPhone 感知的可走区域 / 引导线 与 CamVid 真值叠加，按漏报/误挡筛选。</p><p><a href='/diagnostics/datasets/ui'>打开数据集评估 →</a></p></div>
   <div class='card'><h2>TwinLiteNet 预览</h2><p class='muted'>12 帧 CamVid test：红可行驶区 / 绿车道线 / 蓝引导线。只吃 RGB，不是 App 默认。</p><p><a href='/diagnostics/twinlite/ui'>打开 TwinLiteNet 画廊 →</a></p></div>
