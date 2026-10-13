@@ -52,10 +52,12 @@ def _huber(errors, threshold):
 
 def bundle_adjust(document, feature_tracks, *, iterations=8, maximum_tracks=2500,
                   holdout_stride=7, maximum_reprojection_pixels=3.,
-                  translation_prior_meters=.02, rotation_prior_radians=.01):
+                  translation_prior_meters=.02, rotation_prior_radians=.01,
+                  training_indices=None, evaluation_indices=None):
     """Bounded experimental global training optimization; no heldout feedback.
 
-    Frame indices stride-1 modulo stride are reserved BEFORE initialization and
+    Explicit partitions must both be supplied; outside observations are rejected.
+    Otherwise legacy stride-1 modulo stride frames are reserved BEFORE initialization and
     sampling. Camera 0 per epoch is fixed to retain AR's world gauge. Original
     AR metric priors constrain monocular scale; scale remains unverified.
     """
@@ -64,21 +66,59 @@ def bundle_adjust(document, feature_tracks, *, iterations=8, maximum_tracks=2500
         raise ValueError('invalid_bundle_adjustment_limits')
     started=time.perf_counter()
     frames=document.get('keyframes',[])
+    explicit = training_indices is not None or evaluation_indices is not None
+    if explicit:
+        if training_indices is None or evaluation_indices is None:
+            raise ValueError('both_partitions_required')
+        def partition(values):
+            values = list(values)
+            if any(type(i) is not int or not 0 <= i < len(frames) for i in values):
+                raise ValueError('invalid_partition_index')
+            if len(set(values)) != len(values):
+                raise ValueError('duplicate_partition_index')
+            return set(values)
+        training = partition(training_indices)
+        evaluation = partition(evaluation_indices)
+        if not training or training & evaluation:
+            raise ValueError('empty_training_or_overlapping_partitions')
+    else:
+        evaluation = {i for i in range(len(frames)) if i % holdout_stride == holdout_stride-1}
+        training = set(range(len(frames))) - evaluation
+    participating = training | evaluation
+    seen_tracks = set()
+    for track in feature_tracks:
+        if track['id'] in seen_tracks:
+            raise ValueError('duplicate_track_identity')
+        seen_tracks.add(track['id'])
+        seen_frames = set()
+        for obs in track['observations']:
+            index = obs['frameIndex']
+            if type(index) is not int or not 0 <= index < len(frames):
+                raise ValueError('invalid_observation_frame_index')
+            if index not in participating:
+                raise ValueError('observation_outside_declared_partition')
+            if index in seen_frames:
+                raise ValueError('duplicate_track_frame_observation')
+            seen_frames.add(index)
     cameras={}
     invalid={}
     for index,frame in enumerate(frames):
+        if index not in participating: continue
         try: cameras[index]=camera(frame)
         except (ValueError,KeyError,np.linalg.LinAlgError) as exc: invalid[index]=str(exc)
-    heldout={i for i in cameras if i%holdout_stride==holdout_stride-1}
-    anchors={min(i for i,c in cameras.items() if c.epoch==e) for e in {c.epoch for c in cameras.values()}}
+    heldout=evaluation & set(cameras)
+    train_cameras=training & set(cameras)
+    anchors={min(i for i in train_cameras if cameras[i].epoch==e) for e in {cameras[i].epoch for i in train_cameras}}
     diagnostics=[]
     eligible=[]
     for track in feature_tracks:
         obs=track['observations']
-        train=[o for o in obs if o['frameIndex'] in cameras and o['frameIndex'] not in heldout]
+        train=[o for o in obs if o['frameIndex'] in train_cameras]
         test=[o for o in obs if o['frameIndex'] in heldout]
         entry={'trackID':track['id'],'trainingFrames':[o['frameIndex'] for o in train],
-               'heldoutFrames':[o['frameIndex'] for o in test]}
+               'heldoutFrames':[o['frameIndex'] for o in test],
+               'allObservationCount':len(obs),
+               'invalidCameraObservationFrames':[o['frameIndex'] for o in obs if o['frameIndex'] in invalid]}
         diagnostics.append(entry)
         try:
             point,_,_,_,parallax=triangulate([cameras[o['frameIndex']] for o in train],
@@ -201,6 +241,11 @@ def bundle_adjust(document, feature_tracks, *, iterations=8, maximum_tracks=2500
               and np.percentile(finite_after,95)<=np.percentile(finite_before,95))
     return {'version':'global-holdout-alternating-ba-v1','status':'experiment_only','defaultEnabled':False,
         'validationImproved':bool(improved),'originalPreserved':True,'holdoutUsedForTraining':False,'scaleVerified':False,
+        'partition':{'source':'explicit_indices' if explicit else 'legacy_holdout_stride',
+                     'trainingIndices':sorted(training),'evaluationIndices':sorted(evaluation),
+                     'nonparticipatingFrameIndices':sorted(set(range(len(frames)))-participating),
+                     'observationPolicy':'reject_outside_partition_and_duplicate_track_frame',
+                     'trackDiscoveryProvenance':'caller_supplied_not_independently_audited'},
         'invalidCameraFrames':invalid,'cameraFrames':output_cameras,'points':optimized_points,'trackDiagnostics':diagnostics,'stepDiagnostics':step_log,
         'summary':{'inputTrackCount':len(feature_tracks),'eligibleTrackCount':len(eligible),'selectedTrackCount':len(selected),
                    'capacityExcludedTrackCount':max(0,len(eligible)-len(selected)),

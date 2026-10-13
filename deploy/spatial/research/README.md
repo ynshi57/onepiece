@@ -42,3 +42,19 @@
 `resect_training_views.py` 只对未可靠注册的训练帧向冻结地图做重定位研究。
 需要隔离研究pycolmap依赖和源码SIFT桥；验证照片不能进入匹配/求解。
 独立地标组评分、重叠patch、弱求解和失败均保留，不修改原AR记录。
+
+`pair_geometry_control.py` 与 `pair_geometry_hypotheses.py` 用冻结训练照片匹配比较原AR、
+图像F/H、共享内参和局部姿态假设。全部相邻训练pair和失败保留；同一固定空间分组
+拟合/评分。它们不修改原相机、不验证尺度，也不把逐对解作为SLAM轨迹。
+先运行 `bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-geometry`，
+使用仓库 `.venv/bin/python`。依赖固定于 `server-vqa/requirements-spatial-geometry.txt`，
+不安装其他感知模型。缺此profile时应按上述入口安装，不临时隐式安装包。
+第一脚本参数 `--document document.json --pairs frozen-pairs/result.json --output control.json`；
+第二脚本参数 `--document document.json --control control.json --output hypotheses.json`。
+有界鲁棒最小二乘参见 [SciPy 1.13.1 官方说明](https://docs.scipy.org/doc/scipy-1.13.1/reference/generated/scipy.optimize.least_squares.html)。
+
+### 未注册照片与分辨率诊断
+
+`registration_failure_audit.py --pairs <冻结result.json> --map <COLMAP模型目录> --output <新JSON> [--document <原document.json>]` 核查特征索引并报告全部未注册帧的地图支持；可选PnP只是样本内诊断，不写地图、不代表定位通过。
+
+`feature_resolution_probe.py --data <扫描目录> --resources <已核验LightGlue资源目录> --output <新目录> [--pairs 167:168,168:169]` 对同一组照片运行640/1280提取（均最多1024点）与3px几何检验，保留失败、缓存身份和耗时。默认是固定失败照片对。选择开发照片后只可作为诊断，不能继续称独立holdout；匹配数增加不等于准确度提高。SuperPoint原有非商业研究许可限制仍有效，这不是App模型引入。

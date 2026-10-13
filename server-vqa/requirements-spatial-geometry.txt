@@ -1,0 +1,4 @@
+# Optional offline CPU research, Python 3.10-3.12; not required by the app/backend.
+numpy==1.26.4
+scipy==1.13.1
+pycolmap==3.12.5

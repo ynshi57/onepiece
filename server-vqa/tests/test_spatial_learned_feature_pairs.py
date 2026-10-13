@@ -79,3 +79,28 @@ def test_extended_training_budget_complete_419():
     assert len(pairs)==419 and len(set(pairs))==419
     assert (60,74) in pairs and all(80 not in pair for pair in pairs)
     with pytest.raises(ValueError,match='positive_training_sequence'):m.plan_pairs([1,2],[3],offsets=(-1,))
+
+
+def test_mapper_image_preserves_decoded_native_pixels(tmp_path):
+    import numpy as np
+    import pytest
+    pycolmap = pytest.importorskip('pycolmap', reason='optional spatial geometry profile')
+    from PIL import Image
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / 'deploy/spatial/research/learned_feature_pairs.py'
+    spec = importlib.util.spec_from_file_location('mapper_decode_test', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = tmp_path / 'source.jpg'
+    pixels = np.arange(24*32*3, dtype=np.uint8).reshape(24,32,3)
+    Image.fromarray(pixels).save(source)
+    original_bytes = source.read_bytes()
+    directory = tmp_path / 'images'
+    directory.mkdir()
+    name = module.prepare_mapper_image(source, directory, 7)
+    decoded = pycolmap.Bitmap.read(str(directory/name), True)
+    expected = np.asarray(Image.open(source).convert('RGB'))
+    assert decoded is not None
+    assert np.array_equal(decoded.to_array(), expected)
+    assert source.read_bytes() == original_bytes

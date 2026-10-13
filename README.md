@@ -442,3 +442,9 @@ torchvision 0.17.2、NumPy<2、OpenCV headless 4.10.0.84 与 curl。
 来源、补丁与限制见 [Brush 本地实验说明](native/brush/README.md)。
 自由视角页面需要支持 WebGL2、浮点颜色缓冲及浮点混合的浏览器；缺失时明确提示无法预览，
 原生训练器验证照片与模型下载仍可使用。网页预览匹配训练器不代表重建几何或画质已通过验收。
+
+室内照片/相机几何离线诊断（可选，Python 3.10–3.12）：
+`bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-geometry`。
+固定 NumPy/SciPy/pycolmap 版本位于 `server-vqa/requirements-spatial-geometry.txt`，安装到
+仓库 `.venv`。不会自动更改扫描相机或安装手机模型。实验运行说明见
+`deploy/spatial/research/README.md`；求解成功不等于房间尺寸或恢复精度通过。

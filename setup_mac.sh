@@ -25,6 +25,7 @@
 #   --with-spatial-depth  install optional offline relative-depth CPU prior (not measurement truth)
 #   --with-spatial-gs  install bounded CPU Gaussian research runtime (optional)
 #   --with-spatial-brush  build fixed-source Brush CLI with verified local JPEG-header patch (optional)
+#   --with-spatial-geometry  install pinned CPU geometric diagnosis tools (optional, Python 3.10-3.12)
 #   --with-depth  also install the optional DepthAnythingV2 Core ML model
 #   --hf-mirror   route Hugging Face downloads through https://hf-mirror.com
 #                 (or honor a pre-set HF_ENDPOINT)
@@ -44,6 +45,7 @@ WITH_DEPTH=0
 WITH_SPATIAL_GS=0
 WITH_SPATIAL_DEPTH=0
 WITH_SPATIAL_BRUSH=0
+WITH_SPATIAL_GEOMETRY=0
 INSTALL_FAILED=0
 HF_MIRROR=0
 ASSUME_YES=0
@@ -78,6 +80,7 @@ while [ $# -gt 0 ]; do
     --with-spatial-gs) WITH_SPATIAL_GS=1 ;;
     --with-spatial-depth) WITH_SPATIAL_DEPTH=1 ;;
     --with-spatial-brush) WITH_SPATIAL_BRUSH=1 ;;
+    --with-spatial-geometry) WITH_SPATIAL_GEOMETRY=1 ;;
     --hf-mirror)   HF_MIRROR=1 ;;
     -y|--yes)      ASSUME_YES=1 ;;
     -h|--help)     usage; exit 0 ;;
@@ -96,7 +99,7 @@ ensure_venv() {
     local py=""
     local cand
     local python_candidates="python3.13 python3.12 python3.11 python3"
-    if [ "${WITH_SPATIAL_DEPTH}" = 1 ]; then
+    if [ "${WITH_SPATIAL_DEPTH}" = 1 ] || [ "${WITH_SPATIAL_GEOMETRY}" = 1 ]; then
       python_candidates="python3.12 python3.11 python3"
     fi
     for cand in ${python_candidates}; do
@@ -451,6 +454,16 @@ if [ "${DO_CORE}" = 1 ];   then profile_core   || warn "core profile 有失败�
 if [ "${DO_MODELS}" = 1 ]; then profile_models || warn "models profile 有失败项（见摘要）"; fi
 if [ "${DO_QWEN}" = 1 ];   then profile_qwen   || warn "qwen profile 有失败项（见摘要）"; fi
 if [ "${DO_IOS}" = 1 ];    then profile_ios    || warn "ios profile 有失败项（见摘要）"; fi
+
+if [ "${WITH_SPATIAL_GEOMETRY}" = 1 ]; then
+  if ensure_venv && python -c 'import sys; assert (3,10) <= sys.version_info[:2] <= (3,12), "spatial-geometry requires Python 3.10-3.12"' && python -m pip install -r server-vqa/requirements-spatial-geometry.txt && python -c 'import numpy, scipy, pycolmap; from scipy.optimize import least_squares; r=least_squares(lambda x: x-2., [0.], bounds=([-3.],[3.])); assert r.success and abs(r.x[0]-2.) < 1e-6; print("Geometry runtime", numpy.__version__, scipy.__version__, pycolmap.__version__)'; then
+    add_summary "OK|spatial-geometry|CPU几何诊断运行时；不代表空间准确度通过"
+  else
+    add_summary "FAIL|spatial-geometry|需Python3.10–3.12及网络；检查requirements-spatial-geometry.txt后重跑 --with-spatial-geometry"
+  fi
+else
+  add_summary "SKIP|spatial-geometry|可选CPU几何诊断，使用 --with-spatial-geometry 安装"
+fi
 
 if [ "${WITH_SPATIAL_GS}" = 1 ]; then
   if ensure_venv && python -m pip install -r server-vqa/requirements-spatial-gs.txt && PYTHONPATH=server-vqa python -c 'import torch; from app.spatial_splat_cpu import render; print("CPU Gaussian runtime", torch.__version__)'; then

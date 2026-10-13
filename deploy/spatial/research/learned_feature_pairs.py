@@ -106,7 +106,9 @@ def _worker(connection,root,kind,threads):
                         with Image.open(task['image']) as original:
                             size=original.size
                             if list(size)!=task['expectedSize']:raise ValueError('native_image_dimensions_mismatch')
-                            image=original.convert('RGB');image.thumbnail((640,640),Image.Resampling.BILINEAR)
+                            max_side=task.get('maxSide',640)
+                            if isinstance(max_side,bool) or not isinstance(max_side,int) or not 64<=max_side<=1920:raise ValueError('invalid_feature_max_side')
+                            image=original.convert('RGB');image.thumbnail((max_side,max_side),Image.Resampling.BILINEAR)
                             resized=image.size;pixels=np.asarray(image).copy()
                         tensor=torch.from_numpy(pixels).permute(2,0,1).float()/255
                         output=model.extract(tensor,resize=None)
@@ -248,6 +250,27 @@ def pair_graph_evidence(document,training,records,key='geometry'):
         components.append(sorted(component))
     return dict(components=components,isolatedTrainingIndices=[i for i in training if not adjacency[i]],supportedEdges=supported,allRequestedPairBaselineMeters=baselines,baselineSource='raw_AR_prior_not_independent_measurement',edgeDefinition='calibrated_config_2_at_least_15_inliers_diagnostic_only',metricAccuracyVerified=False)
 
+def prepare_mapper_image(source, directory, index):
+    """Keep native decoded pixels; compensate for wheels without JPEG decoding."""
+    import pycolmap
+    from PIL import Image
+    source=Path(source);directory=Path(directory)
+    if pycolmap.Bitmap.read(str(source),True) is not None:
+        target=directory/f'{index:05}{source.suffix.lower()}'
+        target.symlink_to(source.resolve())
+        return target.name
+    target=directory/f'{index:05}.png'
+    with Image.open(source) as original:
+        # No EXIF transpose/resizing: features and K describe native buffer pixels.
+        rgb=original.convert('RGB')
+        expected=np.asarray(rgb)
+        rgb.save(target,format='PNG')
+    bitmap=pycolmap.Bitmap.read(str(target),True)
+    if bitmap is None or not np.array_equal(bitmap.to_array(),expected):
+        raise ValueError('mapper_image_decode_or_pixel_identity_failed')
+    return target.name
+
+
 def reconstruct_pair_map(data,output,training,evaluation,pairs,feature_cache,sift_control,method):
     """Independent keypoint identities; external matches only, no fake descriptors."""
     import pycolmap
@@ -255,10 +278,10 @@ def reconstruct_pair_map(data,output,training,evaluation,pairs,feature_cache,sif
     start=time.monotonic();data=Path(data);output=Path(output);output.mkdir(parents=True,exist_ok=False)
     document=json.loads((data/'document.json').read_text());images=output/'images';images.mkdir();models=output/'models';models.mkdir()
     if set(training)&set(evaluation) or any(a not in training or b not in training for a,b in pairs):raise ValueError('map_training_partition_violation')
-    db=pycolmap.Database(str(output/'features.db'));identities={};records=[]
+    db=pycolmap.Database(str(output/'features.db'));identities={};records=[];image_names={}
     try:
         for index in training:
-            frame=document['keyframes'][index];name=f'{index:05}.jpg';(images/name).symlink_to((data/frame['imageFile']).resolve())
+            frame=document['keyframes'][index];name=prepare_mapper_image(data/frame['imageFile'],images,index);image_names[index]=name
             k=np.asarray(frame['intrinsics']).reshape(3,3,order='F')
             camera=pycolmap.Camera(model='PINHOLE',width=frame['width'],height=frame['height'],params=[k[0,0],k[1,1],k[0,2]+.5,k[1,2]+.5]);cid=db.write_camera(camera);iid=db.write_image(pycolmap.Image(name=name,camera_id=cid));identities[index]=iid
             path=Path(feature_cache)/f'{index}.npz' if method=='superpoint_lightglue' else Path(sift_control)/f'features-{index}.npz'
@@ -273,9 +296,9 @@ def reconstruct_pair_map(data,output,training,evaluation,pairs,feature_cache,sif
             else:matches=np.load(Path(sift_control)/f'matches-{a}-{b}.npy')
             db.write_matches(identities[a],identities[b],np.asarray(matches,dtype='uint32'))
     finally:db.close()
-    inputs=dict(trainingIndices=training,evaluationExcluded=evaluation,source='official_SuperPoint640_1024_LightGlue_research' if method=='superpoint_lightglue' else 'source_SIFT1280_1500_same_pair_control',features=records,pairs=[dict(frameA=a,frameB=b) for a,b in pairs],pixelConvention='native_center_archives_COLMAP_corner_points_and_K_plus_half',posePriorUsed=False,featureIdentity='SuperPoint' if method=='superpoint_lightglue' else 'SIFT',queryFeatureRequirement='Same_extractor_descriptor_dimension_preprocessing_required',license='SuperPoint_restrictive_noncommercial_internal_research_only' if method=='superpoint_lightglue' else 'existing_source_SIFT_license')
+    inputs=dict(imageNames=image_names, imagePolicy='native RGB pixels; lossless PNG fallback when mapper cannot decode source; original retained',trainingIndices=training,evaluationExcluded=evaluation,source='official_SuperPoint640_1024_LightGlue_research' if method=='superpoint_lightglue' else 'source_SIFT1280_1500_same_pair_control',features=records,pairs=[dict(frameA=a,frameB=b) for a,b in pairs],pixelConvention='native_center_archives_COLMAP_corner_points_and_K_plus_half',posePriorUsed=False,featureIdentity='SuperPoint' if method=='superpoint_lightglue' else 'SIFT',queryFeatureRequirement='Same_extractor_descriptor_dimension_preprocessing_required',license='SuperPoint_restrictive_noncommercial_internal_research_only' if method=='superpoint_lightglue' else 'existing_source_SIFT_license')
     (output/'inputs.json').write_text(json.dumps(inputs,indent=2))
-    pairfile=output/'pairs.txt';pairfile.write_text(''.join(f'{a:05}.jpg {b:05}.jpg\n' for a,b in pairs))
+    pairfile=output/'pairs.txt';pairfile.write_text(''.join(f'{image_names[a]} {image_names[b]}\n' for a,b in pairs))
     options=pycolmap.TwoViewGeometryOptions();options.ransac.max_error=3.;pycolmap.set_random_seed(42)
     pycolmap.verify_matches(str(output/'features.db'),str(pairfile),options)
     opts=pycolmap.IncrementalPipelineOptions();opts.num_threads=2;opts.mapper.num_threads=2;opts.ba_refine_focal_length=False;opts.ba_refine_principal_point=False;opts.ba_refine_extra_params=False;opts.mapper.abs_pose_refine_focal_length=False;opts.mapper.abs_pose_refine_extra_params=False
