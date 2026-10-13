@@ -84,7 +84,10 @@ def export_dataset(document: dict, source: Path, destination: Path, *, epoch: in
             heldout = index in heldout_indices
             (evaluation if heldout else train).append(exported)
             evidence.append(dict(frameIndex=index, time=frame['time'], evaluationOnly=heldout,
-                                 sourceSHA256=hashlib.sha256((source/frame['imageFile']).read_bytes()).hexdigest()))
+                                 sourceSHA256=hashlib.sha256((source/frame['imageFile']).read_bytes()).hexdigest(),
+                                 photometricLocked=frame.get('photometricLocked'),
+                                 exposureDuration=frame.get('exposureDuration'),
+                                 exposureOffset=frame.get('exposureOffset')))
         for name, selected in [('transforms.json', train), ('transforms_eval.json', evaluation)]:
             (destination/name).write_text(json.dumps(dict(camera_model='OPENCV',frames=selected), indent=2))
         metadata = dict(status='dataset_only_not_trained', epoch=epoch, trainFrames=len(train),
@@ -92,7 +95,11 @@ def export_dataset(document: dict, source: Path, destination: Path, *, epoch: in
                         worldFromARKit=WORLD_ROTATION.tolist(), scale='meters_unchanged',
                         cameraConvention='OpenGL_minus_Z_forward_plus_Y_up',
                         poseSource=pose_source,
-                        unsupported=['dynamic_masks','glass_geometry','verified_wall_dimensions'], frames=evidence)
+                        unsupported=['dynamic_masks','glass_geometry','verified_wall_dimensions','per_image_appearance'],
+                        photometricLockedFrames=sum(e['photometricLocked'] is True for e in evidence),
+                        photometricUnlockedFrames=sum(e['photometricLocked'] is False for e in evidence),
+                        photometricUnknownFrames=sum(e['photometricLocked'] is None for e in evidence),
+                        frames=evidence)
         if document.get('temporalPoseCorrection') is not None:
             metadata['temporalPoseCorrection']=document['temporalPoseCorrection']
         (destination/'evidence.json').write_text(json.dumps(metadata, indent=2))

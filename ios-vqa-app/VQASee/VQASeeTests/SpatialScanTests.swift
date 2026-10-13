@@ -215,6 +215,22 @@ final class SpatialScanTests: XCTestCase {
         XCTAssertEqual(retained.first?.keyframes, [frame])
     }
 
+    func testExposureMetadataRoundTripsAndLegacyFramesStayUnknown() throws {
+        // A scan saved before exposure recording has no such keys at all.
+        let legacyJSON = #"{"id":"f","time":3,"pose":{"time":3,"position":{"x":0,"y":0,"z":0},"forward":{"x":0,"y":0,"z":-1},"epoch":1},"intrinsics":[100,0,0,0,100,0,10,10,1],"width":20,"height":20,"imageFile":"f.jpg","cameraToWorld":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}"#
+        let legacy = try JSONDecoder().decode(SpatialKeyframe.self, from: Data(legacyJSON.utf8))
+        XCTAssertNil(legacy.photometricLocked)
+        XCTAssertNil(legacy.exposureDuration)
+        XCTAssertNil(legacy.exposureOffset)
+        var frame = legacy
+        frame.exposureDuration = 1.0 / 60.0
+        frame.exposureOffset = -0.3
+        frame.photometricLocked = true
+        let restored = try JSONDecoder().decode(SpatialKeyframe.self, from: JSONEncoder().encode(frame))
+        XCTAssertEqual(restored, frame)
+        XCTAssertEqual(restored.photometricLocked, true)
+    }
+
     func testOptionalDisplayMetadataPreservesNativeImageGeometryAndLegacyUnknown() throws {
         let camera = pose(12, 0)
         let nativeK: [Float] = [100,0,0,0,100,0,10,10,1]
@@ -580,5 +596,58 @@ final class SpatialArchiveBudgetTests: XCTestCase {
         XCTAssertNotNil(controller.exportURL)
         XCTAssertEqual(controller.keyframeBytes, bytes.count)
         XCTAssertEqual(controller.document, document)
+    }
+}
+
+final class SpatialProjectiveTexturingTests: XCTestCase {
+    func testProjectiveTexturePutsFrontalPlaneAtImageCenter() {
+        let wall = SpatialSurface(id: "wall", kind: "vertical", vertices: [
+            SpatialPoint(x: -0.2, y: -0.2, z: -1), SpatialPoint(x: 0.2, y: -0.2, z: -1),
+            SpatialPoint(x: 0.2, y: 0.2, z: -1), SpatialPoint(x: -0.2, y: 0.2, z: -1)
+        ], epoch: 1)
+        let mapping = SpatialProjectiveTexturing.mapping(surface: wall, keyframe: frontalKeyframe())
+        XCTAssertNotNil(mapping)
+        XCTAssertGreaterThan(mapping!.visibleFraction, 0.99)
+        XCTAssertGreaterThan(mapping!.meanIncidence, 0.99)
+        let center = mapping!.uvs.reduce(SIMD2<Float>.zero, +) / 4
+        XCTAssertEqual(center.x, 0.5, accuracy: 0.02)
+        XCTAssertEqual(center.y, 0.5, accuracy: 0.02)
+    }
+
+    func testProjectiveTextureRejectsPlaneBehindCamera() {
+        var wall = SpatialSurface(id: "back", kind: "vertical", vertices: [
+            SpatialPoint(x: -0.2, y: -0.2, z: 1), SpatialPoint(x: 0.2, y: -0.2, z: 1),
+            SpatialPoint(x: 0.2, y: 0.2, z: 1), SpatialPoint(x: -0.2, y: 0.2, z: 1)
+        ], epoch: 1)
+        XCTAssertNil(SpatialProjectiveTexturing.mapping(surface: wall, keyframe: frontalKeyframe()))
+        wall.epoch = 2
+        XCTAssertNil(SpatialProjectiveTexturing.mapping(surface: wall, keyframes: [frontalKeyframe()]),
+                     "A later epoch cannot reuse an earlier photo")
+    }
+
+    func testProjectiveTexturePrefersFrontalKeyframeOverGrazing() {
+        let wall = SpatialSurface(id: "wall", kind: "vertical", vertices: [
+            SpatialPoint(x: -0.2, y: -0.2, z: -1), SpatialPoint(x: 0.2, y: -0.2, z: -1),
+            SpatialPoint(x: 0.2, y: 0.2, z: -1), SpatialPoint(x: -0.2, y: 0.2, z: -1)
+        ], epoch: 1)
+        var grazing = frontalKeyframe()
+        grazing.id = "grazing"; grazing.imageFile = "grazing.jpg"
+        grazing.pose.position = SpatialPoint(x: 1.2, y: 0, z: 0)
+        grazing.pose.forward = SpatialPoint(x: -0.76, y: 0, z: -0.65)
+        grazing.cameraToWorld = [0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1.2, 0, 0, 1]
+        let chosen = SpatialProjectiveTexturing.mapping(surface: wall, keyframes: [grazing, frontalKeyframe()])
+        XCTAssertEqual(chosen?.imageFile, "front.jpg")
+        var hidden = wall
+        hidden.observed = false
+        XCTAssertNil(SpatialProjectiveTexturing.mapping(surface: hidden, keyframes: [frontalKeyframe()]),
+                     "Unobserved surfaces stay untextured")
+    }
+
+    private func frontalKeyframe() -> SpatialKeyframe {
+        SpatialKeyframe(id: "front", time: 1,
+            pose: SpatialPose(time: 1, position: SpatialPoint(x: 0, y: 0, z: 0),
+                              forward: SpatialPoint(x: 0, y: 0, z: -1), epoch: 1),
+            intrinsics: [500, 0, 0, 0, 500, 0, 320, 240, 1], width: 640, height: 480,
+            imageFile: "front.jpg", cameraToWorld: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
     }
 }

@@ -123,3 +123,15 @@ def test_optimized_pose_provenance_reaches_dataset_evidence(tmp_path,scan_images
     with pytest.raises(ValueError,match='invalid_dataset_pose_source'):
         export_brush_dataset(document,source,rejected,epoch=1,pose_source='ground_truth')
     assert not rejected.exists()
+
+
+def test_photometric_lock_state_reaches_dataset_evidence(tmp_path,scan_images):
+    document,source=scan_images
+    # The lock settles after the first frames; legacy frames carry no state.
+    for frame in document['keyframes'][:2]: frame.update(photometricLocked=False,exposureDuration=.008,exposureOffset=0.)
+    for frame in document['keyframes'][2:7]: frame.update(photometricLocked=True,exposureDuration=.016666,exposureOffset=-.3)
+    metadata=export_brush_dataset(document,source,tmp_path/'lock',epoch=1)
+    assert (metadata['photometricLockedFrames'],metadata['photometricUnlockedFrames'],metadata['photometricUnknownFrames'])==(5,2,1)
+    assert metadata['frames'][2]['exposureDuration']==.016666
+    assert metadata['frames'][7]['photometricLocked'] is None
+    assert 'per_image_appearance' in metadata['unsupported']

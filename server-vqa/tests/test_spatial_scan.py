@@ -182,6 +182,30 @@ def test_optional_display_metadata_keeps_raw_camera_parameters(tmp_path, monkeyp
     assert c.post('/spatial-scans/import', content=payload()).status_code == 422
 
 
+def test_optional_exposure_metadata_is_kept_and_validated(tmp_path, monkeypatch):
+    c = client(tmp_path, monkeypatch)
+    with zipfile.ZipFile(io.BytesIO(package())) as z:
+        doc = json.loads(z.read('document.json'))
+        jpg = z.read('frame.jpg')
+    k = doc['keyframes'][0]
+    def payload():
+        b = io.BytesIO()
+        with zipfile.ZipFile(b, 'w') as z:
+            z.writestr('document.json', json.dumps(doc))
+            z.writestr('frame.jpg', jpg)
+        return b.getvalue()
+    # Real ARCamera values from an indoor 1/60 s frame.
+    k.update(exposureDuration=0.016666, exposureOffset=-0.3, photometricLocked=True)
+    response = c.post('/spatial-scans/import', content=payload())
+    assert response.status_code == 200
+    saved = response.json()['document']['keyframes'][0]
+    assert (saved['exposureDuration'], saved['exposureOffset'], saved['photometricLocked']) == (0.016666, -0.3, True)
+    for bad in (dict(exposureDuration=0), dict(exposureDuration=2.0), dict(exposureDuration=True),
+                dict(exposureOffset='dark'), dict(photometricLocked=1)):
+        k.update({'exposureDuration': 0.016666, 'exposureOffset': -0.3, 'photometricLocked': True, **bad})
+        assert c.post('/spatial-scans/import', content=payload()).status_code == 422, bad
+
+
 def test_tracking_event_timestamp_is_not_invented(tmp_path, monkeypatch):
     c = client(tmp_path, monkeypatch)
     with zipfile.ZipFile(io.BytesIO(package())) as z:

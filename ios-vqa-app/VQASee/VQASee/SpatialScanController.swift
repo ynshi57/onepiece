@@ -83,6 +83,8 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
     @Published private(set) var isCapturingMap = false
     private var committedDocument: SpatialScanDocument?
 
+    var keyframeDirectory: URL { store.scanDirectoryURL(document.id) }
+
     var hasUnsavedChanges: Bool {
         // Failed startup status/events alone have no captured data to save.
         guard !document.poses.isEmpty || !document.surfaces.isEmpty || !document.keyframes.isEmpty || document.worldMap != nil else { return false }
@@ -120,6 +122,8 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
     private var starting = false
     private var keyframeLimitReported = false
     private(set) var keyframeBytes = 0
+    private(set) var photometricLocked = false
+    private var photometricLockTask: Task<Void, Never>?
     private var lastTrackingState: SpatialTrackingEvent.TrackingState?
     private var lastTrackingReason: SpatialTrackingEvent.TrackingReason?
     private var lastMappingStatus: SpatialTrackingEvent.MappingStatus?
@@ -187,6 +191,7 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
             config.worldAlignment = .gravity
             session.run(config, options: [.resetTracking, .removeExistingAnchors])
             isScanning = true
+            schedulePhotometricLock()
             beginPerformanceMeasurement()
             status = "缓慢移动手机，让墙角和地面进入画面"
             document.events.append("started_rgb_imu_no_depth")
@@ -197,6 +202,9 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
     func stop() {
         livePose.clear()
         finishPerformanceMeasurement()
+        // The outdoor AVCaptureSession shares this camera and must not inherit a locked exposure.
+        photometricLockTask?.cancel(); photometricLockTask = nil
+        setPhotometricLock(false)
         // View disappearance/background callbacks must not cancel an already
         // stopped, explicit finish-and-save request awaiting its map callback.
         if isFinishingAndSaving && !isScanning { return }
@@ -416,6 +424,7 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
                 livePose.clear()
                 isRestoring = true; isScanning = true; beginPerformanceMeasurement(); restoreStarted = ProcessInfo.processInfo.systemUptime
                 session.run(config, options: [.resetTracking, .removeExistingAnchors])
+                schedulePhotometricLock()
                 status = "对准原来的墙角，缓慢侧移；正在核对空间"
                 persistRestorationDiagnostic(nil)
             } catch { self.error = "无法恢复定位地图：\(error.localizedDescription)；原记录保留" }
@@ -696,6 +705,38 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
             && (pixels.map(\.y).max() ?? -1) >= 0 && (pixels.map(\.y).min() ?? height + 1) <= height
     }
 
+    /// The Mac Gaussian trainer has no per-image appearance model, so auto exposure and
+    /// white balance drift between keyframes is learned as smears. Lock both once they settle.
+    private func schedulePhotometricLock() {
+        photometricLockTask?.cancel()
+        let request = generation
+        photometricLockTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard let self, !Task.isCancelled, self.generation == request, self.isScanning else { return }
+            self.setPhotometricLock(true)
+        }
+    }
+
+    private func setPhotometricLock(_ locked: Bool) {
+        defer { if !locked { photometricLocked = false } }
+        guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else {
+            if locked { document.events.append("photometric_lock_unavailable") }
+            return
+        }
+        do { try device.lockForConfiguration() } catch {
+            if locked { document.events.append("photometric_lock_failed:\(error.localizedDescription)") }
+            return
+        }
+        defer { device.unlockForConfiguration() }
+        let exposure: AVCaptureDevice.ExposureMode = locked ? .locked : .continuousAutoExposure
+        let balance: AVCaptureDevice.WhiteBalanceMode = locked ? .locked : .continuousAutoWhiteBalance
+        if device.isExposureModeSupported(exposure) { device.exposureMode = exposure }
+        if device.isWhiteBalanceModeSupported(balance) { device.whiteBalanceMode = balance }
+        guard locked else { return }
+        photometricLocked = device.exposureMode == .locked && device.whiteBalanceMode == .locked
+        document.events.append(photometricLocked ? "photometric_locked" : "photometric_lock_unsupported")
+    }
+
     private func captureKeyframe(_ frame: ARFrame, pose: SpatialPose) {
         if document.keyframes.count >= 240 || keyframeBytes >= 100 * 1_024 * 1_024 {
             if !keyframeLimitReported {
@@ -717,6 +758,8 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
         let t = frame.camera.transform
         let cameraToWorld = [t.columns.0,t.columns.1,t.columns.2,t.columns.3].flatMap { [$0.x,$0.y,$0.z,$0.w] }
         let display = displayMetadata(for: frame)
+        let exposureDuration = frame.camera.exposureDuration, exposureOffset = frame.camera.exposureOffset
+        let locked = photometricLocked
         encoderQueue.async { [weak self] in
             // Keep native dimensions/orientation: resizing would require changing K.
             let context = CIContext()
@@ -744,7 +787,10 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
                     }
                     self.document.keyframes.append(SpatialKeyframe(id: frameID, time: pose.time, pose: pose, intrinsics: intrinsics, width: width, height: height, imageFile: name, cameraToWorld: cameraToWorld,
                         displayOrientation: display?.orientation, displayTransform: display?.transform,
-                        displayViewport: display?.viewport))
+                        displayViewport: display?.viewport,
+                        exposureDuration: exposureDuration.isFinite && exposureDuration > 0 ? exposureDuration : nil,
+                        exposureOffset: exposureOffset.isFinite ? exposureOffset : nil,
+                        photometricLocked: locked))
                     if display == nil { self.document.events.append("keyframe_display_orientation_unknown:\(frameID)") }
                     self.keyframeBytes += jpeg.count
                 } catch { self.error = "关键帧保存失败：\(error.localizedDescription)" }
@@ -826,6 +872,8 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
         restoreEvidence.reset(generation: generation)
         restorePlanes.removeAll(); restoreUpdatedMapAnchorIDs.removeAll()
         recordTrackingEvent(.interrupted, reason: .interrupted)
+        // The camera may reset exposure while interrupted; later frames must not claim a lock.
+        if photometricLocked { photometricLocked = false; document.events.append("photometric_lock_lost_on_interruption") }
         markTrackingGap("扫描被中断，请结束后重新开始")
     }
     func session(_ session: ARSession, didFailWithError value: Error) {

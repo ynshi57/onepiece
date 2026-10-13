@@ -40,6 +40,11 @@ nonisolated struct SpatialKeyframe: Codable, Sendable, Equatable {
     var displayTransform: [Float]? = nil
     /// Window viewport width and height in points at the instant of capture.
     var displayViewport: [Float]? = nil
+    /// ARCamera exposure at capture. Missing on earlier scans.
+    var exposureDuration: Double? = nil
+    var exposureOffset: Float? = nil
+    /// True only when exposure and white balance were both locked for this frame; nil means unknown.
+    var photometricLocked: Bool? = nil
 
     var hasKnownDisplayOrientation: Bool { displayOrientation != nil && displayTransform != nil && displayViewport != nil }
 

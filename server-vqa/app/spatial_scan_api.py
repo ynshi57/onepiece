@@ -113,6 +113,11 @@ def validate(doc, names):
         if any(v is not None for v in display):
             if display[0] not in {"portrait", "portraitUpsideDown", "landscapeLeft", "landscapeRight"} or not finite(display[1], 6) or not finite(display[2], 2) or min(display[2]) <= 0:
                 raise ValueError("照片显示方向参数无效")
+        duration, offset, locked = k.get("exposureDuration"), k.get("exposureOffset"), k.get("photometricLocked")
+        if (duration is not None and (not finite([duration]) or not 0 < duration < 1)) \
+                or (offset is not None and not finite([offset])) \
+                or (locked is not None and not isinstance(locked, bool)):
+            raise ValueError("照片曝光参数无效")
 
 
 @router.get('/splat-viewer.js')

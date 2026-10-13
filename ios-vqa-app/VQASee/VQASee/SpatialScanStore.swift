@@ -273,7 +273,11 @@ actor SpatialScanStore {
         return crc
     }
 
-    private func scanDirectory(_ id: UUID) -> URL { baseURL.appendingPathComponent(id.uuidString, isDirectory: true) }
+    nonisolated func scanDirectoryURL(_ id: UUID) -> URL {
+        baseURL.appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
+    private func scanDirectory(_ id: UUID) -> URL { scanDirectoryURL(id) }
     private func prepare(_ directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.protectionKey: FileProtectionType.complete])

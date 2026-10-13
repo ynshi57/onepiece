@@ -16,6 +16,7 @@ struct SpatialScanScreen: View {
     @State private var pendingHistory: SpatialScanDocument?
     @State private var editingSurface: String?
     @State private var surfaceLayer = SpatialSurfaceLayer.all
+    @StateObject private var textureEvidence = SpatialTextureEvidence()
 
     private var observedSpan: String {
         let points = controller.document.surfaces.filter(\.observed).flatMap(\.vertices)
@@ -45,16 +46,30 @@ struct SpatialScanScreen: View {
                 }
                 ZStack(alignment: .bottomLeading) {
                     if controller.isScanning {
-                        SpatialCameraView(controller: controller, layer: surfaceLayer)
+                        SpatialCameraView(controller: controller, layer: surfaceLayer, evidence: textureEvidence)
                     } else {
-                        SpatialStructureView(document: controller.document, layer: surfaceLayer).id(controller.document.id)
+                        SpatialStructureView(document: controller.document, layer: surfaceLayer,
+                                            imageDirectory: controller.keyframeDirectory, evidence: textureEvidence).id(controller.document.id)
                     }
                     Text(controller.isScanning ? controller.captureGuidance.message : (controller.document.surfaces.isEmpty && controller.document.poses.isEmpty ? "开始扫描建立空间" : "拖动旋转 · 双指缩放"))
                         .font(.caption).padding(10).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                         .padding(12)
                 }
-                .frame(height: 225).clipShape(RoundedRectangle(cornerRadius: 20))
+                .aspectRatio(3 / 4, contentMode: .fit)
+                .frame(maxHeight: 460)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
                 .accessibilityIdentifier("spatial.structure")
+                Text(textureEvidence.summary).font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("照片贴图证据（不表示完整墙面）") {
+                    ForEach(textureEvidence.rows) { row in
+                        VStack(alignment:.leading,spacing:3) {
+                            Text(row.id.prefix(8)+" · "+row.status).font(.caption)
+                            Text("候选照片 \(row.candidates.count) 张；选中 \(row.imageFile ?? "无")").font(.caption2)
+                            Text(row.candidates.map { $0.imageFile+":"+$0.state }.joined(separator:"\n")).font(.caption2)
+                        }
+                    }
+                    Text("材质预算 \(textureEvidence.cacheStats["decodedBytes"] ?? 0) / \(textureEvidence.cacheStats["budgetBytes"] ?? 0) 字节；显示纹理最长边1024，原照片保留。遮挡、人物与真实墙面类别尚未确认。") .font(.caption2)
+                }
 
                 Button {
                     if controller.isScanning { controller.stopAndSave() } else if !controller.document.surfaces.isEmpty || !controller.document.poses.isEmpty { confirmingNew = true } else { controller.start() }
@@ -90,7 +105,7 @@ struct SpatialScanScreen: View {
                     Text("方向不等于类别：家具也可能形成平面，尚未确认墙面或地面。")
                         .font(.caption).foregroundStyle(.secondary)
                     Text(observedSpan).font(.caption).foregroundStyle(.secondary)
-                    Text("照片用于重建，侧移提示不保证恢复完整轮廓。")
+                    Text("能对上照片的观测面会贴上颜色；线框是结构。家具还没有单独剪出立牌。斜视会拉长。")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("已采集 \(controller.document.keyframes.count) 张关键帧").font(.caption).foregroundStyle(.secondary)
                     SpatialTopView(document: controller.document, layer: surfaceLayer, livePose: controller.livePose, isLive: controller.isScanning).frame(height: 150)
@@ -196,24 +211,28 @@ struct SpatialScanScreen: View {
 private struct SpatialCameraView: UIViewRepresentable {
     let controller: SpatialScanController
     let layer: SpatialSurfaceLayer
+    let evidence: SpatialTextureEvidence
     func makeCoordinator() -> SpatialSceneCache { SpatialSceneCache() }
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView()
         view.session = controller.session
-        view.automaticallyUpdatesLighting = true
+        view.automaticallyUpdatesLighting = false
         view.scene = SCNScene()
         return view
     }
     func updateUIView(_ view: ARSCNView, context: Context) {
         let scene = view.scene
         context.coordinator.bindLive(controller.livePose)
-        context.coordinator.populate(scene, document: controller.document, layer: layer)
+        context.coordinator.populate(scene, document: controller.document, layer: layer,
+                                     imageDirectory: controller.keyframeDirectory, liveOverlay: true, evidence: evidence)
     }
 }
 
 private struct SpatialStructureView: UIViewRepresentable {
     let document: SpatialScanDocument
     let layer: SpatialSurfaceLayer
+    let imageDirectory: URL
+    let evidence: SpatialTextureEvidence
     func makeCoordinator() -> SpatialSceneCache { SpatialSceneCache() }
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
@@ -225,7 +244,8 @@ private struct SpatialStructureView: UIViewRepresentable {
     }
     func updateUIView(_ view: SCNView, context: Context) {
         guard let scene = view.scene else { return }
-        context.coordinator.populate(scene, document: document, layer: layer)
+        context.coordinator.populate(scene, document: document, layer: layer,
+                                     imageDirectory: imageDirectory, liveOverlay: false, evidence: evidence)
         if scene.rootNode.childNode(withName: "camera", recursively: false) == nil {
             let points = document.surfaces.flatMap(\.vertices) + document.poses.map(\.position)
             let x = points.map(\.x), z = points.map(\.z)
@@ -240,8 +260,39 @@ private struct SpatialStructureView: UIViewRepresentable {
     }
 }
 
+private final class SpatialTextureEvidence: ObservableObject {
+    struct Row: Identifiable, Equatable { let id:String; var status:String; let imageFile:String?; let candidates:[SpatialProjectiveTexturing.Candidate] }
+    @Published private(set) var rows:[Row]=[]
+    @Published private(set) var cacheStats:[String:Int]=[:]
+    private var generation=UUID()
+    var summary:String {
+        let supported=rows.filter {$0.status.hasPrefix("已投影")}.count
+        return "照片投影 \(supported) / \(rows.count) 个观测面；其余保留未知底色与边界。贴图不表示完整墙面。"
+    }
+    private var pendingRows:[Row]=[],pendingStats:[String:Int]=[:],flushScheduled=false
+    func reset(generation:UUID,rows:[Row],stats:[String:Int]) {
+        self.generation=generation;pendingRows=rows;pendingStats=stats;scheduleFlush()
+    }
+    func update(generation:UUID,id:String,status:String,stats:[String:Int]) {
+        guard self.generation==generation,let index=pendingRows.firstIndex(where: {$0.id==id}) else {return}
+        pendingRows[index].status=status;pendingStats=stats;scheduleFlush()
+    }
+    private func scheduleFlush() {
+        guard !flushScheduled else {return};flushScheduled=true
+        Task { @MainActor [weak self] in
+            guard let self else {return};self.flushScheduled=false
+            if self.rows != self.pendingRows {self.rows=self.pendingRows}
+            if self.cacheStats != self.pendingStats {self.cacheStats=self.pendingStats}
+        }
+    }
+
+}
+
 private final class SpatialSceneCache {
     private var surfaces: [SpatialSurface] = []
+    private var textureKey = ""
+    private let textures = SpatialDecodedTextureCache()
+    private var textureGeneration = UUID()
     private var trajectoryCache = SpatialTrajectoryAppendCache()
     private var chunks: [[SCNVector3]] = []
     private var chunkNodes: [SCNNode] = []
@@ -271,10 +322,20 @@ private final class SpatialSceneCache {
         root.geometry = lines(edges, color: .systemOrange).geometry
     }
     private var activeLayer: SpatialSurfaceLayer?
-    func populate(_ scene: SCNScene, document: SpatialScanDocument, layer: SpatialSurfaceLayer) {
-        if surfaces != document.surfaces || activeLayer != layer {
+    func populate(_ scene: SCNScene, document: SpatialScanDocument, layer: SpatialSurfaceLayer,
+                  imageDirectory: URL, liveOverlay: Bool, evidence: SpatialTextureEvidence) {
+        let nextKey = document.id.uuidString + ":" + document.keyframes.map(\.imageFile).joined(separator: ",")
+        let sameGeometry = surfaces.count==document.surfaces.count && zip(surfaces,document.surfaces).allSatisfy { a,b in
+            a.id==b.id && a.kind==b.kind && a.vertices==b.vertices && a.observed==b.observed && a.epoch==b.epoch
+        }
+        if !sameGeometry || activeLayer != layer || textureKey != nextKey {
             activeLayer = layer
             surfaces = document.surfaces
+            textureKey = nextKey
+            textureGeneration = UUID()
+            let generation=textureGeneration
+            var requests:[(SpatialSurface,SpatialProjectiveTexturing.Selection,SCNGeometry)] = []
+            var rows:[SpatialTextureEvidence.Row] = []
             scene.rootNode.childNode(withName: "surfaces", recursively: false)?.removeFromParentNode()
             let root = SCNNode(); root.name = "surfaces"
             var edgesByKind: [String: [SCNVector3]] = [:]
@@ -282,12 +343,45 @@ private final class SpatialSceneCache {
                 let vertices = surface.vertices.map { SCNVector3($0.x, $0.y, $0.z) }
                 var indices = [Int32]()
                 for index in 1..<(vertices.count - 1) { indices += [0, Int32(index), Int32(index + 1)] }
-                let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices)], elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
-                let fill = SCNMaterial(); fill.diffuse.contents = SpatialSurfaceLayer.uiColor(surface).withAlphaComponent(surface.kind == "vertical" ? 0.14 : 0.08); fill.isDoubleSided = true
+                let selection=SpatialProjectiveTexturing.selection(surface:surface,keyframes:document.keyframes)
+                let fill=SCNMaterial();fill.isDoubleSided=true;fill.lightingModel = .constant
+                fill.transparency=1;fill.blendMode = .alpha
+                fill.diffuse.contents=SpatialSurfaceLayer.uiColor(surface).withAlphaComponent(surface.kind=="vertical" ? 0.14:0.08)
+                let geometry=SCNGeometry(sources:[SCNGeometrySource(vertices:vertices)],elements:[SCNGeometryElement(indices:indices,primitiveType:.triangles)])
+                requests.append((surface,selection,geometry))
+                rows.append(SpatialTextureEvidence.Row(id:surface.id,status:selection.mapping==nil ? "暂无覆盖照片，保留未知底色":"正在读取照片，保留未知底色",imageFile:selection.mapping?.imageFile,candidates:selection.candidates))
                 geometry.materials = [fill]; root.addChildNode(SCNNode(geometry: geometry))
                 for index in vertices.indices { edgesByKind[surface.kind, default: []] += [vertices[index], vertices[(index + 1) % vertices.count]] }
             }
-            for (kind, edges) in edgesByKind { root.addChildNode(lines(edges, color: SpatialSurfaceLayer.uiColor(kind))) }; scene.rootNode.addChildNode(root)
+            for (kind, edges) in edgesByKind {
+                let node = lines(edges, color: SpatialSurfaceLayer.uiColor(kind))
+                node.renderingOrder = 10
+                root.addChildNode(node)
+            }
+            scene.rootNode.addChildNode(root)
+            for surface in document.surfaces where !surface.observed || !layer.includes(surface) || surface.vertices.count<3 || !surface.vertices.allSatisfy(\.isFinite) {
+                let state = !surface.observed ? "未确认观测，原记录保留" : !layer.includes(surface) ? "当前图层未显示，原观测保留" : "几何数据无效，原记录与失败保留"
+                rows.append(SpatialTextureEvidence.Row(id:surface.id,status:state,imageFile:nil,candidates:[]))
+            }
+            let scope=textures.beginScope(names:Set(requests.compactMap {$0.1.mapping?.imageFile}),directory:imageDirectory)
+            evidence.reset(generation:generation,rows:rows,stats:self.textures.snapshot())
+            for (surface,selection,geometry) in requests {
+                guard let mapping=selection.mapping else {continue}
+                textures.request(name:mapping.imageFile,directory:imageDirectory,scope:scope) { [weak self,weak evidence] result in
+                    guard let self,let evidence else {return}
+                    Task { @MainActor [self,evidence] in
+                        guard self.textureGeneration==generation else {return}
+                        switch result {
+                        case let .ready(texture,_):
+                            geometry.materials=[SpatialProjectiveTexturing.material(mapping:mapping,texture:texture,kind:surface.kind,liveOverlay:liveOverlay)]
+                            evidence.update(generation:generation,id:surface.id,status:"已投影；照片外区域与遮挡仍未知",stats:self.textures.snapshot())
+                        case let .unknown(reason):
+                            let message=reason=="decoded_texture_budget" ? "纹理容量已满，保留未知底色与边界":"照片读取未完成或失败，保留未知底色与边界（"+reason+"）"
+                            evidence.update(generation:generation,id:surface.id,status:message,stats:self.textures.snapshot())
+                        }
+                    }
+                }
+            }
         }
         currentScene = scene
         lastHistoryPose = document.poses.last
@@ -312,6 +406,7 @@ private final class SpatialSceneCache {
         if let boundLive { applyLive(boundLive.pose) }
 
     }
+
     private func lines(_ vertices: [SCNVector3], color: UIColor) -> SCNNode {
         guard !vertices.isEmpty else { return SCNNode() }
         let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices)], elements: [SCNGeometryElement(indices: vertices.indices.map { Int32($0) }, primitiveType: .line)])
