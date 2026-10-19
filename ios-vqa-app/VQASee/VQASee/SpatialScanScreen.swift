@@ -3,7 +3,7 @@ import ARKit
 import SceneKit
 import Combine
 
-/// Observed geometry only: no inferred rooms or connections across tracking resets.
+/// Top view draws measured wall centerlines. A photo foot is a separate dashed line, and only where it touches that wall. Raw polygons stay saved.
 struct SpatialScanScreen: View {
     @ObservedObject var controller: SpatialScanController
     let onOutdoor: () -> Void
@@ -11,12 +11,27 @@ struct SpatialScanScreen: View {
     let onDebug: () -> Void
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingHistory = false
+    @State private var topViewIsPrimary = false
+    @State private var mapZoom: CGFloat = 1
+    @State private var mapOffset: CGSize = .zero
+    @GestureState private var mapDrag: CGSize = .zero
+    @GestureState private var mapMagnification: CGFloat = 1
     @State private var confirmingClear = false
     @State private var confirmingNew = false
     @State private var pendingHistory: SpatialScanDocument?
     @State private var editingSurface: String?
     @State private var surfaceLayer = SpatialSurfaceLayer.all
     @StateObject private var textureEvidence = SpatialTextureEvidence()
+    @StateObject private var wallFeet = SpatialWallFootModel()
+
+    private var planeSummary: String {
+        let visible = controller.document.surfaces.filter { $0.observed && surfaceLayer.includes($0) }
+        let classifications = SpatialSemanticRendering.classifications(controller.semanticDisplayDocument)
+        let walls = visible.filter { classifications[$0.id] == .wall }.count
+        let floors = visible.filter { classifications[$0.id] == .floor }.count
+        let conflicts = visible.filter { classifications[$0.id] == .other }.count
+        return "墙面证据支持\(walls)面，地面证据支持\(floors)面，冲突\(conflicts)面；其余类别未知。全部原始观测保留。"
+    }
 
     private var observedSpan: String {
         let points = controller.document.surfaces.filter(\.observed).flatMap(\.vertices)
@@ -44,32 +59,14 @@ struct SpatialScanScreen: View {
                     .accessibilityLabel("更多功能")
                     .accessibilityIdentifier("spatial.more")
                 }
-                ZStack(alignment: .bottomLeading) {
-                    if controller.isScanning {
-                        SpatialCameraView(controller: controller, layer: surfaceLayer, evidence: textureEvidence)
-                    } else {
-                        SpatialStructureView(document: controller.document, layer: surfaceLayer,
-                                            imageDirectory: controller.keyframeDirectory, evidence: textureEvidence).id(controller.document.id)
+                combinedViewport
+                    .task(id: "\(controller.document.id.uuidString)-\(controller.document.keyframes.count)-\(controller.isScanning)") {
+                        wallFeet.rebuild(document: controller.document, directory: controller.keyframeDirectory, scanning: controller.isScanning)
                     }
-                    Text(controller.isScanning ? controller.captureGuidance.message : (controller.document.surfaces.isEmpty && controller.document.poses.isEmpty ? "开始扫描建立空间" : "拖动旋转 · 双指缩放"))
-                        .font(.caption).padding(10).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                        .padding(12)
-                }
-                .aspectRatio(3 / 4, contentMode: .fit)
-                .frame(maxHeight: 460)
-                .clipShape(RoundedRectangle(cornerRadius: 20))
-                .accessibilityIdentifier("spatial.structure")
-                Text(textureEvidence.summary).font(.caption).foregroundStyle(.secondary)
-                DisclosureGroup("照片贴图证据（不表示完整墙面）") {
-                    ForEach(textureEvidence.rows) { row in
-                        VStack(alignment:.leading,spacing:3) {
-                            Text(row.id.prefix(8)+" · "+row.status).font(.caption)
-                            Text("候选照片 \(row.candidates.count) 张；选中 \(row.imageFile ?? "无")").font(.caption2)
-                            Text(row.candidates.map { $0.imageFile+":"+$0.state }.joined(separator:"\n")).font(.caption2)
-                        }
+                    .onChange(of: controller.document.id) { _, _ in
+                        mapZoom = 1; mapOffset = .zero
                     }
-                    Text("材质预算 \(textureEvidence.cacheStats["decodedBytes"] ?? 0) / \(textureEvidence.cacheStats["budgetBytes"] ?? 0) 字节；显示纹理最长边1024，原照片保留。遮挡、人物与真实墙面类别尚未确认。") .font(.caption2)
-                }
+
 
                 Button {
                     if controller.isScanning { controller.stopAndSave() } else if !controller.document.surfaces.isEmpty || !controller.document.poses.isEmpty { confirmingNew = true } else { controller.start() }
@@ -78,40 +75,42 @@ struct SpatialScanScreen: View {
                         .frame(maxWidth: .infinity).padding(.vertical, 8)
                 }.buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("spatial.scan")
-                    .disabled(controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap)
+                    .disabled((!controller.isScanning && (controller.isArchivingObjects || controller.isAnalyzingIndoorSemantics)) || controller.isAnalyzingObjects || controller.isLocatingObjects || controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap)
                     #if targetEnvironment(simulator)
                     .disabled(true)
                     #endif
 
                 if !controller.isScanning, !controller.document.poses.isEmpty {
                     Button("恢复这个空间", systemImage: "arrow.triangle.2.circlepath") { controller.restore() }
-                        .buttonStyle(.bordered).disabled(controller.document.worldMap == nil || controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap)
+                        .buttonStyle(.bordered).disabled(controller.isAnalyzingIndoorSemantics || controller.isArchivingObjects || controller.isAnalyzingObjects || controller.isLocatingObjects || controller.document.worldMap == nil || controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap)
                         .accessibilityIdentifier("spatial.restore")
                     Text(controller.document.worldMap == nil ? "此记录没有定位地图，不能与当前相机对齐" : "回到原墙角后恢复；新观测核对通过才记录轨迹")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if controller.isCapturingMap || controller.isFinishingAndSaving { ProgressView("正在结束并保存，请稍候") }
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("俯视图").font(.headline)
-                    Picker("显示观测层", selection: $surfaceLayer) {
-                        ForEach(SpatialSurfaceLayer.allCases, id: \.self) { layer in Text(layer.title).tag(layer) }
-                    }.pickerStyle(.segmented).accessibilityIdentifier("spatial.layers")
-                    Text("\(surfaceLayer.title) · 显示 \(controller.document.surfaces.filter { $0.observed && surfaceLayer.includes($0) }.count) / \(controller.document.surfaces.count) 个原始观测，保存与导出保留全部")
+                Text("空白处未扫描，不代表可通行；颜色不代表完整墙面。")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                if !SpatialHorizontalObservation.surfaces(controller.document.surfaces).isEmpty {
+                    Text("灰色为未确认观测；紫色墙面、青色地面需多照片证据支持。")
                         .font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 12) {
-                        Label("垂直面候选", systemImage: "rectangle.portrait").foregroundStyle(.purple)
-                        Label("水平面候选", systemImage: "rectangle").foregroundStyle(.teal)
-                    }.font(.caption)
-                    Text("方向不等于类别：家具也可能形成平面，尚未确认墙面或地面。")
+                }
+
+                if controller.isScanning,
+                   (controller.document.indoorSemanticObservations ?? []).contains(where: { $0.status == .processed }),
+                   (controller.semanticDisplayDocument.indoorSemanticObservations ?? []).isEmpty {
+                    Text("正在核对最新边界，灰色部分尚未确认类别")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text(observedSpan).font(.caption).foregroundStyle(.secondary)
-                    Text("能对上照片的观测面会贴上颜色；线框是结构。家具还没有单独剪出立牌。斜视会拉长。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("已采集 \(controller.document.keyframes.count) 张关键帧").font(.caption).foregroundStyle(.secondary)
-                    SpatialTopView(document: controller.document, layer: surfaceLayer, livePose: controller.livePose, isLive: controller.isScanning).frame(height: 150)
-                    Text("只显示已观察结构。空白处未扫描，不代表可通行。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.padding(16).background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20))
+                        .accessibilityIdentifier("spatial.semantics.reprojecting")
+                }
+                if controller.document.events.contains("keyframe_limit_reached_remaining_scan_has_no_rgb") || controller.document.events.contains("keyframe_storage_limit") || controller.document.events.contains("keyframe_encode_failed") || controller.document.events.contains("keyframe_write_failed") {
+                    Label("这段扫描有照片缺口，物品与空间记录可能不完整。", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                        .accessibilityIdentifier("spatial.capture.incomplete")
+                }
+
+                SpatialIndoorSemanticView(controller: controller)
+                SpatialObjectObservationView(controller: controller)
 
                 if SpatialScanGeometry.trajectorySegments(controller.document.poses).count > 1 {
                     Label("轨迹出现中断或位置跳变，已分段显示，请检查空间结构。", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
@@ -127,16 +126,16 @@ struct SpatialScanScreen: View {
                 #endif
                 HStack {
                     Button("保存", systemImage: "square.and.arrow.down") { controller.save() }
-                        .disabled(controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap || controller.isScanning || (controller.document.surfaces.isEmpty && controller.document.poses.isEmpty))
+                        .disabled(controller.isAnalyzingIndoorSemantics || controller.isArchivingObjects || controller.isAnalyzingObjects || controller.isLocatingObjects || controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap || controller.isScanning || (controller.document.surfaces.isEmpty && controller.document.poses.isEmpty))
                         .accessibilityIdentifier("spatial.save")
                     Spacer()
                     Button("历史", systemImage: "clock") { showingHistory = true }
                         .accessibilityIdentifier("spatial.history")
-                        .disabled(controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap)
+                        .disabled(controller.isAnalyzingIndoorSemantics || controller.isArchivingObjects || controller.isAnalyzingObjects || controller.isLocatingObjects || controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap)
                     Spacer()
                     Button("清除本次", role: .destructive) { confirmingClear = true }
                         .accessibilityIdentifier("spatial.clear")
-                        .disabled(controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap)
+                        .disabled(controller.isAnalyzingIndoorSemantics || controller.isArchivingObjects || controller.isAnalyzingObjects || controller.isLocatingObjects || controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap)
                 }.buttonStyle(.bordered)
                 if !controller.isScanning && !controller.document.surfaces.isEmpty {
                     Menu("检查与修正结构") {
@@ -144,6 +143,42 @@ struct SpatialScanScreen: View {
                             Button("\(SpatialSurfaceLayer.name(surface)) · 观测跨度 \(String(format: "%.2f", SpatialScanGeometry.observedBoundarySpan(surface) ?? 0)) 米") { editingSurface = surface.id }
                         }
                     }.accessibilityIdentifier("spatial.edit")
+                }
+                DisclosureGroup("扫描详情") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(textureEvidence.summary).font(.caption).foregroundStyle(.secondary)
+                        DisclosureGroup("照片贴图证据（不表示完整墙面）") {
+                            ForEach(textureEvidence.rows) { row in
+                                VStack(alignment:.leading,spacing:3) {
+                                    Text(row.id.prefix(8)+" · "+row.status).font(.caption)
+                                    Text("候选照片 \(row.candidates.count) 张；选中 \(row.imageFile ?? "无")").font(.caption2)
+                                    Text(row.candidates.map { $0.imageFile+":"+$0.state }.joined(separator:"\n")).font(.caption2)
+                                }
+                            }
+                            Text("材质预算 \(textureEvidence.cacheStats["decodedBytes"] ?? 0) / \(textureEvidence.cacheStats["budgetBytes"] ?? 0) 字节；显示纹理最长边1024，原照片保留。遮挡、人物与真实墙面类别尚未确认。") .font(.caption2)
+                        }
+                        Picker("显示观测层", selection: $surfaceLayer) {
+                            ForEach(SpatialSurfaceLayer.allCases, id: \.self) { layer in Text(layer.title).tag(layer) }
+                        }.pickerStyle(.segmented).accessibilityIdentifier("spatial.layers")
+                        Text("\(surfaceLayer.title) · 显示 \(controller.document.surfaces.filter { $0.observed && surfaceLayer.includes($0) }.count) / \(controller.document.surfaces.count) 个原始观测，保存与导出保留全部")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack(spacing: 12) {
+                            Label("垂直面候选", systemImage: "rectangle.portrait").foregroundStyle(.purple)
+                            Label("水平观测，未确认地面", systemImage: "rectangle").foregroundStyle(.teal)
+                        }.font(.caption)
+                        Text("方向不等于类别：家具也可能形成平面，尚未确认墙面或地面。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(planeSummary).font(.caption).foregroundStyle(.secondary)
+                        Text(observedSpan).font(.caption).foregroundStyle(.secondary)
+                        Text("类别颜色来自多照片核对；不贴照片补造地面。灰色和冲突面保留原始几何。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("已采集 \(controller.document.keyframes.count) 张关键帧").font(.caption).foregroundStyle(.secondary)
+                        if !wallFeet.caption.isEmpty {
+                            Text(wallFeet.caption).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Text("只显示已观察结构。空白处未扫描，不代表可通行。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Text("已保存在本机；分享时可选 AirDrop 或存储到文件。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -182,7 +217,7 @@ struct SpatialScanScreen: View {
                         pendingHistory = nil; showingHistory = false
                     }
                 }.navigationTitle("扫描记录")
-                    .toolbar { Button("完成") { showingHistory = false } }
+                    .toolbar { Button("完成") { showingHistory = false }.accessibilityIdentifier("spatial.history.done") }
             }
         }
         .sheet(isPresented: Binding(get: { editingSurface != nil }, set: { if !$0 { editingSurface = nil } })) {
@@ -206,6 +241,95 @@ struct SpatialScanScreen: View {
         }
         .onDisappear { controller.stop() }
     }
+    private var combinedViewport: some View {
+        GeometryReader { geometry in
+            let size = geometry.size
+            let inset: CGFloat = 12
+            let small = CGSize(width: min(140, size.width * 0.34), height: min(160, size.height * 0.34))
+            let mainCenter = CGPoint(x: size.width / 2, y: size.height / 2)
+            let smallCenter = CGPoint(x: size.width - small.width / 2 - inset, y: size.height - small.height / 2 - inset)
+            ZStack {
+                // Stable sibling identity: swapping never creates another AR view/session.
+                ZStack {
+                    if controller.isScanning {
+                        SpatialCameraView(controller: controller, layer: surfaceLayer, evidence: textureEvidence)
+                            .overlay { SpatialLiveObjectOverlay(controller: controller) }
+                    } else {
+                        SpatialStructureView(document: controller.semanticDisplayDocument, layer: surfaceLayer,
+                            imageDirectory: controller.keyframeDirectory, evidence: textureEvidence).id(controller.document.id)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
+                    Text(controller.isScanning ? "实时画面" : "空间预览")
+                        .font(.caption.bold()).padding(7).background(.regularMaterial, in: Capsule()).padding(8)
+                }
+                .allowsHitTesting(!topViewIsPrimary)
+                .frame(width: topViewIsPrimary ? small.width : size.width, height: topViewIsPrimary ? small.height : size.height)
+                .clipShape(RoundedRectangle(cornerRadius: topViewIsPrimary ? 14 : 20))
+                .position(topViewIsPrimary ? smallCenter : mainCenter)
+                .zIndex(topViewIsPrimary ? 1 : 0)
+
+                ZStack {
+                    Color(uiColor: .secondarySystemBackground)
+                    SpatialTopView(document: controller.semanticDisplayDocument, layer: surfaceLayer, livePose: controller.livePose,
+                        isLive: controller.isScanning, inferred: wallFeet.lines, compact: !topViewIsPrimary)
+                        .scaleEffect(topViewIsPrimary ? mapZoom * mapMagnification : 1)
+                        .offset(x: topViewIsPrimary ? mapOffset.width + mapDrag.width : 0, y: topViewIsPrimary ? mapOffset.height + mapDrag.height : 0)
+                        .allowsHitTesting(false)
+                }
+                .overlay(alignment: .topLeading) {
+                    Text("俯视图").font(.caption.bold()).padding(7).background(.regularMaterial, in: Capsule()).padding(8)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) {
+                    if topViewIsPrimary { mapZoom = 1; mapOffset = .zero }
+                }
+                .gesture(DragGesture().updating($mapDrag) { value, state, _ in state = value.translation }
+                    .onEnded { value in mapOffset.width += value.translation.width; mapOffset.height += value.translation.height }, including: topViewIsPrimary ? .all : .none)
+                .simultaneousGesture(MagnifyGesture().updating($mapMagnification) { value, state, _ in state = value.magnification }
+                    .onEnded { value in mapZoom = min(6, max(0.5, mapZoom * value.magnification)) }, including: topViewIsPrimary ? .all : .none)
+                .frame(width: topViewIsPrimary ? size.width : small.width, height: topViewIsPrimary ? size.height : small.height)
+                .clipShape(RoundedRectangle(cornerRadius: topViewIsPrimary ? 20 : 14))
+                .position(topViewIsPrimary ? mainCenter : smallCenter)
+                .zIndex(topViewIsPrimary ? 0 : 1)
+
+                Button {
+                    topViewIsPrimary.toggle()
+                } label: {
+                    RoundedRectangle(cornerRadius: 14).fill(Color.clear)
+                        .overlay(alignment: .bottomTrailing) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.caption.bold()).padding(7).background(.regularMaterial, in: Circle()).padding(6)
+                        }
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.85), lineWidth: 2))
+                        .contentShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .frame(width: small.width, height: small.height)
+                .position(smallCenter)
+                .zIndex(2)
+                .accessibilityLabel(topViewIsPrimary ? "将画面切换为主窗口" : "将俯视图切换为主窗口")
+                .accessibilityValue(topViewIsPrimary ? "俯视图为主窗口" : "画面为主窗口")
+                .accessibilityIdentifier("spatial.viewport.swap")
+
+                VStack {
+                    Spacer()
+                    HStack {
+                        Text(controller.isScanning ? controller.captureGuidance.message : (topViewIsPrimary ? "拖动或缩放 · 双击复位" : "开始扫描或查看已有空间"))
+                            .font(.caption).padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            .frame(maxWidth: max(0, size.width - small.width - 3 * inset), alignment: .leading)
+                        Spacer()
+                    }
+                }.padding(inset).allowsHitTesting(false).zIndex(3)
+            }
+        }
+        .aspectRatio(3 / 4, contentMode: .fit)
+        .frame(maxHeight: 460)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("spatial.structure")
+    }
+
 }
 
 private struct SpatialCameraView: UIViewRepresentable {
@@ -214,7 +338,10 @@ private struct SpatialCameraView: UIViewRepresentable {
     let evidence: SpatialTextureEvidence
     func makeCoordinator() -> SpatialSceneCache { SpatialSceneCache() }
     func makeUIView(context: Context) -> ARSCNView {
-        let view = ARSCNView()
+        let view = SpatialLiveObjectCameraView()
+        view.viewportChanged = { [weak controller] size, orientation in
+            controller?.updateLiveObjectViewport(size: size, orientation: orientation)
+        }
         view.session = controller.session
         view.automaticallyUpdatesLighting = false
         view.scene = SCNScene()
@@ -223,7 +350,7 @@ private struct SpatialCameraView: UIViewRepresentable {
     func updateUIView(_ view: ARSCNView, context: Context) {
         let scene = view.scene
         context.coordinator.bindLive(controller.livePose)
-        context.coordinator.populate(scene, document: controller.document, layer: layer,
+        context.coordinator.populate(scene, document: controller.semanticDisplayDocument, layer: layer,
                                      imageDirectory: controller.keyframeDirectory, liveOverlay: true, evidence: evidence)
     }
 }
@@ -322,40 +449,64 @@ private final class SpatialSceneCache {
         root.geometry = lines(edges, color: .systemOrange).geometry
     }
     private var activeLayer: SpatialSurfaceLayer?
+    private var semanticRows: [SpatialIndoorSemanticObservation] = []
     func populate(_ scene: SCNScene, document: SpatialScanDocument, layer: SpatialSurfaceLayer,
                   imageDirectory: URL, liveOverlay: Bool, evidence: SpatialTextureEvidence) {
         let nextKey = document.id.uuidString + ":" + document.keyframes.map(\.imageFile).joined(separator: ",")
         let sameGeometry = surfaces.count==document.surfaces.count && zip(surfaces,document.surfaces).allSatisfy { a,b in
             a.id==b.id && a.kind==b.kind && a.vertices==b.vertices && a.observed==b.observed && a.epoch==b.epoch
         }
-        if !sameGeometry || activeLayer != layer || textureKey != nextKey {
+        if !sameGeometry || activeLayer != layer || textureKey != nextKey || semanticRows != (document.indoorSemanticObservations ?? []) {
+            semanticRows = document.indoorSemanticObservations ?? []
             activeLayer = layer
             surfaces = document.surfaces
             textureKey = nextKey
             textureGeneration = UUID()
             let generation=textureGeneration
-            var requests:[(SpatialSurface,SpatialProjectiveTexturing.Selection,SCNGeometry)] = []
             var rows:[SpatialTextureEvidence.Row] = []
             scene.rootNode.childNode(withName: "surfaces", recursively: false)?.removeFromParentNode()
             let root = SCNNode(); root.name = "surfaces"
-            var edgesByKind: [String: [SCNVector3]] = [:]
+            var edgesByRole: [String: [SCNVector3]] = [:]
+            let classifications = SpatialSemanticRendering.classifications(document)
             for surface in surfaces where layer.includes(surface) && surface.observed && surface.vertices.count >= 3 && surface.vertices.allSatisfy(\.isFinite) {
-                let vertices = surface.vertices.map { SCNVector3($0.x, $0.y, $0.z) }
-                var indices = [Int32]()
-                for index in 1..<(vertices.count - 1) { indices += [0, Int32(index), Int32(index + 1)] }
-                let selection=SpatialProjectiveTexturing.selection(surface:surface,keyframes:document.keyframes)
-                let fill=SCNMaterial();fill.isDoubleSided=true;fill.lightingModel = .constant
-                fill.transparency=1;fill.blendMode = .alpha
-                fill.diffuse.contents=SpatialSurfaceLayer.uiColor(surface).withAlphaComponent(surface.kind=="vertical" ? 0.14:0.08)
-                let geometry=SCNGeometry(sources:[SCNGeometrySource(vertices:vertices)],elements:[SCNGeometryElement(indices:indices,primitiveType:.triangles)])
-                requests.append((surface,selection,geometry))
-                rows.append(SpatialTextureEvidence.Row(id:surface.id,status:selection.mapping==nil ? "暂无覆盖照片，保留未知底色":"正在读取照片，保留未知底色",imageFile:selection.mapping?.imageFile,candidates:selection.candidates))
-                geometry.materials = [fill]; root.addChildNode(SCNNode(geometry: geometry))
-                for index in vertices.indices { edgesByKind[surface.kind, default: []] += [vertices[index], vertices[(index + 1) % vertices.count]] }
+                let semantic = classifications[surface.id] ?? .unknown
+                let vertices = surface.vertices.map { SCNVector3($0.x,$0.y,$0.z) }
+                var indices: [Int32]?
+                if surface.kind == "horizontal" { indices = SpatialHorizontalObservation.triangles(surface.vertices) }
+                else {
+                    // Existing vertical polygon topology; no inferred wall extension or photo fill.
+                    indices = (1..<(vertices.count-1)).flatMap { [Int32(0),Int32($0),Int32($0+1)] }
+                }
+                if let indices {
+                    let geometry = SCNGeometry(sources:[SCNGeometrySource(vertices:vertices)],elements:[SCNGeometryElement(indices:indices,primitiveType:.triangles)])
+                    let material = SCNMaterial(); material.isDoubleSided = true; material.lightingModel = .constant
+                    material.diffuse.contents = SpatialSemanticRendering.color(semantic).cgColor
+                    material.transparency = semantic == .unknown ? 0.04 : 0.22
+                    material.blendMode = .alpha; material.writesToDepthBuffer = false
+                    geometry.materials = [material]; root.addChildNode(SCNNode(geometry:geometry))
+                }
+                let role = semantic.rawValue
+                for i in vertices.indices {
+                    let a = surface.vertices[i], b = surface.vertices[(i+1)%vertices.count]
+                    if semantic == .wall || semantic == .floor {
+                        edgesByRole[role,default:[]] += [vertices[i],vertices[(i+1)%vertices.count]]
+                    } else {
+                        let dx = b.x-a.x, dy = b.y-a.y, dz = b.z-a.z
+                        let length = sqrt(dx*dx+dy*dy+dz*dz)
+                        let segments = max(1,Int(min(2048,ceil(length/0.08))))
+                        for step in stride(from:0,to:segments,by:2) {
+                            let lo = Float(step)/Float(segments), hi = Float(min(step+1,segments))/Float(segments)
+                            edgesByRole[role,default:[]] += [SCNVector3(a.x+lo*dx,a.y+lo*dy,a.z+lo*dz),SCNVector3(a.x+hi*dx,a.y+hi*dy,a.z+hi*dz)]
+                        }
+                    }
+                }
+                let title: String
+                switch semantic { case .wall: title = "多照片支持墙面"; case .floor: title = "多照片支持地面"; case .other: title = "类别证据冲突，原始几何保留"; case .unknown: title = "类别尚未确认，原始几何保留" }
+                rows.append(SpatialTextureEvidence.Row(id:surface.id,status:indices == nil ? title+"；填充失败，保留边界" : title,imageFile:nil,candidates:[]))
             }
-            for (kind, edges) in edgesByKind {
-                let node = lines(edges, color: SpatialSurfaceLayer.uiColor(kind))
-                node.renderingOrder = 10
+            for (role, edges) in edgesByRole {
+                let semantic = SpatialSurfaceSemanticEvidence.Semantic(rawValue:role) ?? .unknown
+                let node = lines(edges,color:SpatialSemanticRendering.color(semantic)); node.renderingOrder = 10
                 root.addChildNode(node)
             }
             scene.rootNode.addChildNode(root)
@@ -363,25 +514,8 @@ private final class SpatialSceneCache {
                 let state = !surface.observed ? "未确认观测，原记录保留" : !layer.includes(surface) ? "当前图层未显示，原观测保留" : "几何数据无效，原记录与失败保留"
                 rows.append(SpatialTextureEvidence.Row(id:surface.id,status:state,imageFile:nil,candidates:[]))
             }
-            let scope=textures.beginScope(names:Set(requests.compactMap {$0.1.mapping?.imageFile}),directory:imageDirectory)
+            _ = textures.beginScope(names:[],directory:imageDirectory)
             evidence.reset(generation:generation,rows:rows,stats:self.textures.snapshot())
-            for (surface,selection,geometry) in requests {
-                guard let mapping=selection.mapping else {continue}
-                textures.request(name:mapping.imageFile,directory:imageDirectory,scope:scope) { [weak self,weak evidence] result in
-                    guard let self,let evidence else {return}
-                    Task { @MainActor [self,evidence] in
-                        guard self.textureGeneration==generation else {return}
-                        switch result {
-                        case let .ready(texture,_):
-                            geometry.materials=[SpatialProjectiveTexturing.material(mapping:mapping,texture:texture,kind:surface.kind,liveOverlay:liveOverlay)]
-                            evidence.update(generation:generation,id:surface.id,status:"已投影；照片外区域与遮挡仍未知",stats:self.textures.snapshot())
-                        case let .unknown(reason):
-                            let message=reason=="decoded_texture_budget" ? "纹理容量已满，保留未知底色与边界":"照片读取未完成或失败，保留未知底色与边界（"+reason+"）"
-                            evidence.update(generation:generation,id:surface.id,status:message,stats:self.textures.snapshot())
-                        }
-                    }
-                }
-            }
         }
         currentScene = scene
         lastHistoryPose = document.poses.last
@@ -415,10 +549,31 @@ private final class SpatialSceneCache {
     }
 }
 
+private enum SpatialSemanticRendering {
+    static func classifications(_ document: SpatialScanDocument) -> [String: SpatialSurfaceSemanticEvidence.Semantic] {
+        let records = (document.indoorSemanticObservations ?? []).filter { $0.status == .processed }.flatMap(\.records)
+        let bySurface = Dictionary(grouping:records,by: \.surfaceID)
+        var result: [String: SpatialSurfaceSemanticEvidence.Semantic] = [:]
+        for surface in document.surfaces {
+            result[surface.id] = SpatialSurfaceSemanticEvidence.resolve(surface:surface,records:bySurface[surface.id] ?? [])
+        }
+        return result
+    }
+    static func walls(_ document: SpatialScanDocument) -> [SpatialSurface] {
+        let mapping = classifications(document)
+        return document.surfaces.filter { $0.observed && $0.kind == "vertical" && mapping[$0.id] == .wall }
+    }
+    static func color(_ semantic: SpatialSurfaceSemanticEvidence.Semantic) -> UIColor {
+        switch semantic { case .wall: return .systemPurple; case .floor: return .systemTeal; case .other: return .systemOrange; case .unknown: return .systemGray }
+    }
+}
+
 private struct SpatialTopProjection {
     let scale: CGFloat, offset: CGPoint
-    init(document: SpatialScanDocument, size: CGSize) {
-        let points = document.surfaces.filter(\.observed).flatMap(\.vertices) + document.poses.map(\.position)
+    init(document: SpatialScanDocument, size: CGSize, extra: [SpatialPoint] = [], layer: SpatialSurfaceLayer = .all) {
+        let visible = document.surfaces.filter { layer.includes($0) }
+        let drawn = visible.filter { $0.observed && $0.vertices.allSatisfy(\.isFinite) }.flatMap(\.vertices)
+        let points = drawn + extra + document.poses.map(\.position)
         let x = points.map(\.x), z = points.map(\.z)
         let minX = x.min() ?? -1, maxX = x.max() ?? 1, minZ = z.min() ?? -1, maxZ = z.max() ?? 1
         scale = min((size.width-32)/CGFloat(max(2,maxX-minX)), (size.height-32)/CGFloat(max(2,maxZ-minZ)))
@@ -448,18 +603,51 @@ private struct SpatialTopView: View {
     let layer: SpatialSurfaceLayer
     let livePose: SpatialLivePoseState
     let isLive: Bool
+    var inferred: [SpatialPlaneGrouping.WallLine] = []
+    var compact = false
     @StateObject private var cache = SpatialTopPathCache()
     var body: some View {
         GeometryReader { geometry in
-            let projection = SpatialTopProjection(document: document, size: geometry.size)
+            let classifications = SpatialSemanticRendering.classifications(document)
+            let walls = document.surfaces.filter { $0.observed && $0.kind == "vertical" && classifications[$0.id] == .wall && layer.includes($0) }
+            let visibleIDs = Set(walls.map(\.id))
+            let extra = inferred.filter { $0.role == "inferred" && !$0.surfaceIDs.isEmpty && $0.surfaceIDs.allSatisfy { visibleIDs.contains($0) } }
+            let projection = SpatialTopProjection(document: document, size: geometry.size, extra: extra.flatMap { [$0.start, $0.end] }, layer: layer)
             ZStack {
                 Canvas { context, size in
-                    for surface in document.surfaces where surface.observed && layer.includes(surface) && surface.vertices.count >= 3 {
-                        var path = Path(); path.move(to: projection.map(surface.vertices[0]))
-                        for p in surface.vertices.dropFirst() { path.addLine(to: projection.map(p)) }; path.closeSubpath()
-                        let color = Color(uiColor: SpatialSurfaceLayer.uiColor(surface))
-                        context.fill(path, with: .color(color.opacity(surface.kind == "vertical" ? 0.10 : 0.04)))
-                        context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: surface.kind == "vertical" ? 2 : 1, dash: surface.kind == "horizontal" ? [4,3] : []))
+                    for surface in SpatialHorizontalObservation.surfaces(document.surfaces.filter { layer.includes($0) }) {
+                        var polygon = Path()
+                        polygon.move(to: projection.map(surface.vertices[0]))
+                        for point in surface.vertices.dropFirst() { polygon.addLine(to: projection.map(point)) }
+                        polygon.closeSubpath()
+                        if SpatialHorizontalObservation.triangles(surface.vertices) != nil {
+                            let semantic = classifications[surface.id] ?? .unknown
+                            context.fill(polygon, with: .color(Color(uiColor:SpatialSemanticRendering.color(semantic)).opacity(semantic == .floor ? 0.22 : 0.05)))
+                        }
+                        let semantic = classifications[surface.id] ?? .unknown
+                        context.stroke(polygon, with: .color(Color(uiColor:SpatialSemanticRendering.color(semantic))), style:StrokeStyle(lineWidth:semantic == .floor ? 2.5 : 1.5,dash:semantic == .floor ? [] : [5,3]))
+                    }
+                    for surface in document.surfaces where layer.includes(surface) && surface.observed && surface.kind != "horizontal" && surface.vertices.count >= 3 && surface.vertices.allSatisfy(\.isFinite) {
+                        let semantic = classifications[surface.id] ?? .unknown
+                        var path = Path(); path.move(to:projection.map(surface.vertices[0]))
+                        for point in surface.vertices.dropFirst() { path.addLine(to:projection.map(point)) }; path.closeSubpath()
+                        context.stroke(path,with:.color(Color(uiColor:SpatialSemanticRendering.color(semantic))),style:StrokeStyle(lineWidth:1.5,dash:semantic == .wall ? [] : [5,3]))
+                    }
+                    let lines = SpatialPlaneGrouping.wallLines(surfaces:walls)
+                    for line in lines {
+                        var path = Path()
+                        path.move(to: projection.map(line.start))
+                        path.addLine(to: projection.map(line.end))
+                        let color: Color = .purple
+                        let width: CGFloat = line.role == "wall" ? 4 : 2
+                        let dash: [CGFloat] = line.role == "wall" ? [] : [5, 3]
+                        context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: width, dash: dash))
+                    }
+                    for line in extra {
+                        var path = Path()
+                        path.move(to: projection.map(line.start))
+                        path.addLine(to: projection.map(line.end))
+                        context.stroke(path, with: .color(Color(red: 0.05, green: 0.42, blue: 0.38)), style: StrokeStyle(lineWidth: 3, dash: [8, 4]))
                     }
                     var world = context
                     world.translateBy(x: projection.offset.x, y: projection.offset.y)
@@ -470,7 +658,7 @@ private struct SpatialTopView: View {
                         context.fill(Path(ellipseIn: CGRect(x:p.x-4,y:p.y-4,width:8,height:8)), with: .color(.orange))
                     }
                     if document.poses.isEmpty && document.surfaces.isEmpty {
-                        context.draw(Text("移动后，轨迹和已观察结构会出现在这里").font(.caption).foregroundColor(.secondary), at: CGPoint(x:size.width/2,y:size.height/2))
+                        context.draw(Text(compact ? "尚未扫描" : "移动后，轨迹和已观察结构会出现在这里").font(.caption).foregroundColor(.secondary), at: CGPoint(x:size.width/2,y:size.height/2))
                     }
                 }
                 if isLive { SpatialLiveTopLayer(livePose: livePose, projection: projection, historyPose: document.poses.last) }

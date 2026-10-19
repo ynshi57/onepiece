@@ -85,6 +85,57 @@ nonisolated struct SpatialTrackingEvent: Codable, Sendable, Equatable {
     var detail: String? = nil
 }
 
+/// A per-image model candidate, not an object identity or a 3D position.
+nonisolated struct SpatialObjectDetection: Codable, Sendable, Equatable {
+    var label: String
+    /// Uncalibrated model score; not measured accuracy.
+    var score: Float
+    /// [left, top, right, bottom], normalized in the archived native JPEG axes.
+    var boundingBox: [Float]
+    /// Original model output, retained when intersected with the visible image.
+    var rawBoundingBox: [Float]? = nil
+    var isClipped: Bool { rawBoundingBox.map { $0 != boundingBox } ?? false }
+}
+
+nonisolated struct SpatialObjectObservation: Codable, Sendable, Equatable {
+    enum Status: String, Codable, Sendable { case processed, partial, failed }
+    /// New analyses have stable provenance; nil retains legacy uncertainty.
+    var attemptID: UUID? = nil
+    var frameID: String
+    var epoch: Int
+    var frameTime: Double
+    var status: Status
+    var failure: String? = nil
+    var elapsedSeconds: Double
+    var detections: [SpatialObjectDetection]
+    var modelID: String
+    /// Prior outcomes stay attached when a frame is explicitly retried.
+    var previousAttempts: [SpatialObjectObservation]? = nil
+    /// Per-candidate failures retain raw invalid values in their diagnostic text.
+    var detectionFailures: [String]? = nil
+}
+
+/// Two-view measurements inside a detection ROI. These may describe background,
+/// and are never an object centre, identity or confirmed location.
+nonisolated struct SpatialObjectSupportAttempt: Codable, Sendable, Equatable, Identifiable {
+    enum Status: String, Codable, Sendable { case measured, unavailable, failed }
+    var id: UUID = UUID()
+    var sourceFrameID: String
+    var sourceAttemptID: UUID
+    var detectionIndex: Int
+    var targetFrameID: String?
+    var epoch: Int
+    var status: Status
+    var reason: String
+    var elapsedSeconds: Double
+    /// Full-pair grid denominator; 0 means no optical-flow evaluation completed.
+    var pairGridCount: Int
+    var pairMatchCount: Int
+    var sampledMatchCount: Int
+    var supports: [SpatialSurfaceSupport]
+    var method: String = "VisionOpticalFlow/revision2/high/two-view-v1"
+}
+
 nonisolated struct SpatialScanDocument: Codable, Sendable, Equatable {
     var id: UUID = UUID()
     var createdAt: Date = Date()
@@ -96,6 +147,10 @@ nonisolated struct SpatialScanDocument: Codable, Sendable, Equatable {
     var keyframes: [SpatialKeyframe] = []
     var worldMap: SpatialWorldMapReference? = nil
     var relocalizationEvents: [SpatialRelocalizationEvent]? = nil
+    /// nil means no local object analysis was recorded; not evidence of an empty room.
+    var objectObservations: [SpatialObjectObservation]? = nil
+    var objectSupportAttempts: [SpatialObjectSupportAttempt]? = nil
+    var indoorSemanticObservations: [SpatialIndoorSemanticObservation]? = nil
     var schemaVersion: Int = 1
 }
 

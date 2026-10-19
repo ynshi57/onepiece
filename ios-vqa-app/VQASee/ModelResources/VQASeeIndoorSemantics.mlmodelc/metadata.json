@@ -1,0 +1,96 @@
+[
+  {
+    "metadataOutputVersion" : "3.0",
+    "shortDescription" : "Optional ADE20K indoor semantic candidates; no object identity or metric geometry.",
+    "outputSchema" : [
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Int32",
+        "formattedType" : "MultiArray (Int32 1 × 128 × 128)",
+        "shortDescription" : "",
+        "shape" : "[1, 128, 128]",
+        "name" : "labels",
+        "type" : "MultiArray"
+      },
+      {
+        "hasShapeFlexibility" : "0",
+        "isOptional" : "0",
+        "dataType" : "Float32",
+        "formattedType" : "MultiArray (Float32 1 × 128 × 128)",
+        "shortDescription" : "",
+        "shape" : "[1, 128, 128]",
+        "name" : "scores",
+        "type" : "MultiArray"
+      }
+    ],
+    "storagePrecision" : "Float16",
+    "modelParameters" : [
+
+    ],
+    "specificationVersion" : 7,
+    "mlProgramOperationTypeHistogram" : {
+      "Concat" : 1,
+      "Ios16.cast" : 2,
+      "Ios16.mul" : 10,
+      "Ios16.layerNorm" : 30,
+      "Ios16.sub" : 1,
+      "Transpose" : 76,
+      "Ios16.upsampleBilinear" : 3,
+      "Ios16.linear" : 52,
+      "Ios16.add" : 16,
+      "Ios16.conv" : 20,
+      "Ios16.softmax" : 9,
+      "Ios16.gelu" : 8,
+      "Ios16.matmul" : 16,
+      "Ios16.relu" : 1,
+      "Ios16.reduceMax" : 1,
+      "Ios16.reshape" : 76,
+      "Ios16.reduceArgmax" : 1
+    },
+    "computePrecision" : "Mixed (Float16, Float32, Int32)",
+    "isUpdatable" : "0",
+    "stateSchema" : [
+
+    ],
+    "availability" : {
+      "macOS" : "13.0",
+      "tvOS" : "16.0",
+      "visionOS" : "1.0",
+      "watchOS" : "9.0",
+      "iOS" : "16.0",
+      "macCatalyst" : "16.0"
+    },
+    "modelType" : {
+      "name" : "MLModelType_mlProgram"
+    },
+    "inputSchema" : [
+      {
+        "height" : "512",
+        "colorspace" : "RGB",
+        "isOptional" : "0",
+        "width" : "512",
+        "isColor" : "1",
+        "formattedType" : "Image (Color 512 × 512)",
+        "hasSizeFlexibility" : "0",
+        "type" : "Image",
+        "shortDescription" : "",
+        "name" : "image"
+      }
+    ],
+    "userDefinedMetadata" : {
+      "com.github.apple.coremltools.source" : "torch==2.2.2",
+      "com.github.apple.coremltools.version" : "9.0",
+      "com.github.apple.coremltools.conversion_date" : "2026-10-18",
+      "com.github.apple.coremltools.source_dialect" : "TorchScript",
+      "source_repository" : "nvidia\/segformer-b0-finetuned-ade-512-512",
+      "configSHA256" : "209caa9091e4632f7c8883c11170cd08ad29af68b23c09590aa4a5befb1a2a7f",
+      "modelID" : "SegFormerB0\/ADE20K\/489d5cd81a0b59fab9b7ea758d3548ebe99677da\/CoreML512",
+      "source_revision" : "489d5cd81a0b59fab9b7ea758d3548ebe99677da",
+      "source_weight_sha256" : "6ae39addd01de6b1b8bde2cf677d43a5cd733424b8d186de3f95d1c51fee23f9",
+      "coordinate_contract" : "Native image resized to 512x512 without rotation; output 128x128 labels. Map pixel centres back, not bounding-box identities."
+    },
+    "generatedClassName" : "VQASeeIndoorSemantics",
+    "method" : "predict"
+  }
+]

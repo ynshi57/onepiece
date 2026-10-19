@@ -280,3 +280,35 @@ def test_reconstruction_capacity_and_missing_photo_are_explicit(tmp_path, monkey
     path.write_text(json.dumps(doc))
     (tmp_path / job / 'frame.jpg').unlink()
     assert c.get(endpoint).status_code == 422
+
+
+def test_indoor_semantic_masks_and_failure_history_survive_local_import(tmp_path, monkeypatch):
+    """Synthetic transport contract only; no private photos or accuracy claim."""
+    import base64
+    import uuid
+    with zipfile.ZipFile(io.BytesIO(package())) as archive:
+        files = {name: archive.read(name) for name in archive.namelist()}
+    document = json.loads(files['document.json'])
+    document['keyframes'][0]['id'] = 'synthetic-source'
+    previous = dict(attemptID=str(uuid.uuid4()), frameID='synthetic-source', frameTime=1.,
+                    epoch=1, modelID='synthetic-contract', status='failed', failure='model_unavailable',
+                    elapsedSeconds=.02, width=0, height=0, labels='', confidence='', records=[])
+    row = dict(attemptID=str(uuid.uuid4()), frameID='synthetic-source', frameTime=1., epoch=1,
+               modelID='synthetic-contract', status='processed', elapsedSeconds=.1, width=128, height=128,
+               labels=base64.b64encode(bytes([3])*16384).decode(),
+               confidence=base64.b64encode(bytes([230])*16384).decode(),
+               taxonomy=dict(configSHA256='a'*64, wallLabelID=0, floorLabelID=3, verified=True),
+               records=[], previousAttempts=[previous])
+    document['indoorSemanticObservations'] = [row]
+    files['document.json'] = json.dumps(document).encode()
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, 'w') as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    c = client(tmp_path, monkeypatch)
+    response = c.post('/spatial-scans/import', content=payload.getvalue())
+    assert response.status_code == 200, response.text
+    job = response.json()['id']
+    assert response.json()['document']['indoorSemanticObservations'] == [row]
+    assert c.get('/spatial-scans/'+job).json()['document']['indoorSemanticObservations'] == [row]
+    assert (tmp_path/job/'document.json').read_bytes() == files['document.json']

@@ -275,7 +275,16 @@ HF_ENDPOINT=https://hf-mirror.com bash setup_mac.sh --hf-mirror   # HF 走镜像
 - `qwen`：本地 Qwen 运行时（Ollama + `qwen2.5vl:3b`，数 GB）。
 - `ios`：完整 iOS 构建工具链（**需完整 Xcode + Ruby ≥ 3.2**）；签名与 TestFlight 需 Apple 账号，人工完成。
 
+室内墙地面分割由 models profile 安装 `VQASeeIndoorSemantics.mlmodelc` 与标签契约。来源为 NVIDIA SegFormer-B0 ADE20K，转换依赖固定于 `server-vqa/requirements-indoor-semantics-export.txt`，使用独立运行环境；需完整 Xcode。单独安装：`python3 deploy/ios/install_indoor_semantics_model.py`；离线核验：同命令加 `--check`。照片推理在 iPhone 本地执行。模型许可需在分发前另行审核。
+
 脚本结尾会打印每项「已装 / 跳过 / 失败」摘要和下一步命令。App 模型资源统一位于 `ios-vqa-app/VQASee/ModelResources/`；仓库已自带 `YOLO11nObject.mlmodelc`，分割模型、深度模型、服务器 ONNX 预测器在 `.gitignore` 中，由上面步骤按需安装。
+
+可选离线场景语义观察研究环境（默认关闭）：
+`bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-memory`。
+需现有 core 的 Pillow/packaging、models 的 PyTorch、`--with-spatial-geometry` 的 NumPy/SciPy 和 curl；缺失时会明确失败并指向对应 profile。
+固定研究包见 `server-vqa/requirements-spatial-memory.txt`，官方 wheel 校验后安装到按 Python 版本派生的本地持久隔离目录，不覆盖 `.venv` 包、不下载模型。
+运行研究脚本时将安装摘要中的完整路径显式传给 `--runtime`；模型目录须另行提供已核验缓存。
+这只支持二维语义观察的保存/重载查询，未接 App，不代表物体实例、三维位置、准确度或实时性通过。详见 [研究说明](deploy/spatial/research/README.md)。
 
 ### 手动分步
 
@@ -371,7 +380,9 @@ bash deploy/ios/test.sh            # iOS（需完整 Xcode）
 
 产品在 `docs/` 下自我沉淀：
 
+- `docs/README.md` — 先读哪两页，其余是证据日志
 - `docs/CURRENT.md` — **现行产品现状（宪法页）**
+- `docs/SPATIAL_HANDOFF.md` — 室内建图现状，开工只读这一页
 - `docs/decisions/` — 历史产品/架构决策记录
 - `docs/evolution/` — 迭代/闭环记录
 - `docs/model-lab/` — 模型与评测经验（如 CamVid 调色板修正、引导线基线）
@@ -448,3 +459,9 @@ torchvision 0.17.2、NumPy<2、OpenCV headless 4.10.0.84 与 curl。
 固定 NumPy/SciPy/pycolmap 版本位于 `server-vqa/requirements-spatial-geometry.txt`，安装到
 仓库 `.venv`。不会自动更改扫描相机或安装手机模型。实验运行说明见
 `deploy/spatial/research/README.md`；求解成功不等于房间尺寸或恢复精度通过。
+
+可选开放词汇二维定位 CPU 研究：
+`bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-grounding`。
+该选项同时启用 spatial-memory 隔离运行库；从官方 `IDEA-Research/grounding-dino-tiny` API 冻结当前 revision，下载必要配置/分词器/权重，使用官方 LFS SHA256 校验权重。
+模型保存在本地忽略的持久目录，完整路径由安装摘要输出；权重单次下载最多180秒、其他请求最多120秒、下载流程总预算420秒，无重试，失败显式记录。
+不读取或上传私照，不修改现有模型或默认值，不接 App；CPU耗时、定位准确度、实例与三维能力均需另行验证。

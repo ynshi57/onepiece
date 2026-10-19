@@ -64,3 +64,12 @@ def test_no_matches_is_retained_and_solver_not_claimed():
     assert r['status']=='no_matches'
     assert r['imageF']['status']=='insufficient_fit_or_scoring_matches'
     assert r['productAccepted'] is False
+
+
+def test_structured_source_identity_does_not_accept_embedded_wrong_hash():
+    import json
+    good='a'*64
+    assert m.cache_matches_source(good+'legacy-provenance',good)
+    assert m.cache_matches_source(json.dumps({'imageSHA256':good,'maxSide':640}),good)
+    assert not m.cache_matches_source(json.dumps({'imageSHA256':'b'*64,'note':good}),good)
+    assert not m.cache_matches_source('{broken '+good,good)

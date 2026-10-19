@@ -44,7 +44,8 @@ struct PerceptionConfig: Equatable, Sendable {
     /// Defaults to FALSE: the live app does **not** run the old binary Fast-SCNN
     /// (it mixed road+sidewalk into one green blob and was the latency hog).
     /// Flipping this (OTA after ANE sign-off) loads bundled mc5 and derives the
-    /// walkable region per `role`. Off = no traversable-region forward pass.
+    /// walkable region per `role`. Off leaves that role head unloaded. TwinLite
+    /// still runs when `roadBackend` is `.twinlite`.
     var useMulticlassSegmentation: Bool = false
     var useLaneSegmentation: Bool = true
     /// Swap-point for the road-surface model. `twinlite` is the product default

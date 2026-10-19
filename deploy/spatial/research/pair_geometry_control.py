@@ -24,6 +24,18 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def cache_matches_source(cache_key, expected_sha):
+    """Read both legacy SHA-prefixed and structured source identities."""
+    value=str(cache_key)
+    if value.startswith('{'):
+        try:
+            parsed=json.loads(value)
+        except (ValueError,TypeError):
+            return False
+        return isinstance(parsed,dict) and parsed.get('imageSHA256')==expected_sha
+    return len(expected_sha)==64 and value[:64]==expected_sha
+
+
 def skew(v):
     x, y, z = v
     return np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
@@ -161,7 +173,7 @@ def run(document_path, pair_path, output):
                     frame=document['keyframes'][index]
                     if feature['image_size'].tolist() != [frame['width'],frame['height']]:
                         raise ValueError('cached_feature_native_size_mismatch')
-                    if not str(feature['cacheKey']).startswith(sha(document_path.parent/frame['imageFile'])):
+                    if not cache_matches_source(feature['cacheKey'],sha(document_path.parent/frame['imageFile'])):
                         raise ValueError('cached_feature_source_image_mismatch')
                 row=diagnose_pair(document['keyframes'][a],document['keyframes'][b],fa['points'],fb['points'],fm['matches'])
             records.append(dict(**base,**row,featureSHA256=[sha(pa),sha(pb)],matchSHA256=sha(match_path)))

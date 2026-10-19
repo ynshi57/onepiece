@@ -25,6 +25,8 @@
 #   --with-spatial-depth  install optional offline relative-depth CPU prior (not measurement truth)
 #   --with-spatial-gs  install bounded CPU Gaussian research runtime (optional)
 #   --with-spatial-brush  build fixed-source Brush CLI with verified local JPEG-header patch (optional)
+#   --with-spatial-grounding  install official Grounding DINO model + memory runtime (optional CPU research)
+#   --with-spatial-memory  install isolated offline semantic-observation research packages (optional)
 #   --with-spatial-geometry  install pinned CPU geometric diagnosis tools (optional, Python 3.10-3.12)
 #   --with-depth  also install the optional DepthAnythingV2 Core ML model
 #   --hf-mirror   route Hugging Face downloads through https://hf-mirror.com
@@ -46,6 +48,9 @@ WITH_SPATIAL_GS=0
 WITH_SPATIAL_DEPTH=0
 WITH_SPATIAL_BRUSH=0
 WITH_SPATIAL_GEOMETRY=0
+WITH_SPATIAL_MEMORY=0
+WITH_SPATIAL_GROUNDING=0
+SPATIAL_MEMORY_READY=0
 INSTALL_FAILED=0
 HF_MIRROR=0
 ASSUME_YES=0
@@ -81,6 +86,8 @@ while [ $# -gt 0 ]; do
     --with-spatial-depth) WITH_SPATIAL_DEPTH=1 ;;
     --with-spatial-brush) WITH_SPATIAL_BRUSH=1 ;;
     --with-spatial-geometry) WITH_SPATIAL_GEOMETRY=1 ;;
+    --with-spatial-memory) WITH_SPATIAL_MEMORY=1 ;;
+    --with-spatial-grounding) WITH_SPATIAL_GROUNDING=1; WITH_SPATIAL_MEMORY=1 ;;
     --hf-mirror)   HF_MIRROR=1 ;;
     -y|--yes)      ASSUME_YES=1 ;;
     -h|--help)     usage; exit 0 ;;
@@ -293,6 +300,15 @@ profile_models() {
     log "使用 HF 镜像 HF_ENDPOINT=${HF_ENDPOINT}"
   fi
 
+  # Indoor conversion uses pinned dependencies in an isolated runtime.
+  if python3 deploy/ios/install_indoor_semantics_model.py --check; then
+    add_summary "OK|models|室内墙地面语义模型与标签契约已核验"
+  elif python3 deploy/ios/install_indoor_semantics_model.py; then
+    add_summary "OK|models|室内语义模型下载、转换及契约核验完成"
+  else
+    add_summary "FAIL|models|室内语义模型安装失败；单独重跑 python3 deploy/ios/install_indoor_semantics_model.py"
+  fi
+
   local seg_dir="${MODEL_RESOURCE_DIR}/VQASeeTraversabilitySegmentation.mlmodelc"
   if [ -d "${seg_dir}" ]; then
     add_summary "OK|models|通行分割模型已存在（跳过下载）"
@@ -463,6 +479,33 @@ if [ "${WITH_SPATIAL_GEOMETRY}" = 1 ]; then
   fi
 else
   add_summary "SKIP|spatial-geometry|可选CPU几何诊断，使用 --with-spatial-geometry 安装"
+fi
+
+if [ "${WITH_SPATIAL_MEMORY}" = 1 ]; then
+  if [ ! -x "${ROOT_DIR}/.venv/bin/python" ] || ! have curl || ! "${ROOT_DIR}/.venv/bin/python" -c 'import torch, numpy, scipy, PIL, packaging; torch.zeros(1).numpy()'; then
+    add_summary "FAIL|spatial-memory|需curl与现有基础依赖；先运行core（Pillow/packaging）、models（torch）、--with-spatial-geometry（NumPy/SciPy）对应profile，再重跑 --with-spatial-memory"
+  else
+    SPATIAL_MEMORY_RUNTIME="$("${ROOT_DIR}/.venv/bin/python" -c 'import sys; from pathlib import Path; print(Path(sys.argv[1]) / "server-vqa/diagnostic-captures/runtime" / ("spatial-memory-py%d%d" % sys.version_info[:2]))' "${ROOT_DIR}")"
+    if "${ROOT_DIR}/.venv/bin/python" deploy/spatial/install_scene_memory.py --target "${SPATIAL_MEMORY_RUNTIME}"; then
+      SPATIAL_MEMORY_READY=1
+      add_summary "OK|spatial-memory|隔离研究运行库已就绪；runner显式传 --runtime ${SPATIAL_MEMORY_RUNTIME}；不下载模型、不接入App，准确度/延迟未验收"
+    else
+      add_summary "FAIL|spatial-memory|官方wheel安装或导入失败；检查Python兼容性/curl/网络与requirements-spatial-memory.txt，重跑 --with-spatial-memory"
+    fi
+  fi
+else
+  add_summary "SKIP|spatial-memory|可选离线语义观察研究，使用 --with-spatial-memory 安装"
+fi
+
+if [ "${WITH_SPATIAL_GROUNDING}" = 1 ]; then
+  SPATIAL_GROUNDING_MODEL="${ROOT_DIR}/server-vqa/diagnostic-captures/models/grounding-dino-tiny"
+  if [ "${SPATIAL_MEMORY_READY}" = 1 ] && "${ROOT_DIR}/.venv/bin/python" -c 'import sys; sys.path.insert(0,sys.argv[1]); from transformers import GroundingDinoForObjectDetection, AutoProcessor' "${SPATIAL_MEMORY_RUNTIME}" && "${ROOT_DIR}/.venv/bin/python" deploy/spatial/install_grounding_model.py --target "${SPATIAL_GROUNDING_MODEL}"; then
+    add_summary "OK|spatial-grounding|官方权重/revision已核验：${SPATIAL_GROUNDING_MODEL}；CPU研究，非App能力验收"
+  else
+    add_summary "FAIL|spatial-grounding|需spatial-memory运行库及官方HF网络；权重单次180秒/其他120秒/总420秒，无重试；检查installation.json失败记录"
+  fi
+else
+  add_summary "SKIP|spatial-grounding|可选CPU开放词汇定位研究，使用 --with-spatial-grounding 安装"
 fi
 
 if [ "${WITH_SPATIAL_GS}" = 1 ]; then

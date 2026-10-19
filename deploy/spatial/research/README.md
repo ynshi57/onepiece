@@ -58,3 +58,50 @@
 `registration_failure_audit.py --pairs <冻结result.json> --map <COLMAP模型目录> --output <新JSON> [--document <原document.json>]` 核查特征索引并报告全部未注册帧的地图支持；可选PnP只是样本内诊断，不写地图、不代表定位通过。
 
 `feature_resolution_probe.py --data <扫描目录> --resources <已核验LightGlue资源目录> --output <新目录> [--pairs 167:168,168:169]` 对同一组照片运行640/1280提取（均最多1024点）与3px几何检验，保留失败、缓存身份和耗时。默认是固定失败照片对。选择开发照片后只可作为诊断，不能继续称独立holdout；匹配数增加不等于准确度提高。SuperPoint原有非商业研究许可限制仍有效，这不是App模型引入。
+
+### 新扫描全序列与非相邻连接控制
+
+`replay_saved_scan.py --data <扫描目录> --resources <已核验资源目录> --epoch <段号> --output <新目录>` 保留该段全部照片，匹配时间偏移1/2/4/7并重建；没有独立留出评估，不能用样本内误差验收。
+
+`nonlocal_pair_control.py --data <同一扫描目录> --baseline <上述result.json> --resources <同资源目录> --output <新目录>` 保留原配对，使用AR距离/朝向提出跨时间候选，再独立验证匹配和重建。只比较连通性及计算成本，不把AR当真实尺度或降低失败门槛；输出不自动替换App或平台默认结果。真实226图实验见 `docs/evolution/2026-10-13-new-scan-nonlocal-connectivity.md`。
+
+### 已知相机下的高斯外观对照
+
+`gaussian_camera_control.py --data <同一扫描目录> --model <nonlocal/map/models/0> --baseline <replay/result.json> --binary <已核验的brush_app> --output <新目录> --epoch 2`
+
+复用现有 geometry / Brush 可选安装环境，不引入新运行库。核验地图来源、原照片和相机内参，再用共同照片、同一随机初始化 PLY、相同步数与容量比较原始 ARKit / SfM 相机方案。默认每臂 2000 步、256、SH0、20000 上限，仅用于初筛。Metal 需要当前执行环境能够访问 GPU；不可见时显式失败，不回退成另一种训练算法。
+
+所有照片已参与 SfM，因此这是已知相机条件下的外观开发实验；留出 RGB 不参与外观损失，但不是独立端到端验收。未注册照片和无法评估的预定视角保留在分母，逐图对照为原照片 / ARKit 渲染 / SfM 渲染。产物包含私人照片，保存在本地忽略目录，不提交。解释边界见 `docs/tech-radar/2026-10-14-gaussian-camera-control.md`。
+
+`--initialization-control-parent <已完成相机对照目录>` 固定该次226输入、175训练/27可评估视角、SfM相机和预算，对比原随机初始化与至少两个训练视图支持的稀疏点初始化。点位置、颜色、数量和邻域尺度同时变化，不能称纯几何消融。训练RGB采样不读取评估照片；SfM几何仍使用全图，不是独立几何测试。父实验的相机/分区/照片字节、实际预算命令、二进制身份与27渲染指标全部重验；旧receipt无预算摘要时以完整实际命令核验，不伪造历史字段。预检或训练失败落盘，已有输出目录不可覆盖。
+
+研究函数`train_arm`与`verify_completed_arm`的显式`max_splats`/`sh_degree`参数用于单变量容量和外观对照；默认20k/SH0保持不变。训练命令、PLY SH验证、后验command核验必须使用同一配置，不能用SH0父结果替代SH3。
+
+### 场景语义观察入库（2026-10-16，M1研究原型）
+
+`scene_memory_control.py` 复用已有CPU SegFormer缓存/隔离runtime，将固定真实照片的类别区域存为可重载查询的sidecar，并生成原图叠图。区域不等于物体实例，未知3D明确为空；模型分数不是准确度，单像素区域与逐帧失败均保留。主App/API未接入，不改生产模型；研究依赖使用独立可选安装 profile。
+
+```bash
+.venv/bin/python deploy/spatial/research/scene_memory_control.py --scan <已有扫描目录> --model <已有SegFormer-B2目录> --runtime <安装摘要输出的完整runtime路径> --output <新的研究输出目录>
+.venv/bin/python -m pytest server-vqa/tests/test_spatial_scene_memory.py server-vqa/tests/test_scene_memory_control.py -q
+```
+
+先运行 `bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-memory`。
+此可选 profile 检查现有 NumPy/Pillow/SciPy、PyTorch、packaging 和 curl；缺失时明确指向 core / models / geometry 对应安装入口。
+固定研究包来自 `server-vqa/requirements-spatial-memory.txt`，安装器校验官方 wheel 并隔离安装到按 Python 版本派生的持久目录。
+将 setup 摘要输出路径显式传给 runner 的 `--runtime`，不复制旧临时目录。模型仍须提供已核验缓存；推理不安装或下载，缺失保留失败，不静默替换模型。设计与完整能力边界见 `docs/evolution/2026-10-05-indoor-memory-capture-design.md`。
+
+
+`scene_inventory_control.py --scan <扫描> --output <新目录>` 调用已启动的本机Qwen服务，逐帧保存候选、证据、失败与耗时；截断输出拒绝入库。`frame_inventory_memory.py --help` 提供转入v2帧级观察与查询入口；不生成框、概率、物体数量或3D。
+
+`semantic_surface_support.py --scan <扫描> --sfm <已有地图> --config <分割config> --labels <语义输出目录...> --output <新目录>` 是独立M2纸箱表面点候选实验。仅注册相机参与，全部冲突保留；历史输入未绑定、像素约定未独立验证时对应verified=false。禁止将这些SfM局部点当物体中心、可信世界位置或导航依据。
+
+### 可选 Grounding DINO 安装
+
+`bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-grounding`
+同时启用已有 spatial-memory 隔离运行库。安装器 `deploy/spatial/install_grounding_model.py`
+读取官方 `IDEA-Research/grounding-dino-tiny` API 当前 revision 后固定全部下载，
+保存配置/processor/tokenizer/权重，权重核对官方 LFS SHA256；revision 与逐文件摘要写入 installation.json。
+模型与运行库完整持久目录由 setup 摘要输出，不引用临时目录；权重单次≤180秒、其他请求≤120秒、总预算420秒，不重试、不切镜像。
+失败保留 receipt 并返回非零。此流程不读取私照、不改变生产模型或默认值，无新增 pip 依赖。
+仅 CPU 二维候选定位研究，不接 App，不证明实例身份、三维位置或产品准确度/实时性。

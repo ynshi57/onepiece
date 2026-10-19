@@ -1,0 +1,8 @@
+# Optional isolated public-model Core ML export environment. No production backend dependency.
+# Intel macOS requires torch 2.2.2; numpy 1.x is required by that wheel's ABI.
+torch==2.2.2
+numpy==1.26.4
+coremltools==9.0
+transformers==4.44.2
+safetensors==0.4.5
+Pillow==11.1.0

@@ -1,0 +1,66 @@
+--- a/crates/brush-serde/src/export.rs
++++ b/crates/brush-serde/src/export.rs
+@@ -148,7 +148,6 @@
+     let sh_coeffs = splats
+         .sh_coeffs
+         .val()
+-        .permute([0, 2, 1]) // Permute to inria format ([n, channel, coeffs]).
+         .into_data_async()
+         .await
+         .into_vec()
+@@ -175,33 +174,16 @@
+     let vertices = (0..splats.num_splats())
+         .map(|i| {
+             let i = i as usize;
+-            // Read SH data from [coeffs, channel] format
++            // Read the original [point, coefficient, channel] tensor. Reorder on
++            // CPU to avoid a GPU layout-copy corrupting a tail coefficient.
+             let sh_start = i * sh_coeffs_num * 3;
+-            let sh_end = (i + 1) * sh_coeffs_num * 3;
+-            let splat_sh = &sh_coeffs[sh_start..sh_end];
+-            let [sh_red, sh_green, sh_blue] = [
+-                &splat_sh[0..sh_coeffs_num],
+-                &splat_sh[sh_coeffs_num..sh_coeffs_num * 2],
+-                &splat_sh[sh_coeffs_num * 2..sh_coeffs_num * 3],
+-            ];
+-
+-            let sh_red_rest = if sh_red.len() > 1 && rest_coeffs_per_channel > 0 {
+-                &sh_red[1..=rest_coeffs_per_channel]
+-            } else {
+-                &[]
+-            };
+-            let sh_green_rest = if sh_green.len() > 1 && rest_coeffs_per_channel > 0 {
+-                &sh_green[1..=rest_coeffs_per_channel]
+-            } else {
+-                &[]
+-            };
+-            let sh_blue_rest = if sh_blue.len() > 1 && rest_coeffs_per_channel > 0 {
+-                &sh_blue[1..=rest_coeffs_per_channel]
+-            } else {
+-                &[]
+-            };
+-
+-            let rest_coeffs = [sh_red_rest, sh_green_rest, sh_blue_rest].concat();
++            let splat_sh = &sh_coeffs[sh_start..sh_start + sh_coeffs_num * 3];
++            let mut rest_coeffs = Vec::with_capacity(rest_coeffs_per_channel * 3);
++            for channel in 0..3 {
++                for coefficient in 1..=rest_coeffs_per_channel {
++                    rest_coeffs.push(splat_sh[coefficient * 3 + channel]);
++                }
++            }
+ 
+             DynamicPlyGaussian {
+                 x: means[i * 3],
+@@ -215,9 +197,9 @@
+                 rot_2: rotations[i * 4 + 2],
+                 rot_3: rotations[i * 4 + 3],
+                 opacity: opacities[i],
+-                f_dc_0: sh_red[0],
+-                f_dc_1: sh_green[0],
+-                f_dc_2: sh_blue[0],
++                f_dc_0: splat_sh[0],
++                f_dc_1: splat_sh[1],
++                f_dc_2: splat_sh[2],
+                 rest_coeffs,
+             }
+         })

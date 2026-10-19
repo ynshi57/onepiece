@@ -203,6 +203,25 @@ nonisolated enum SpatialProjectiveTexturing {
 
         struct Projection { var x: Float; var y: Float; var depth: Float }
 
+        /// Where the pixel's ray meets a known floor height. Nil when the hit is behind the camera.
+        func floorHit(pixelX: Float, pixelY: Float, floorY: Float) -> SIMD3<Float>? {
+            let fx = k.columns.0.x
+            let fy = k.columns.1.y
+            guard fx > 1e-4, fy > 1e-4 else { return nil }
+            let local = SIMD3((pixelX - k.columns.2.x) / fx, (pixelY - k.columns.2.y) / fy, 1)
+            let worldDir = worldToCamera.inverse * SIMD4(local.x, local.y, local.z, 0)
+            var direction = SIMD3(worldDir.x, worldDir.y, worldDir.z)
+            let length = simd_length(direction)
+            guard length > 1e-6 else { return nil }
+            direction /= length
+            guard abs(direction.y) > 1e-6 else { return nil }
+            let t = (floorY - position.y) / direction.y
+            guard t > 0.05, t < 12 else { return nil }
+            let hit = position + direction * t
+            guard hit.x.isFinite, hit.y.isFinite, hit.z.isFinite, let seen = project(hit), seen.depth > 0.05 else { return nil }
+            return hit
+        }
+
         /// Normalized native JPEG coordinates, origin top-left, matching saved pixels.
         func project(_ world: SIMD3<Float>) -> Projection? {
             let local = worldToCamera * SIMD4(world.x, world.y, world.z, 1)

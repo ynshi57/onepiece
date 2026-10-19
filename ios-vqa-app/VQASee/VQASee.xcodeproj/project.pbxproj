@@ -12,6 +12,10 @@
 		B00100000000000000000003 /* VQASeeTraversabilitySegmentation.mlmodelc in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000013 /* VQASeeTraversabilitySegmentation.mlmodelc */; };
 		B00100000000000000000004 /* VQASeeTraversabilitySeg5.mlmodelc in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000014 /* VQASeeTraversabilitySeg5.mlmodelc */; };
 		B00100000000000000000005 /* YOLO11nObject.mlmodelc in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000015 /* YOLO11nObject.mlmodelc */; };
+		B00100000000000000000006 /* VQASeeIndoorSemantics.mlmodelc in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000016 /* VQASeeIndoorSemantics.mlmodelc */; };
+		B00100000000000000000007 /* VQASeeIndoorSemantics.labels.json in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000017 /* VQASeeIndoorSemantics.labels.json */; };
+		B00100000000000000000008 /* VQASeeIndoorSemantics.LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000018 /* VQASeeIndoorSemantics.LICENSE */; };
+		B00100000000000000000009 /* VQASeeIndoorSemantics.NOTICE in Resources */ = {isa = PBXBuildFile; fileRef = B00100000000000000000019 /* VQASeeIndoorSemantics.NOTICE */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -40,6 +44,10 @@
 		B00100000000000000000013 /* VQASeeTraversabilitySegmentation.mlmodelc */ = {isa = PBXFileReference; lastKnownFileType = folder; path = VQASeeTraversabilitySegmentation.mlmodelc; sourceTree = "<group>"; };
 		B00100000000000000000014 /* VQASeeTraversabilitySeg5.mlmodelc */ = {isa = PBXFileReference; lastKnownFileType = folder; path = VQASeeTraversabilitySeg5.mlmodelc; sourceTree = "<group>"; };
 		B00100000000000000000015 /* YOLO11nObject.mlmodelc */ = {isa = PBXFileReference; lastKnownFileType = folder; path = YOLO11nObject.mlmodelc; sourceTree = "<group>"; };
+		B00100000000000000000016 /* VQASeeIndoorSemantics.mlmodelc */ = {isa = PBXFileReference; lastKnownFileType = folder; path = VQASeeIndoorSemantics.mlmodelc; sourceTree = "<group>"; };
+		B00100000000000000000017 /* VQASeeIndoorSemantics.labels.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = VQASeeIndoorSemantics.labels.json; sourceTree = "<group>"; };
+		B00100000000000000000018 /* VQASeeIndoorSemantics.LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = VQASeeIndoorSemantics.LICENSE; sourceTree = "<group>"; };
+		B00100000000000000000019 /* VQASeeIndoorSemantics.NOTICE */ = {isa = PBXFileReference; lastKnownFileType = text; path = VQASeeIndoorSemantics.NOTICE; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -114,6 +122,10 @@
 				B00100000000000000000013 /* VQASeeTraversabilitySegmentation.mlmodelc */,
 				B00100000000000000000014 /* VQASeeTraversabilitySeg5.mlmodelc */,
 				B00100000000000000000015 /* YOLO11nObject.mlmodelc */,
+				B00100000000000000000019 /* VQASeeIndoorSemantics.NOTICE */,
+				B00100000000000000000018 /* VQASeeIndoorSemantics.LICENSE */,
+				B00100000000000000000017 /* VQASeeIndoorSemantics.labels.json */,
+				B00100000000000000000016 /* VQASeeIndoorSemantics.mlmodelc */,
 			);
 			path = ModelResources;
 			sourceTree = "<group>";
@@ -244,6 +256,10 @@
 				B00100000000000000000003 /* VQASeeTraversabilitySegmentation.mlmodelc in Resources */,
 				B00100000000000000000004 /* VQASeeTraversabilitySeg5.mlmodelc in Resources */,
 				B00100000000000000000005 /* YOLO11nObject.mlmodelc in Resources */,
+				B00100000000000000000009 /* VQASeeIndoorSemantics.NOTICE in Resources */,
+				B00100000000000000000008 /* VQASeeIndoorSemantics.LICENSE in Resources */,
+				B00100000000000000000007 /* VQASeeIndoorSemantics.labels.json in Resources */,
+				B00100000000000000000006 /* VQASeeIndoorSemantics.mlmodelc in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

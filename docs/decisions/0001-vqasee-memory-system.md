@@ -10,6 +10,8 @@ VQASee 会持续进行代码修改、模型优化、UI 打磨、产品方案迭�
 
 ```text
 现行产品现状    → docs/CURRENT.md   （宪法页：与 dated 决策冲突时以 CURRENT 为准）
+室内建图现状    → docs/SPATIAL_HANDOFF.md （开工只读这一页，不把实验日记抄回来）
+文档索引        → docs/README.md
 代码事实        → 代码 / 测试
 长期规则        → AGENTS.md
 可复用工作流    → .agents/skills/
@@ -24,6 +26,8 @@ UI 经验         → docs/ui-lab/
 ```
 
 正式工作流只认 `.agents/skills/`。非正式草案已删除，不要再从 `docs/` 检索 skill。
+
+`evolution/`、`model-lab/`、`tech-radar/` 是证据日志。它们不覆盖 CURRENT，也不要整段载入。室内数字按状态卡指向的那一篇打开。
 
 2010-08-10 及更早的项目概览对话是历史快照，禁止再当项目知识。
 

@@ -355,7 +355,9 @@ user-visible state; never delete a test to hide a bug.
 
 The product self-documents under `docs/`:
 
+- `docs/README.md` — what to read first; the rest is evidence
 - `docs/CURRENT.md` — **current product constitution**
+- `docs/SPATIAL_HANDOFF.md` — indoor mapping status; read only this page to start
 - `docs/decisions/` — dated product/architecture records (CURRENT wins on conflict)
 - `docs/evolution/` — iteration/closed-loop records
 - `docs/model-lab/` — model & eval findings (e.g. CamVid palette fix, guidance-line baseline)
@@ -382,3 +384,30 @@ The product self-documents under `docs/`:
 
 <sub>Team roles, working protocol and skill dispatch live in
 [`AGENTS.md`](AGENTS.md).</sub>
+
+### Optional offline scene-memory research runtime
+
+Run `bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-memory`.
+This opt-in profile requires curl and existing base packages from core (Pillow/packaging),
+models (PyTorch), and `--with-spatial-geometry` (NumPy/SciPy). Missing prerequisites
+fail explicitly with instructions to run the corresponding profile.
+Pinned packages in `server-vqa/requirements-spatial-memory.txt` are installed from
+verified official wheels into a persistent isolated directory derived from the Python
+version. Pass the complete path printed in the setup summary explicitly as `--runtime`
+to the research runner; supply an existing verified model cache separately.
+No model is downloaded and the default profiles are unchanged. This offline 2D
+observation prototype is not connected to the App and does not establish object
+identity, 3D position, accuracy, or real-time performance.
+See the [research instructions](deploy/spatial/research/README.md).
+
+Optional CPU open-vocabulary localization research:
+`bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-spatial-grounding`.
+This also enables the isolated spatial-memory runtime. The installer resolves the
+official `IDEA-Research/grounding-dino-tiny` API revision once, pins downloads to it,
+and verifies model weights against the official LFS SHA256. Setup prints the
+persistent, gitignored model directory. Downloads have a 180-second weight / 120-second metadata per-request
+and 420-second total budget, with no retries and explicit failure receipts.
+No private photos are read or uploaded; existing models and defaults are unchanged.
+This is CPU research, not an App integration or an accuracy/latency/3D acceptance.
+
+Indoor wall/floor segmentation is installed by the models profile as `VQASeeIndoorSemantics.mlmodelc` plus its label contract. The NVIDIA SegFormer-B0 ADE20K converter uses isolated, pinned dependencies from `server-vqa/requirements-indoor-semantics-export.txt` and requires full Xcode. Install with `python3 deploy/ios/install_indoor_semantics_model.py`; add `--check` for offline validation. Photo inference runs locally on iPhone. Review the model license before distribution.

@@ -1,0 +1,10 @@
+# Isolated CPU scene-observation research runtime, not the backend environment.
+# PyTorch, NumPy/Pillow/SciPy are supplied by the existing core/spatial runtime.
+transformers==4.44.2
+huggingface-hub==0.24.7
+tokenizers==0.19.1
+safetensors==0.4.5
+regex==2024.11.6
+requests==2.32.3
+urllib3==2.2.3
+charset-normalizer==3.4.0

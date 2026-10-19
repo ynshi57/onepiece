@@ -1,0 +1,16 @@
+VQASeeIndoorSemantics: research/evaluation model resource
+
+Original SegFormer architecture and implementation: NVIDIA / NVlabs SegFormer contributors.
+Original checkpoint: nvidia/segformer-b0-finetuned-ade-512-512
+Checkpoint revision: 489d5cd81a0b59fab9b7ea758d3548ebe99677da
+Model card: https://huggingface.co/nvidia/segformer-b0-finetuned-ade-512-512
+License source: https://github.com/NVlabs/SegFormer/blob/master/LICENSE
+
+This Core ML conversion and its model weights remain subject to the accompanying
+NVIDIA Source Code License for SegFormer. Use is restricted to research or
+evaluation purposes. Free or personal use does not remove this restriction.
+No commercial or production-use permission is asserted by this repository.
+The surrounding application code is separable and retains its own license.
+
+Original copyright and attribution information is retained in the source model
+card and compiled model metadata. See VQASeeIndoorSemantics.LICENSE for full terms.

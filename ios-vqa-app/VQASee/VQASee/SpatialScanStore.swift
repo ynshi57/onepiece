@@ -321,6 +321,141 @@ actor SpatialScanStore {
                   && abs($0.cameraToWorld[14] - $0.pose.position.z) < 0.001 }) else {
             throw StoreError.invalidDocument
         }
+        let observations = document.objectObservations ?? []
+        guard Set(observations.map(\.frameID)).count == observations.count else { throw StoreError.invalidDocument }
+        let frames = Dictionary(uniqueKeysWithValues: document.keyframes.map { ($0.id, $0) })
+        func validateObservation(_ observation: SpatialObjectObservation, parent: SpatialObjectObservation? = nil) throws {
+            if let parent {
+                guard observation.frameID == parent.frameID, observation.epoch == parent.epoch,
+                      observation.frameTime == parent.frameTime else { throw StoreError.invalidDocument }
+            }
+            guard let frame = frames[observation.frameID], observation.epoch == frame.pose.epoch,
+                  observation.frameTime.isFinite, observation.frameTime == frame.time,
+                  observation.elapsedSeconds.isFinite, observation.elapsedSeconds >= 0,
+                  !observation.modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw StoreError.invalidDocument }
+            let detectionFailures = observation.detectionFailures ?? []
+            guard detectionFailures.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { throw StoreError.invalidDocument }
+            switch observation.status {
+            case .processed:
+                guard observation.failure == nil, detectionFailures.isEmpty else { throw StoreError.invalidDocument }
+            case .partial:
+                guard let failure = observation.failure,
+                      !failure.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      !observation.detections.isEmpty, !detectionFailures.isEmpty else { throw StoreError.invalidDocument }
+            case .failed:
+                guard let failure = observation.failure,
+                      !failure.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      observation.detections.isEmpty else { throw StoreError.invalidDocument }
+            }
+            for detection in observation.detections {
+                let box = detection.boundingBox
+                guard !detection.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      detection.score.isFinite, (0...1).contains(detection.score),
+                      box.count == 4, box.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
+                      box[0] < box[2], box[1] < box[3] else { throw StoreError.invalidDocument }
+                if let raw = detection.rawBoundingBox {
+                    guard raw.count == 4, raw.allSatisfy(\.isFinite),
+                          raw[0] < raw[2], raw[1] < raw[3] else { throw StoreError.invalidDocument }
+                    let intersection = [max(0, raw[0]), max(0, raw[1]), min(1, raw[2]), min(1, raw[3])]
+                    guard intersection[0] < intersection[2], intersection[1] < intersection[3],
+                          zip(box, intersection).allSatisfy({ abs($0.0 - $0.1) <= 0.000001 }) else { throw StoreError.invalidDocument }
+                }
+            }
+            for previous in observation.previousAttempts ?? [] {
+                try validateObservation(previous, parent: observation)
+            }
+        }
+        for observation in observations { try validateObservation(observation) }
+        let semanticRows = document.indoorSemanticObservations ?? []
+        guard Set(semanticRows.map(\.frameID)).count == semanticRows.count else { throw StoreError.invalidDocument }
+        var semanticAttemptIDs = Set<UUID>()
+        func validHash(_ hash: String) -> Bool {
+            hash.utf8.count == 64 && hash.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
+        }
+        func validateSemantic(_ row: SpatialIndoorSemanticObservation, parent: SpatialIndoorSemanticObservation? = nil, depth: Int = 0) throws {
+            guard depth < 64, semanticAttemptIDs.insert(row.attemptID).inserted,
+                  let frame = frames[row.frameID], row.frameTime.isFinite, row.frameTime == frame.time,
+                  row.epoch == frame.pose.epoch, row.elapsedSeconds.isFinite, row.elapsedSeconds >= 0,
+                  !row.modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw StoreError.invalidDocument }
+            if let parent {
+                guard row.frameID == parent.frameID, row.frameTime == parent.frameTime, row.epoch == parent.epoch else { throw StoreError.invalidDocument }
+            }
+            switch row.status {
+            case .failed:
+                guard let failure = row.failure, !failure.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      row.labels.isEmpty, row.confidence.isEmpty, row.records.isEmpty else { throw StoreError.invalidDocument }
+            case .processed:
+                guard row.failure == nil, row.width == 128, row.height == 128,
+                      row.labels.count == 128*128, row.confidence.count == 128*128,
+                      row.labels.allSatisfy({ $0 < 150 }), let taxonomy = row.taxonomy,
+                      taxonomy.verified, validHash(taxonomy.configSHA256),
+                      (0..<150).contains(taxonomy.wallLabelID), (0..<150).contains(taxonomy.floorLabelID),
+                      taxonomy.wallLabelID != taxonomy.floorLabelID,
+                      Set(row.records.map(\.surfaceID)).count == row.records.count else { throw StoreError.invalidDocument }
+                for record in row.records {
+                    let counts = [record.wallSupport,record.floorSupport,record.otherOpposition,record.uncertain,record.occluded,record.outsideBoundary,record.unprojectable]
+                    guard record.frameID == row.frameID, record.frameTime == row.frameTime, record.epoch == row.epoch,
+                          record.modelID == row.modelID, record.configSHA256 == taxonomy.configSHA256,
+                          !record.surfaceID.isEmpty, record.surfaceVertices.allSatisfy(\.isFinite),
+                          record.elapsedSeconds.isFinite, record.elapsedSeconds >= 0,
+                          ["plane-ray-native-mask-24x24-v1", "plane-ray-native-mask-batch24x24-nearest-v2"].contains(record.method),
+                          (0...576).contains(record.totalSamples), counts.allSatisfy({ (0...576).contains($0) }),
+                          counts.reduce(0,+) == record.totalSamples else { throw StoreError.invalidDocument }
+                    if record.status == .failed {
+                        guard let failure = record.failure, !failure.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                              record.totalSamples == 0 else { throw StoreError.invalidDocument }
+                    } else {
+                        let visible = record.wallSupport + record.floorSupport + record.otherOpposition + record.uncertain + record.occluded
+                        guard record.failure == nil, record.surfaceVertices.count >= 3, record.totalSamples == 576,
+                              (record.status == .sampled) == (visible > 0) else { throw StoreError.invalidDocument }
+                    }
+                }
+            }
+            for previous in row.previousAttempts ?? [] { try validateSemantic(previous, parent: row, depth: depth+1) }
+        }
+        for row in semanticRows { try validateSemantic(row) }
+        var provenance: [UUID: SpatialObjectObservation] = [:]
+        func collect(_ row: SpatialObjectObservation) throws {
+            if let id = row.attemptID {
+                guard provenance[id] == nil else { throw StoreError.invalidDocument }
+                provenance[id] = row
+            }
+            for old in row.previousAttempts ?? [] { try collect(old) }
+        }
+        for row in observations { try collect(row) }
+        let supportAttempts = document.objectSupportAttempts ?? []
+        guard Set(supportAttempts.map(\.id)).count == supportAttempts.count else { throw StoreError.invalidDocument }
+        for attempt in supportAttempts {
+            guard let source = frames[attempt.sourceFrameID], let row = provenance[attempt.sourceAttemptID],
+                  row.frameID == source.id, row.epoch == attempt.epoch, source.pose.epoch == attempt.epoch,
+                  row.detections.indices.contains(attempt.detectionIndex),
+                  attempt.elapsedSeconds.isFinite, attempt.elapsedSeconds >= 0,
+                  !attempt.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  attempt.method == "VisionOpticalFlow/revision2/high/two-view-v1",
+                  attempt.sampledMatchCount >= attempt.supports.count, attempt.sampledMatchCount <= attempt.pairMatchCount,
+                  attempt.pairMatchCount >= 0, attempt.pairMatchCount <= attempt.pairGridCount,
+                  [0,150].contains(attempt.pairGridCount),
+                  (attempt.status == .measured) == !attempt.supports.isEmpty else { throw StoreError.invalidDocument }
+            let target = attempt.targetFrameID.flatMap { frames[$0] }
+            if attempt.targetFrameID != nil {
+                guard let target, target.id != source.id, target.pose.epoch == source.pose.epoch else { throw StoreError.invalidDocument }
+            }
+            let box = row.detections[attempt.detectionIndex].boundingBox
+            for support in attempt.supports {
+                guard let target, support.sourcePixel.count == 2,
+                      support.sourcePixel[0] >= box[0], support.sourcePixel[0] <= box[2],
+                      support.sourcePixel[1] >= box[1], support.sourcePixel[1] <= box[3],
+                      let computed = SpatialObservationGeometry.triangulate(SpatialImageMatch(sourcePixel: support.sourcePixel,
+                        targetPixel: support.targetPixel, cycleErrorPixels: support.cycleErrorPixels), source: source, target: target),
+                      abs(computed.position.x-support.position.x) < 0.0001,
+                      abs(computed.position.y-support.position.y) < 0.0001,
+                      abs(computed.position.z-support.position.z) < 0.0001,
+                      abs(computed.reprojectionErrorPixels-support.reprojectionErrorPixels) < 0.0001,
+                      abs(computed.parallaxDegrees-support.parallaxDegrees) < 0.0001,
+                      abs(computed.raySeparationMeters-support.raySeparationMeters) < 0.0001 else { throw StoreError.invalidDocument }
+            }
+        }
+
     }
 }
 
