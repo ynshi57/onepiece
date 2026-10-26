@@ -312,3 +312,65 @@ def test_indoor_semantic_masks_and_failure_history_survive_local_import(tmp_path
     assert response.json()['document']['indoorSemanticObservations'] == [row]
     assert c.get('/spatial-scans/'+job).json()['document']['indoorSemanticObservations'] == [row]
     assert (tmp_path/job/'document.json').read_bytes() == files['document.json']
+
+
+def test_depth_unknown_cells_and_retry_history_survive_import(tmp_path, monkeypatch):
+    """Transport-only fixture: depth failure remains visible, no room accuracy claim."""
+    import uuid
+    with zipfile.ZipFile(io.BytesIO(package())) as archive:
+        files = {name: archive.read(name) for name in archive.namelist()}
+    document = json.loads(files['document.json'])
+    frame = document['keyframes'][0]
+    frame['id'] = 'synthetic-depth-source'
+    row = dict(attemptID=str(uuid.uuid4()), sourceFrameID=frame['id'],
+               sourceTime=frame['time'], epoch=frame['pose']['epoch'], targetFrameIDs=[],
+               materialPolicy='notAssessed', method='VisionFlow-r2-bidirectional-NCC-two-target-64x48-v1',
+               status='failed', failure='insufficientViews', elapsedSeconds=.01,
+               stageSeconds=dict(selection=.001), width=64, height=48,
+               depthMeters=[0]*3072, pixelStates=['unavailable']*3072)
+    previous = dict(row, attemptID=str(uuid.uuid4()))
+    row['previousAttempts'] = [previous]
+    document['depthObservations'] = [row]
+    files['document.json'] = json.dumps(document).encode()
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, 'w') as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    c = client(tmp_path, monkeypatch)
+    response = c.post('/spatial-scans/import', content=payload.getvalue())
+    assert response.status_code == 200, response.text
+    job = response.json()['id']
+    assert response.json()['document']['depthObservations'] == [row]
+    assert c.get('/spatial-scans/'+job).json()['document']['depthObservations'] == [row]
+    assert (tmp_path/job/'document.json').read_bytes() == files['document.json']
+
+
+def test_unitless_relative_depth_and_failure_history_survive_import(tmp_path, monkeypatch):
+    """Transport only: preserve relative units and explicit failure, not metric accuracy."""
+    import uuid
+    with zipfile.ZipFile(io.BytesIO(package())) as archive:
+        files = {name: archive.read(name) for name in archive.namelist()}
+    document = json.loads(files['document.json'])
+    frame = document['keyframes'][0]
+    frame['id'] = 'synthetic-relative-source'
+    row = dict(attemptID=str(uuid.uuid4()), frameID=frame['id'],
+               frameTime=frame['time'], epoch=frame['pose']['epoch'],
+               modelID='apple/DepthAnythingV2SmallF16@cfef6f6f2a70783dedc0bfae40cecbc2052285d3',
+               status='processed', width=64, height=48,
+               relativeInverseDepth=[0.0, 0.5, 1.0]*1024,
+               totalSeconds=.034, stageSeconds=dict(prediction=.025))
+    row['previousAttempts'] = [dict(row, attemptID=str(uuid.uuid4()),
+                                    status='failed', failure='missingModel', relativeInverseDepth=[])]
+    document['relativeDepthObservations'] = [row]
+    files['document.json'] = json.dumps(document).encode()
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, 'w') as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    c = client(tmp_path, monkeypatch)
+    response = c.post('/spatial-scans/import', content=payload.getvalue())
+    assert response.status_code == 200, response.text
+    job = response.json()['id']
+    assert response.json()['document']['relativeDepthObservations'] == [row]
+    assert c.get('/spatial-scans/'+job).json()['document']['relativeDepthObservations'] == [row]
+    assert (tmp_path/job/'document.json').read_bytes() == files['document.json']

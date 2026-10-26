@@ -264,7 +264,7 @@ onepiece/
 ```bash
 bash setup_mac.sh                    # 默认装四块：core + models + qwen + ios
 bash setup_mac.sh --skip-qwen --skip-ios   # 只装闭环平台 + harness + 模型
-bash setup_mac.sh --with-depth       # 额外装可选深度模型
+bash setup_mac.sh --with-depth       # 可选端侧相对深度：校验官方模型并编译打包
 HF_ENDPOINT=https://hf-mirror.com bash setup_mac.sh --hf-mirror   # HF 走镜像
 ```
 
@@ -285,6 +285,12 @@ HF_ENDPOINT=https://hf-mirror.com bash setup_mac.sh --hf-mirror   # HF 走镜像
 固定研究包见 `server-vqa/requirements-spatial-memory.txt`，官方 wheel 校验后安装到按 Python 版本派生的本地持久隔离目录，不覆盖 `.venv` 包、不下载模型。
 运行研究脚本时将安装摘要中的完整路径显式传给 `--runtime`；模型目录须另行提供已核验缓存。
 这只支持二维语义观察的保存/重载查询，未接 App，不代表物体实例、三维位置、准确度或实时性通过。详见 [研究说明](deploy/spatial/research/README.md)。
+
+可选端侧学习深度可单独安装：`bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-depth`。
+安装器固定 Apple `coreml-depth-anything-v2-small` revision，校验 F16 package 的文件大小和官方 LFS SHA256 后调用完整 Xcode 的 `coremlcompiler`，不做 PyTorch 转换。
+编译产物位于 `ios-vqa-app/VQASee/OptionalModelResources/DepthAnythingV2SmallF16.mlmodelc`，由 App 的同步资源组按存在情况打包；未安装时仍能构建，App 显示模型不可用。
+Apache-2.0 LICENSE/NOTICE 随资源保留，权重和安装回执不提交。离线检查：`bash deploy/ios/install_depth_anything_v2_small.sh --check`；缺失或校验失败返回非零并给出安装指引。
+该模型输出相对深度，不能作为米制距离或玻璃／镜面表面距离的证明。安装后需重新构建 App；端上准确度与耗时须另行验证。
 
 ### 手动分步
 

@@ -151,6 +151,12 @@ nonisolated struct SpatialScanDocument: Codable, Sendable, Equatable {
     var objectObservations: [SpatialObjectObservation]? = nil
     var objectSupportAttempts: [SpatialObjectSupportAttempt]? = nil
     var indoorSemanticObservations: [SpatialIndoorSemanticObservation]? = nil
+    var depthObservations: [SpatialDepthObservation]? = nil
+    var relativeDepthObservations: [SpatialRelativeDepthObservation]? = nil
+    /// Derived structure is valid only for its exact builder input identity. Legacy scans decode nil.
+    var structureSnapshot: SpatialStructureSnapshot? = nil
+    /// Persisted high-water mark survives invalidating the derived snapshot. Not a builder input.
+    var structureRevision: Int? = nil
     var schemaVersion: Int = 1
 }
 

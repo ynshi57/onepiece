@@ -37,3 +37,7 @@ server-vqa/models/
 
 # Local open-dataset downloads (CamVid images/labels). Never commit binaries.
 /dataset/
+
+/ios-vqa-app/VQASee/OptionalModelResources/*.mlmodelc/
+
+/ios-vqa-app/VQASee/OptionalModelResources/.DepthAnythingV2SmallF16.installation.json

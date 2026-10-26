@@ -43,7 +43,8 @@ final class SpatialObjectSupportStoreTests: XCTestCase {
         let store = SpatialScanStore(directory:directory), document = try fixture()
         try await prepare(document,store:store)
         let loaded = try await store.loadAll()
-        XCTAssertEqual(loaded,[document])
+        let expected = try await document.withPersistedStructure()
+        XCTAssertEqual(loaded,[expected])
         XCTAssertEqual(loaded.first?.objectSupportAttempts?.first?.supports.first?.cycleErrorPixels,0.37)
     }
 
@@ -75,7 +76,8 @@ final class SpatialObjectSupportStoreTests: XCTestCase {
                 XCTFail("Unexpected error for \(name): \(error)")
             }
             let preserved = try await store.loadAll()
-            XCTAssertEqual(preserved,[document],"Must preserve archive after \(name)")
+            let expected = try await document.withPersistedStructure()
+            XCTAssertEqual(preserved,[expected],"Must preserve archive after \(name)")
         }
     }
 }

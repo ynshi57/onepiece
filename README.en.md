@@ -411,3 +411,17 @@ No private photos are read or uploaded; existing models and defaults are unchang
 This is CPU research, not an App integration or an accuracy/latency/3D acceptance.
 
 Indoor wall/floor segmentation is installed by the models profile as `VQASeeIndoorSemantics.mlmodelc` plus its label contract. The NVIDIA SegFormer-B0 ADE20K converter uses isolated, pinned dependencies from `server-vqa/requirements-indoor-semantics-export.txt` and requires full Xcode. Install with `python3 deploy/ios/install_indoor_semantics_model.py`; add `--check` for offline validation. Photo inference runs locally on iPhone. Review the model license before distribution.
+
+### Optional on-device learned depth
+
+Install separately with `bash setup_mac.sh --skip-core --skip-models --skip-qwen --skip-ios --with-depth`.
+The installer pins Apple's `coreml-depth-anything-v2-small` revision, verifies the F16
+package size and official LFS SHA256, and compiles it with full Xcode's `coremlcompiler`;
+no PyTorch conversion is involved. `OptionalModelResources/DepthAnythingV2SmallF16.mlmodelc`
+is included by the App's synchronized resource group only when installed. A model-free
+checkout still builds, and the App reports model unavailability. Rebuild the App after installing.
+Apache-2.0 LICENSE/NOTICE accompany the optional resource; weights and the installation
+receipt remain untracked. Run `bash deploy/ios/install_depth_anything_v2_small.sh --check`
+for an offline integrity check with explicit missing-resource errors and repair instructions.
+The output is relative depth, not validated metric distance or glass/mirror surface distance.
+On-device accuracy and latency require separate validation.

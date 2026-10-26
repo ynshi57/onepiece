@@ -40,7 +40,8 @@ final class SpatialIndoorSemanticStoreTests: XCTestCase {
         let document = fixture(), store = SpatialScanStore(directory:directory)
         try await prepare(document,store:store)
         let loaded = try await store.loadAll()
-        XCTAssertEqual(loaded,[document])
+        let expected = try await document.withPersistedStructure()
+        XCTAssertEqual(loaded,[expected])
         XCTAssertNotEqual(loaded.first?.indoorSemanticObservations?.first?.previousAttempts?.first?.records.first?.surfaceVertices,document.surfaces.first?.vertices)
     }
 
@@ -76,7 +77,8 @@ final class SpatialIndoorSemanticStoreTests: XCTestCase {
             catch SpatialScanStore.StoreError.invalidDocument { }
             catch { XCTFail("Unexpected error for \(name): \(error)") }
             let preserved = try await store.loadAll()
-            XCTAssertEqual(preserved,[document],name)
+            let expected = try await document.withPersistedStructure()
+            XCTAssertEqual(preserved,[expected],name)
         }
     }
 
@@ -89,7 +91,8 @@ final class SpatialIndoorSemanticStoreTests: XCTestCase {
         let store = SpatialScanStore(directory:directory)
         try await prepare(document,store:store)
         let loaded = try await store.loadAll()
-        XCTAssertEqual(loaded,[document])
+        let expected = try await document.withPersistedStructure()
+        XCTAssertEqual(loaded,[expected])
         document.indoorSemanticObservations![0].failure = nil
         do { try await store.save(document); XCTFail("Failure must have a reason") }
         catch SpatialScanStore.StoreError.invalidDocument { }

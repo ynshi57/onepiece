@@ -3,7 +3,7 @@ import ARKit
 import SceneKit
 import Combine
 
-/// Top view draws measured wall centerlines. A photo foot is a separate dashed line, and only where it touches that wall. Raw polygons stay saved.
+/// Top view draws structure wall segments and floor rings. Raw polygons stay saved.
 struct SpatialScanScreen: View {
     @ObservedObject var controller: SpatialScanController
     let onOutdoor: () -> Void
@@ -22,24 +22,42 @@ struct SpatialScanScreen: View {
     @State private var editingSurface: String?
     @State private var surfaceLayer = SpatialSurfaceLayer.all
     @StateObject private var textureEvidence = SpatialTextureEvidence()
-    @StateObject private var wallFeet = SpatialWallFootModel()
+    @StateObject private var structurePreview = SpatialStructurePreviewCache()
+    @State private var sceneSummary = "结构待核对 · 空白为未知"
+    private var planeSummary: String { sceneSummary }
 
-    private var planeSummary: String {
-        let visible = controller.document.surfaces.filter { $0.observed && surfaceLayer.includes($0) }
-        let classifications = SpatialSemanticRendering.classifications(controller.semanticDisplayDocument)
-        let walls = visible.filter { classifications[$0.id] == .wall }.count
-        let floors = visible.filter { classifications[$0.id] == .floor }.count
-        let conflicts = visible.filter { classifications[$0.id] == .other }.count
-        return "墙面证据支持\(walls)面，地面证据支持\(floors)面，冲突\(conflicts)面；其余类别未知。全部原始观测保留。"
+    private var captureCoverageMessage: String {
+        let events=controller.document.events
+        if events.contains("keyframe_limit_reached_remaining_scan_has_no_rgb") || events.contains("keyframe_storage_limit") {
+            guard let last=controller.document.keyframes.last else { return "这段扫描没有照片支持。" }
+            let start=controller.document.poses.first(where:{$0.epoch == last.pose.epoch})?.time
+                ?? controller.document.keyframes.first(where:{$0.pose.epoch == last.pose.epoch})?.time ?? last.time
+            return String(format:"照片记录到本段第 %.0f 秒，后续轨迹没有照片支持。",max(0,last.time-start))
+        }
+        return "这段扫描有照片缺口，物品与空间记录可能不完整。"
     }
 
     private var observedSpan: String {
-        let points = controller.document.surfaces.filter(\.observed).flatMap(\.vertices)
-        guard !points.isEmpty else { return "尚未观察到空间结构" }
-        let xs = points.map(\.x), zs = points.map(\.z)
-        let width = (xs.max() ?? 0) - (xs.min() ?? 0)
-        let depth = (zs.max() ?? 0) - (zs.min() ?? 0)
-        return String(format: "已观测跨度 %.1f × %.1f 米 · 非完整房间尺寸", width, depth)
+        let objects = SpatialObjectLocationBuilder.candidates(document: controller.semanticDisplayDocument).count
+        let objectNote = objects == 0 ? "尚无可见面候选" : "可见面候选\(objects)，进深未知"
+        guard structurePreview.input == SpatialStructureInput(document:controller.semanticDisplayDocument),let map=structurePreview.result?.map else {
+            return "结构待核对 · \(objectNote) · 尚无独立尺寸"
+        }
+        return "结构 R\(map.revision) · 墙段\(map.wallSegments.count) · 地面候选\(map.floorRegions.count) · \(objectNote) · 尺寸尚未独立核对"
+    }
+
+    @ViewBuilder private var experimentOrCombinedViewport: some View {
+        #if DEBUG
+        if let preview=controller.structureP0Preview {
+            VStack(alignment:.leading,spacing:10) {
+                Text("局部结构实验 · 非完整房间地图").font(.headline)
+                Text(preview.message).font(.caption).foregroundStyle(.secondary)
+                if let url=preview.mapURL,let image=UIImage(contentsOfFile:url.path) {Image(uiImage:image).resizable().scaledToFit().accessibilityIdentifier("spatial.structureP0.map")}
+            }
+        } else {combinedViewport}
+        #else
+        combinedViewport
+        #endif
     }
 
     var body: some View {
@@ -51,6 +69,15 @@ struct SpatialScanScreen: View {
                         Text(controller.status).font(.subheadline).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button {
+                        controller.setCoachMuted(!controller.coachMuted)
+                    } label: {
+                        Image(systemName: controller.coachMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .font(.title3)
+                    }
+                    .accessibilityLabel(controller.coachMuted ? "打开扫描语音" : "关闭扫描语音")
+                    .accessibilityValue(controller.coachMuted ? "已静音" : "语音开启")
+                    .accessibilityIdentifier("spatial.coach.mute")
                     Menu {
                         Button("切换户外", action: onOutdoor)
                         Button("物品记录", action: onLegacy)
@@ -59,10 +86,7 @@ struct SpatialScanScreen: View {
                     .accessibilityLabel("更多功能")
                     .accessibilityIdentifier("spatial.more")
                 }
-                combinedViewport
-                    .task(id: "\(controller.document.id.uuidString)-\(controller.document.keyframes.count)-\(controller.isScanning)") {
-                        wallFeet.rebuild(document: controller.document, directory: controller.keyframeDirectory, scanning: controller.isScanning)
-                    }
+                experimentOrCombinedViewport
                     .onChange(of: controller.document.id) { _, _ in
                         mapZoom = 1; mapOffset = .zero
                     }
@@ -79,6 +103,9 @@ struct SpatialScanScreen: View {
                     #if targetEnvironment(simulator)
                     .disabled(true)
                     #endif
+                    .confirmationDialog("开始新的扫描？当前结果将被替换，请先保存需要保留的扫描。", isPresented: $confirmingNew, titleVisibility: .visible) {
+                        Button("开始新的扫描", role: .destructive) { controller.start(discardUnsaved: true) }
+                    }
 
                 if !controller.isScanning, !controller.document.poses.isEmpty {
                     Button("恢复这个空间", systemImage: "arrow.triangle.2.circlepath") { controller.restore() }
@@ -92,7 +119,7 @@ struct SpatialScanScreen: View {
                     .font(.caption).foregroundStyle(.secondary)
 
                 if !SpatialHorizontalObservation.surfaces(controller.document.surfaces).isEmpty {
-                    Text("灰色为未确认观测；紫色墙面、青色地面需多照片证据支持。")
+                    Text("紫色为已观测墙段，橙色为候选墙段；青色虚线为候选地面轮廓，红色为未闭合，灰线仅作参考。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -104,7 +131,7 @@ struct SpatialScanScreen: View {
                         .accessibilityIdentifier("spatial.semantics.reprojecting")
                 }
                 if controller.document.events.contains("keyframe_limit_reached_remaining_scan_has_no_rgb") || controller.document.events.contains("keyframe_storage_limit") || controller.document.events.contains("keyframe_encode_failed") || controller.document.events.contains("keyframe_write_failed") {
-                    Label("这段扫描有照片缺口，物品与空间记录可能不完整。", systemImage: "exclamationmark.triangle")
+                    Label(captureCoverageMessage, systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
                         .accessibilityIdentifier("spatial.capture.incomplete")
                 }
@@ -136,6 +163,9 @@ struct SpatialScanScreen: View {
                     Button("清除本次", role: .destructive) { confirmingClear = true }
                         .accessibilityIdentifier("spatial.clear")
                         .disabled(controller.isAnalyzingIndoorSemantics || controller.isArchivingObjects || controller.isAnalyzingObjects || controller.isLocatingObjects || controller.isSaving || controller.isFinishingAndSaving || controller.isCapturingMap)
+                        .confirmationDialog("清除本次扫描？请先保存需要保留的结果。已保存的记录会保留。", isPresented: $confirmingClear, titleVisibility: .visible) {
+                            Button("清除本次", role: .destructive) { controller.clear() }
+                        }
                 }.buttonStyle(.bordered)
                 if !controller.isScanning && !controller.document.surfaces.isEmpty {
                     Menu("检查与修正结构") {
@@ -169,13 +199,11 @@ struct SpatialScanScreen: View {
                         Text("方向不等于类别：家具也可能形成平面，尚未确认墙面或地面。")
                             .font(.caption).foregroundStyle(.secondary)
                         Text(planeSummary).font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("spatial.scene.summary")
                         Text(observedSpan).font(.caption).foregroundStyle(.secondary)
                         Text("类别颜色来自多照片核对；不贴照片补造地面。灰色和冲突面保留原始几何。")
                             .font(.caption).foregroundStyle(.secondary)
                         Text("已采集 \(controller.document.keyframes.count) 张关键帧").font(.caption).foregroundStyle(.secondary)
-                        if !wallFeet.caption.isEmpty {
-                            Text(wallFeet.caption).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
-                        }
                         Text("只显示已观察结构。空白处未扫描，不代表可通行。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -230,19 +258,16 @@ struct SpatialScanScreen: View {
                 }
             }
         }
-        .confirmationDialog("开始新的扫描？当前结果将被替换，请先保存需要保留的扫描。", isPresented: $confirmingNew, titleVisibility: .visible) {
-            Button("开始新的扫描", role: .destructive) { controller.start() }
-        }
-        .confirmationDialog("清除本次扫描？请先保存需要保留的结果。已保存的记录会保留。", isPresented: $confirmingClear, titleVisibility: .visible) {
-            Button("清除本次", role: .destructive) { controller.clear() }
-        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background || (phase != .active && controller.isScanning) { controller.stop() }
         }
         .onDisappear { controller.stop() }
     }
     private var combinedViewport: some View {
-        GeometryReader { geometry in
+        let displayDocument=controller.semanticDisplayDocument
+        let inputMatches=structurePreview.input == SpatialStructureInput(document:displayDocument)
+        let structureMap=inputMatches ? structurePreview.result?.map:nil
+        return GeometryReader { geometry in
             let size = geometry.size
             let inset: CGFloat = 12
             let small = CGSize(width: min(140, size.width * 0.34), height: min(160, size.height * 0.34))
@@ -252,16 +277,18 @@ struct SpatialScanScreen: View {
                 // Stable sibling identity: swapping never creates another AR view/session.
                 ZStack {
                     if controller.isScanning {
-                        SpatialCameraView(controller: controller, layer: surfaceLayer, evidence: textureEvidence)
+                        SpatialCameraView(controller: controller, layer: surfaceLayer, evidence: textureEvidence,structureMap:structureMap)
                             .overlay { SpatialLiveObjectOverlay(controller: controller) }
                     } else {
                         SpatialStructureView(document: controller.semanticDisplayDocument, layer: surfaceLayer,
-                            imageDirectory: controller.keyframeDirectory, evidence: textureEvidence).id(controller.document.id)
+                            imageDirectory: controller.keyframeDirectory, evidence: textureEvidence,structureMap:structureMap).id(controller.document.id)
                     }
                 }
                 .overlay(alignment: .topLeading) {
-                    Text(controller.isScanning ? "实时画面" : "空间预览")
+                    Text((controller.isScanning ? "实时画面" : "空间预览")+(structureMap.map {" · R\($0.revision)"} ?? " · 结构待核对"))
                         .font(.caption.bold()).padding(7).background(.regularMaterial, in: Capsule()).padding(8)
+                        .accessibilityIdentifier("spatial.structure.revision")
+                        .accessibilityValue(structureMap.map {"revision \($0.revision), epoch \($0.epoch)"} ?? "no matching structure revision")
                 }
                 .allowsHitTesting(!topViewIsPrimary)
                 .frame(width: topViewIsPrimary ? small.width : size.width, height: topViewIsPrimary ? small.height : size.height)
@@ -272,7 +299,7 @@ struct SpatialScanScreen: View {
                 ZStack {
                     Color(uiColor: .secondarySystemBackground)
                     SpatialTopView(document: controller.semanticDisplayDocument, layer: surfaceLayer, livePose: controller.livePose,
-                        isLive: controller.isScanning, inferred: wallFeet.lines, compact: !topViewIsPrimary)
+                        isLive: controller.isScanning, compact: !topViewIsPrimary, onSummary: { sceneSummary = $0 },structureMap:structureMap,structureFailure:inputMatches ? structurePreview.failure:nil)
                         .scaleEffect(topViewIsPrimary ? mapZoom * mapMagnification : 1)
                         .offset(x: topViewIsPrimary ? mapOffset.width + mapDrag.width : 0, y: topViewIsPrimary ? mapOffset.height + mapDrag.height : 0)
                         .allowsHitTesting(false)
@@ -315,14 +342,18 @@ struct SpatialScanScreen: View {
                 VStack {
                     Spacer()
                     HStack {
-                        Text(controller.isScanning ? controller.captureGuidance.message : (topViewIsPrimary ? "拖动或缩放 · 双击复位" : "开始扫描或查看已有空间"))
+                        Text(controller.isScanning ? controller.captureGuidance.message : (controller.captureSummary ?? (topViewIsPrimary ? "拖动或缩放 · 双击复位" : "开始扫描或查看已有空间")))
                             .font(.caption).padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                             .frame(maxWidth: max(0, size.width - small.width - 3 * inset), alignment: .leading)
+                            .accessibilityIdentifier("spatial.coach.caption")
                         Spacer()
                     }
                 }.padding(inset).allowsHitTesting(false).zIndex(3)
             }
         }
+        .onAppear {structurePreview.update(displayDocument)}
+        .onChange(of:displayDocument) {value in structurePreview.update(value)}
+        .onDisappear {structurePreview.cancel()}
         .aspectRatio(3 / 4, contentMode: .fit)
         .frame(maxHeight: 460)
         .clipShape(RoundedRectangle(cornerRadius: 20))
@@ -336,6 +367,7 @@ private struct SpatialCameraView: UIViewRepresentable {
     let controller: SpatialScanController
     let layer: SpatialSurfaceLayer
     let evidence: SpatialTextureEvidence
+    var structureMap:SpatialStructureMap? = nil
     func makeCoordinator() -> SpatialSceneCache { SpatialSceneCache() }
     func makeUIView(context: Context) -> ARSCNView {
         let view = SpatialLiveObjectCameraView()
@@ -351,7 +383,7 @@ private struct SpatialCameraView: UIViewRepresentable {
         let scene = view.scene
         context.coordinator.bindLive(controller.livePose)
         context.coordinator.populate(scene, document: controller.semanticDisplayDocument, layer: layer,
-                                     imageDirectory: controller.keyframeDirectory, liveOverlay: true, evidence: evidence)
+                                     imageDirectory: controller.keyframeDirectory, liveOverlay: true, evidence: evidence, hypothesis: nil,structureMap:structureMap)
     }
 }
 
@@ -360,6 +392,8 @@ private struct SpatialStructureView: UIViewRepresentable {
     let layer: SpatialSurfaceLayer
     let imageDirectory: URL
     let evidence: SpatialTextureEvidence
+    var hypothesis: SpatialSceneHypothesis? = nil
+    var structureMap:SpatialStructureMap? = nil
     func makeCoordinator() -> SpatialSceneCache { SpatialSceneCache() }
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
@@ -372,9 +406,12 @@ private struct SpatialStructureView: UIViewRepresentable {
     func updateUIView(_ view: SCNView, context: Context) {
         guard let scene = view.scene else { return }
         context.coordinator.populate(scene, document: document, layer: layer,
-                                     imageDirectory: imageDirectory, liveOverlay: false, evidence: evidence)
-        if scene.rootNode.childNode(withName: "camera", recursively: false) == nil {
-            let points = document.surfaces.flatMap(\.vertices) + document.poses.map(\.position)
+                                     imageDirectory: imageDirectory, liveOverlay: false, evidence: evidence, hypothesis: hypothesis,structureMap:structureMap)
+        let reframe=context.coordinator.consumeCameraRevision(structureMap)
+        if scene.rootNode.childNode(withName: "camera", recursively: false) == nil || reframe {
+            scene.rootNode.childNode(withName:"camera",recursively:false)?.removeFromParentNode()
+            let epoch=structureMap?.epoch ?? document.keyframes.last?.pose.epoch
+            let points = document.surfaces.filter {$0.epoch == epoch}.flatMap(\.vertices) + document.poses.filter {$0.epoch == epoch}.map(\.position) + SpatialStructurePresentation.points(structureMap)
             let x = points.map(\.x), z = points.map(\.z)
             let cx = ((x.min() ?? 0) + (x.max() ?? 0)) / 2
             let cz = ((z.min() ?? 0) + (z.max() ?? 0)) / 2
@@ -416,6 +453,12 @@ private final class SpatialTextureEvidence: ObservableObject {
 }
 
 private final class SpatialSceneCache {
+    private var cameraStructureRevision:Int?
+    func consumeCameraRevision(_ map:SpatialStructureMap?)->Bool {
+        let revision=map?.revision
+        guard cameraStructureRevision != revision else {return false}
+        cameraStructureRevision=revision;return true
+    }
     private var surfaces: [SpatialSurface] = []
     private var textureKey = ""
     private let textures = SpatialDecodedTextureCache()
@@ -450,13 +493,17 @@ private final class SpatialSceneCache {
     }
     private var activeLayer: SpatialSurfaceLayer?
     private var semanticRows: [SpatialIndoorSemanticObservation] = []
+    private var structureMap:SpatialStructureMap?
     func populate(_ scene: SCNScene, document: SpatialScanDocument, layer: SpatialSurfaceLayer,
-                  imageDirectory: URL, liveOverlay: Bool, evidence: SpatialTextureEvidence) {
+                  imageDirectory: URL, liveOverlay: Bool, evidence: SpatialTextureEvidence, hypothesis: SpatialSceneHypothesis?,structureMap:SpatialStructureMap?) {
         let nextKey = document.id.uuidString + ":" + document.keyframes.map(\.imageFile).joined(separator: ",")
         let sameGeometry = surfaces.count==document.surfaces.count && zip(surfaces,document.surfaces).allSatisfy { a,b in
             a.id==b.id && a.kind==b.kind && a.vertices==b.vertices && a.observed==b.observed && a.epoch==b.epoch
         }
-        if !sameGeometry || activeLayer != layer || textureKey != nextKey || semanticRows != (document.indoorSemanticObservations ?? []) {
+        if !sameGeometry || activeLayer != layer || textureKey != nextKey || semanticRows != (document.indoorSemanticObservations ?? []) || self.structureMap != structureMap {
+            self.structureMap=structureMap
+            scene.rootNode.childNode(withName:"structureLines",recursively:false)?.removeFromParentNode()
+            scene.rootNode.childNode(withName:"hypothesisLines",recursively:false)?.removeFromParentNode()
             semanticRows = document.indoorSemanticObservations ?? []
             activeLayer = layer
             surfaces = document.surfaces
@@ -468,23 +515,10 @@ private final class SpatialSceneCache {
             let root = SCNNode(); root.name = "surfaces"
             var edgesByRole: [String: [SCNVector3]] = [:]
             let classifications = SpatialSemanticRendering.classifications(document)
-            for surface in surfaces where layer.includes(surface) && surface.observed && surface.vertices.count >= 3 && surface.vertices.allSatisfy(\.isFinite) {
-                let semantic = classifications[surface.id] ?? .unknown
+            for surface in surfaces where surface.epoch == (document.keyframes.last?.pose.epoch ?? document.surfaces.last?.epoch) && layer.includes(surface) && surface.observed && surface.vertices.count >= 3 && surface.vertices.allSatisfy(\.isFinite) {
+                let semantic: SpatialSurfaceSemanticEvidence.Semantic = classifications[surface.id] == .other ? .other:.unknown
                 let vertices = surface.vertices.map { SCNVector3($0.x,$0.y,$0.z) }
-                var indices: [Int32]?
-                if surface.kind == "horizontal" { indices = SpatialHorizontalObservation.triangles(surface.vertices) }
-                else {
-                    // Existing vertical polygon topology; no inferred wall extension or photo fill.
-                    indices = (1..<(vertices.count-1)).flatMap { [Int32(0),Int32($0),Int32($0+1)] }
-                }
-                if let indices {
-                    let geometry = SCNGeometry(sources:[SCNGeometrySource(vertices:vertices)],elements:[SCNGeometryElement(indices:indices,primitiveType:.triangles)])
-                    let material = SCNMaterial(); material.isDoubleSided = true; material.lightingModel = .constant
-                    material.diffuse.contents = SpatialSemanticRendering.color(semantic).cgColor
-                    material.transparency = semantic == .unknown ? 0.04 : 0.22
-                    material.blendMode = .alpha; material.writesToDepthBuffer = false
-                    geometry.materials = [material]; root.addChildNode(SCNNode(geometry:geometry))
-                }
+                // Default structure never fills an anchor polygon, including semantic floor anchors.
                 let role = semantic.rawValue
                 for i in vertices.indices {
                     let a = surface.vertices[i], b = surface.vertices[(i+1)%vertices.count]
@@ -502,11 +536,10 @@ private final class SpatialSceneCache {
                 }
                 let title: String
                 switch semantic { case .wall: title = "多照片支持墙面"; case .floor: title = "多照片支持地面"; case .other: title = "类别证据冲突，原始几何保留"; case .unknown: title = "类别尚未确认，原始几何保留" }
-                rows.append(SpatialTextureEvidence.Row(id:surface.id,status:indices == nil ? title+"；填充失败，保留边界" : title,imageFile:nil,candidates:[]))
+                rows.append(SpatialTextureEvidence.Row(id:surface.id,status:title+"；仅显示观测边界",imageFile:nil,candidates:[]))
             }
-            for (role, edges) in edgesByRole {
-                let semantic = SpatialSurfaceSemanticEvidence.Semantic(rawValue:role) ?? .unknown
-                let node = lines(edges,color:SpatialSemanticRendering.color(semantic)); node.renderingOrder = 10
+            for edges in edgesByRole.values {
+                let node = lines(edges,color:.systemGray.withAlphaComponent(0.5)); node.renderingOrder = 10
                 root.addChildNode(node)
             }
             scene.rootNode.addChildNode(root)
@@ -516,10 +549,64 @@ private final class SpatialSceneCache {
             }
             _ = textures.beginScope(names:[],directory:imageDirectory)
             evidence.reset(generation:generation,rows:rows,stats:self.textures.snapshot())
+            if let hypothesis, layer != .horizontal {
+                let root = SCNNode()
+                root.name = "hypothesisLines"
+                for line in hypothesis.walls + hypothesis.objects {
+                    let a = line.start, b = line.end
+                    let dashed = true
+                    let length = SpatialScanGeometry.distance(a, b)
+                    let n = dashed ? max(1, Int(ceil(length / 0.08))) : 1
+                    var edges: [SCNVector3] = []
+                    for i in stride(from: 0, to: n, by: dashed ? 2 : 1) {
+                        let t = Float(i) / Float(n), u = Float(min(i + 1, n)) / Float(n)
+                        edges += [
+                            SCNVector3(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t),
+                            SCNVector3(a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u, a.z + (b.z - a.z) * u),
+                        ]
+                    }
+                    root.addChildNode(lines(edges, color: .systemGray))
+                }
+                scene.rootNode.addChildNode(root)
+            }
+            if let structureMap {
+                let root=SCNNode();root.name="structureLines";root.renderingOrder=20
+                func add(_ a:SpatialPoint,_ b:SpatialPoint,_ color:UIColor,_ dashed:Bool) {
+                    let node=lines(SpatialStructurePresentation.edges(a,b,dashed:dashed),color:color)
+                    node.renderingOrder=20;root.addChildNode(node)
+                }
+                if layer != .vertical {
+                    for region in structureMap.floorRegions {
+                        for ring in [region.outerRing]+region.holes where ring.count>=3 {
+                            for i in ring.indices {add(ring[i],ring[(i+1)%ring.count],.systemTeal,true)}
+                        }
+                    }
+                }
+                if layer != .horizontal {
+                    for wall in structureMap.wallSegments {
+                        let observed=wall.startProvenance == .observed && wall.endProvenance == .observed
+                        add(wall.start,wall.end,observed ? .systemPurple:.systemOrange,!observed)
+                    }
+                    for gap in structureMap.gaps {
+                        if SpatialScanGeometry.distance(gap.start,gap.end)<0.001 {
+                            let p=gap.start
+                            add(SpatialPoint(x:p.x-0.04,y:p.y,z:p.z),SpatialPoint(x:p.x+0.04,y:p.y,z:p.z),.systemRed,false)
+                            add(SpatialPoint(x:p.x,y:p.y,z:p.z-0.04),SpatialPoint(x:p.x,y:p.y,z:p.z+0.04),.systemRed,false)
+                        } else {add(gap.start,gap.end,.systemRed,true)}
+                    }
+                }
+                scene.rootNode.addChildNode(root)
+                rows.append(SpatialTextureEvidence.Row(id:"structure-revision",status:SpatialStructurePresentation.summary(structureMap),imageFile:nil,candidates:[]))
+                evidence.reset(generation:generation,rows:rows,stats:self.textures.snapshot())
+            }
         }
+        scene.rootNode.childNode(withName: "objectLocations", recursively: false)?.removeFromParentNode()
+        let epoch = document.keyframes.last?.pose.epoch ?? document.surfaces.last?.epoch
         currentScene = scene
         lastHistoryPose = document.poses.last
-        let change = trajectoryCache.consume(document)
+        var trajectoryDocument=document
+        trajectoryDocument.poses=document.poses.filter { $0.epoch == epoch }
+        let change = trajectoryCache.consume(trajectoryDocument)
         if change.reset {
             scene.rootNode.childNode(withName: "trajectory", recursively: false)?.removeFromParentNode()
             chunks.removeAll(); chunkNodes.removeAll()
@@ -546,6 +633,31 @@ private final class SpatialSceneCache {
         let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices)], elements: [SCNGeometryElement(indices: vertices.indices.map { Int32($0) }, primitiveType: .line)])
         let material = SCNMaterial(); material.diffuse.contents = color; material.lightingModel = .constant
         geometry.materials = [material]; return SCNNode(geometry: geometry)
+    }
+}
+
+private enum SpatialStructurePresentation {
+    static func points(_ map:SpatialStructureMap?)->[SpatialPoint] {
+        guard let map else {return []}
+        var points=map.wallSegments.flatMap {[$0.start,$0.end]}
+        points += map.corners.map(\.position)
+        points += map.gaps.flatMap {[$0.start,$0.end]}
+        for region in map.floorRegions {points += region.outerRing;points += region.holes.flatMap {$0}}
+        return points.filter(\.isFinite)
+    }
+    static func summary(_ map:SpatialStructureMap)->String {
+        map.statusLine+" · 地面候选闭环\(map.floorRegions.count) · 未闭合记录\(map.gaps.count) · "+(map.floorRegions.isEmpty ? "还没看全":"候选轮廓，未核对房间尺寸")+" · "+map.quality.observedCoverageLine
+    }
+    static func edges(_ a:SpatialPoint,_ b:SpatialPoint,dashed:Bool)->[SCNVector3] {
+        guard a.isFinite,b.isFinite else {return []}
+        let length=SpatialScanGeometry.distance(a,b)
+        let count=dashed ? max(1,Int(min(4096,ceil(length/0.08)))):1
+        var result:[SCNVector3]=[]
+        for i in stride(from:0,to:count,by:dashed ? 2:1) {
+            let lo=Float(i)/Float(count),hi=Float(min(i+1,count))/Float(count)
+            result += [SCNVector3(a.x+(b.x-a.x)*lo,a.y+(b.y-a.y)*lo,a.z+(b.z-a.z)*lo),SCNVector3(a.x+(b.x-a.x)*hi,a.y+(b.y-a.y)*hi,a.z+(b.z-a.z)*hi)]
+        }
+        return result
     }
 }
 
@@ -596,64 +708,157 @@ private final class SpatialTopPathCache: ObservableObject {
     }
 }
 
+private struct SpatialSceneInput: Equatable, Sendable {
+    let scanID: UUID
+    let frames: [SpatialKeyframe]
+    let rows: [SpatialIndoorSemanticObservation]
+    let surfaces: [SpatialSurface]
+    var document: SpatialScanDocument {
+        var doc = SpatialScanDocument(id: scanID)
+        doc.keyframes = frames
+        doc.surfaces = surfaces
+        doc.indoorSemanticObservations = rows
+        return doc
+    }
+}
+
+private final class SpatialTopSceneCache: ObservableObject {
+    @Published private(set) var result: SpatialSceneHypothesis?
+    private(set) var input: SpatialSceneInput?
+    private var generation = UUID()
+    private var task: Task<Void, Never>?
+    func update(_ input: SpatialSceneInput) {
+        guard self.input != input else { return }
+        self.input = input
+        result = nil
+        generation = UUID()
+        task?.cancel()
+        let token = generation
+        task = Task { @MainActor [weak self] in
+            let worker = Task.detached(priority: .utility) {
+                SpatialSceneHypothesis.rebuild(document: input.document)
+            }
+            let result = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+            guard let self, self.generation == token, !Task.isCancelled else { return }
+            self.result = result
+        }
+    }
+    func cancel() { generation = UUID(); task?.cancel(); task = nil; input = nil; result = nil }
+}
+
 /// This view observes only the slow persisted document. Live invalidations stay
 /// inside the small UIKit arrow/tail view below, not in the static Canvas.
+@MainActor private final class SpatialStructurePreviewCache: ObservableObject {
+    @Published private(set) var result: SpatialStructureSnapshot?
+    @Published private(set) var failure:String?
+    private(set) var input:SpatialStructureInput?
+    private var task:Task<Void,Never>?
+    private var generation=UUID()
+    func update(_ value:SpatialScanDocument) {
+        let typedInput=SpatialStructureInput(document:value)
+        guard input != typedInput else {return}
+        input=typedInput;result=nil;failure=nil;generation=UUID();task?.cancel()
+        let token=generation
+        task=Task { [weak self] in
+            do {
+                let worker=Task.detached(priority:.utility) {
+                    let snapshot=try await SpatialStructureSnapshotCache.shared.snapshot(for:value)
+                    guard snapshot.matches(document:value) else {throw CocoaError(.fileReadCorruptFile)}
+                    return snapshot
+                }
+                let snapshot=try await withTaskCancellationHandler(operation:{try await worker.value},onCancel:{worker.cancel()})
+                guard let self,!Task.isCancelled,self.generation == token else {return}
+                self.result=snapshot
+            } catch {
+                guard let self,!Task.isCancelled,self.generation == token else {return}
+                self.failure="结构加载失败；未显示旧版本"
+            }
+        }
+    }
+    func cancel() {task?.cancel();task=nil;generation=UUID();input=nil;result=nil;failure=nil}
+}
+
 private struct SpatialTopView: View {
     let document: SpatialScanDocument
     let layer: SpatialSurfaceLayer
     let livePose: SpatialLivePoseState
     let isLive: Bool
-    var inferred: [SpatialPlaneGrouping.WallLine] = []
     var compact = false
+    var onSummary: (String) -> Void = { _ in }
+    var structureMap:SpatialStructureMap? = nil
+    var structureFailure:String? = nil
     @StateObject private var cache = SpatialTopPathCache()
+    @StateObject private var sceneCache = SpatialTopSceneCache()
     var body: some View {
+        let input = SpatialSceneInput(
+            scanID: document.id, frames: document.keyframes,
+            rows: document.indoorSemanticObservations ?? [], surfaces: document.surfaces)
+        let sceneBatch = sceneCache.input == input ? sceneCache.result : nil
+        let structureSummary = structureMap.map(SpatialStructurePresentation.summary) ?? structureFailure ?? "结构待核对；未显示旧版本"
+        let epoch=structureMap?.epoch ?? document.keyframes.last?.pose.epoch ?? document.surfaces.last?.epoch
+        let scoped: SpatialScanDocument = {
+            var result=document
+            result.surfaces=document.surfaces.filter { $0.epoch == epoch }
+            result.poses=document.poses.filter { $0.epoch == epoch }
+            return result
+        }()
         GeometryReader { geometry in
-            let classifications = SpatialSemanticRendering.classifications(document)
-            let walls = document.surfaces.filter { $0.observed && $0.kind == "vertical" && classifications[$0.id] == .wall && layer.includes($0) }
-            let visibleIDs = Set(walls.map(\.id))
-            let extra = inferred.filter { $0.role == "inferred" && !$0.surfaceIDs.isEmpty && $0.surfaceIDs.allSatisfy { visibleIDs.contains($0) } }
-            let projection = SpatialTopProjection(document: document, size: geometry.size, extra: extra.flatMap { [$0.start, $0.end] }, layer: layer)
+            let walls = sceneBatch?.walls ?? []
+        let structureExtras = SpatialStructurePresentation.points(structureMap)
+        let projection = SpatialTopProjection(document: scoped, size: geometry.size, extra: structureExtras, layer: layer)
             ZStack {
                 Canvas { context, size in
-                    for surface in SpatialHorizontalObservation.surfaces(document.surfaces.filter { layer.includes($0) }) {
-                        var polygon = Path()
-                        polygon.move(to: projection.map(surface.vertices[0]))
-                        for point in surface.vertices.dropFirst() { polygon.addLine(to: projection.map(point)) }
-                        polygon.closeSubpath()
-                        if SpatialHorizontalObservation.triangles(surface.vertices) != nil {
-                            let semantic = classifications[surface.id] ?? .unknown
-                            context.fill(polygon, with: .color(Color(uiColor:SpatialSemanticRendering.color(semantic)).opacity(semantic == .floor ? 0.22 : 0.05)))
+                    let unknown = (sceneBatch?.unknownHorizontals ?? scoped.surfaces.filter { $0.kind == "horizontal" })
+                        + (sceneBatch?.unknownVerticals ?? scoped.surfaces.filter { $0.kind == "vertical" })
+                    for surface in unknown where layer.includes(surface) && surface.observed && surface.vertices.count >= 3 && surface.vertices.allSatisfy(\.isFinite) {
+                        var path=Path();path.move(to:projection.map(surface.vertices[0]))
+                        for p in surface.vertices.dropFirst() {path.addLine(to:projection.map(p))};path.closeSubpath()
+                        context.stroke(path,with:.color(.gray.opacity(0.6)),style:StrokeStyle(lineWidth:1,dash:[5,3]))
+                    }
+                    for surface in sceneBatch?.conflictSurfaces ?? [] where layer.includes(surface) && surface.vertices.count >= 3 {
+                        var path=Path();path.move(to:projection.map(surface.vertices[0]))
+                        for p in surface.vertices.dropFirst() {path.addLine(to:projection.map(p))};path.closeSubpath()
+                        context.stroke(path,with:.color(.gray.opacity(0.6)),style:StrokeStyle(lineWidth:1,dash:[5,3]))
+                    }
+                    if layer != .vertical {
+                        for region in structureMap?.floorRegions ?? [] {
+                            for ring in [region.outerRing]+region.holes where ring.count>=3 {
+                                var path=Path();path.move(to:projection.map(ring[0]))
+                                for p in ring.dropFirst() {path.addLine(to:projection.map(p))};path.closeSubpath()
+                                context.stroke(path,with:.color(.teal),style:StrokeStyle(lineWidth:2,dash:[7,4]))
+                            }
                         }
-                        let semantic = classifications[surface.id] ?? .unknown
-                        context.stroke(polygon, with: .color(Color(uiColor:SpatialSemanticRendering.color(semantic))), style:StrokeStyle(lineWidth:semantic == .floor ? 2.5 : 1.5,dash:semantic == .floor ? [] : [5,3]))
                     }
-                    for surface in document.surfaces where layer.includes(surface) && surface.observed && surface.kind != "horizontal" && surface.vertices.count >= 3 && surface.vertices.allSatisfy(\.isFinite) {
-                        let semantic = classifications[surface.id] ?? .unknown
-                        var path = Path(); path.move(to:projection.map(surface.vertices[0]))
-                        for point in surface.vertices.dropFirst() { path.addLine(to:projection.map(point)) }; path.closeSubpath()
-                        context.stroke(path,with:.color(Color(uiColor:SpatialSemanticRendering.color(semantic))),style:StrokeStyle(lineWidth:1.5,dash:semantic == .wall ? [] : [5,3]))
-                    }
-                    let lines = SpatialPlaneGrouping.wallLines(surfaces:walls)
-                    for line in lines {
-                        var path = Path()
-                        path.move(to: projection.map(line.start))
-                        path.addLine(to: projection.map(line.end))
-                        let color: Color = .purple
-                        let width: CGFloat = line.role == "wall" ? 4 : 2
-                        let dash: [CGFloat] = line.role == "wall" ? [] : [5, 3]
-                        context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: width, dash: dash))
-                    }
-                    for line in extra {
-                        var path = Path()
-                        path.move(to: projection.map(line.start))
-                        path.addLine(to: projection.map(line.end))
-                        context.stroke(path, with: .color(Color(red: 0.05, green: 0.42, blue: 0.38)), style: StrokeStyle(lineWidth: 3, dash: [8, 4]))
+                    if layer != .horizontal {
+                        for line in walls + (sceneBatch?.objects ?? []) {
+                            var path=Path();path.move(to:projection.map(line.start));path.addLine(to:projection.map(line.end))
+                            context.stroke(path,with:.color(.gray.opacity(0.5)),style:StrokeStyle(lineWidth:1,dash:[5,3]))
+                        }
+                        for segment in structureMap?.wallSegments ?? [] {
+                            var path = Path()
+                            path.move(to: projection.map(segment.start))
+                            path.addLine(to: projection.map(segment.end))
+                            let observed=segment.startProvenance == .observed && segment.endProvenance == .observed
+                            context.stroke(path, with: .color(observed ? .purple:.orange), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, dash:observed ? []:[5,3]))
+                        }
+                        for corner in structureMap?.corners ?? [] {
+                            let c = projection.map(corner.position)
+                            let r: CGFloat = 4
+                            context.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)), with: .color(.orange))
+                        }
+                        for gap in structureMap?.gaps ?? [] {
+                            var path=Path()
+                            if SpatialScanGeometry.distance(gap.start,gap.end)<0.001 {
+                                let p=projection.map(gap.start);path.addEllipse(in:CGRect(x:p.x-5,y:p.y-5,width:10,height:10))
+                            } else {path.move(to:projection.map(gap.start));path.addLine(to:projection.map(gap.end))}
+                            context.stroke(path,with:.color(.red),style:StrokeStyle(lineWidth:2,dash:[3,4]))
+                        }
                     }
                     var world = context
                     world.translateBy(x: projection.offset.x, y: projection.offset.y)
                     world.scaleBy(x: projection.scale, y: projection.scale)
-                    world.stroke(Path(cache.update(document)), with: .color(.orange), lineWidth: 3/max(projection.scale,0.001))
-                    if !isLive, let pose = document.poses.last {
+                    world.stroke(Path(cache.update(scoped)), with: .color(.orange), lineWidth: 3/max(projection.scale,0.001))
+                    if !isLive, let pose = scoped.poses.last {
                         let p = projection.map(pose.position)
                         context.fill(Path(ellipseIn: CGRect(x:p.x-4,y:p.y-4,width:8,height:8)), with: .color(.orange))
                     }
@@ -661,9 +866,32 @@ private struct SpatialTopView: View {
                         context.draw(Text(compact ? "尚未扫描" : "移动后，轨迹和已观察结构会出现在这里").font(.caption).foregroundColor(.secondary), at: CGPoint(x:size.width/2,y:size.height/2))
                     }
                 }
-                if isLive { SpatialLiveTopLayer(livePose: livePose, projection: projection, historyPose: document.poses.last) }
+                if isLive { SpatialLiveTopLayer(livePose: livePose, projection: projection, historyPose: scoped.poses.last) }
+            }
+            .overlay(alignment:.bottomLeading) {
+                Group {
+                    Text(compact ? (structureMap.map {"R\($0.revision) · 未闭合\($0.gaps.count)"} ?? (structureFailure == nil ? "结构加载中":"结构加载失败")) : structureSummary)
+                        .font(.caption2).foregroundStyle(.secondary).padding(5).background(.regularMaterial,in:RoundedRectangle(cornerRadius:6))
+                        .lineLimit(2)
+                        .padding(.leading,compact ? 8:12)
+                        .padding(.bottom,compact ? 28:52)
+                        .accessibilityIdentifier("spatial.structureOverlay.status")
+                }
             }
         }
+        .onReceive(sceneCache.$result) { result in
+            guard sceneCache.input == input else { return }
+            if let result {
+                onSummary(result.publishedStatusLine + " · " + structureSummary)
+            } else { onSummary("结构加载中 · 空白为未知 · " + structureSummary) }
+        }
+        .onChange(of:structureMap) {value in onSummary(value.map(SpatialStructurePresentation.summary) ?? structureSummary)}
+        .onAppear { sceneCache.update(input) }
+        .onChange(of:input) { value in sceneCache.update(value) }
+        .onDisappear { sceneCache.cancel() }
+        // The graph is one accessible element even when its Canvas has no shapes.
+        .accessibilityElement(children: .ignore)
+        .accessibilityValue(structureSummary)
         .accessibilityLabel("已观察空间与行走轨迹俯视图")
         .accessibilityIdentifier("spatial.topView")
     }

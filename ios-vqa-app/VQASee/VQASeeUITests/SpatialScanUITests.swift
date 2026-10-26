@@ -7,9 +7,15 @@ final class SpatialScanUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["spatial.scan"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["空间扫描"].exists)
+        XCTAssertTrue(app.buttons["spatial.coach.mute"].exists)
         XCTAssertFalse(app.staticTexts["已观察结构"].exists)
         XCTAssertFalse(app.segmentedControls["spatial.layers"].exists)
         XCTAssertFalse(app.buttons["spatial.save"].isEnabled)
+        if !app.otherElements["spatial.topView"].exists {
+            let tree = XCTAttachment(string:app.debugDescription)
+            tree.name = "Missing top-map accessibility element — actual hierarchy"
+            tree.lifetime = .keepAlways; add(tree)
+        }
         XCTAssertTrue(app.otherElements["spatial.topView"].exists)
         let initial = XCTAttachment(screenshot: app.screenshot())
         initial.name = "Spatial scan real initial UI — no camera or geometry simulation"
@@ -145,8 +151,8 @@ final class SpatialScanUITests: XCTestCase {
         let top = XCTAttachment(screenshot: app.screenshot())
         top.name = "Authorized actual scan geometry — horizontal surfaces in top view, no photos"
         top.lifetime = .keepAlways; add(top)
-        try verifySemanticSummary(app, walls:0, floors:0)
-        XCTAssertTrue(app.staticTexts["水平观测，未确认地面"].exists)
+        try verifySceneSummary(app, requiresFloor:false)
+        XCTAssertFalse(app.staticTexts["青色整面地面"].exists)
     }
 
     @MainActor
@@ -157,7 +163,7 @@ final class SpatialScanUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-spatial-metadata-preview"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["结构回放（未载入照片）"].waitForExistence(timeout:15))
+        XCTAssertTrue(app.staticTexts["合成发布示例（非实测）"].waitForExistence(timeout:15))
         let scene = XCTAttachment(screenshot:app.screenshot())
         scene.name = "Synthetic only — semantic wall and floor in 3D"
         scene.lifetime = .keepAlways; add(scene)
@@ -166,11 +172,11 @@ final class SpatialScanUITests: XCTestCase {
         let top = XCTAttachment(screenshot:app.screenshot())
         top.name = "Synthetic only — semantic wall and floor in top view"
         top.lifetime = .keepAlways; add(top)
-        try verifySemanticSummary(app, walls:1, floors:1)
+        try verifySceneSummary(app, requiresFloor:true)
     }
 
     @MainActor
-    private func verifySemanticSummary(_ app: XCUIApplication, walls: Int, floors: Int) throws {
+    private func verifySceneSummary(_ app: XCUIApplication, requiresFloor: Bool) throws {
         let details = app.buttons["扫描详情"]
         for _ in 0..<6 {
             if details.exists && details.isHittable { break }
@@ -178,12 +184,15 @@ final class SpatialScanUITests: XCTestCase {
         }
         XCTAssertTrue(details.waitForExistence(timeout:5))
         details.tap()
-        let summary = app.staticTexts["墙面证据支持\(walls)面，地面证据支持\(floors)面，冲突0面；其余类别未知。全部原始观测保留。"]
+        let summary = app.staticTexts["spatial.scene.summary"]
         for _ in 0..<4 {
             if summary.exists { break }
             app.swipeUp()
         }
-        XCTAssertTrue(summary.waitForExistence(timeout:5))
+        XCTAssertTrue(summary.waitForExistence(timeout:10))
+        XCTAssertTrue(summary.label.contains("未知水平"))
+        if requiresFloor { XCTAssertFalse(summary.label.hasPrefix("地面 0 格")) }
+        else { XCTAssertTrue(summary.label.hasPrefix("地面 0 格")) }
     }
 
 }

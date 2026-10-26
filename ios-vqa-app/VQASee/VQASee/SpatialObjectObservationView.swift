@@ -18,8 +18,13 @@ struct SpatialObjectObservationView: View {
             if controller.isLocatingObjects {
                 ProgressView("已核对 \(controller.objectLocationCompleted) 张照片；正在检查照片间的表面证据")
             }
-            Text("核对得到的是区域内表面点，可能来自背景；物品位置仍未确认。")
+            Text("核对得到的是区域内表面点，可能来自背景。至少3个点才会给出可见面候选：宽高来自该深度下的检测框，进深未知，不是物品中心。")
                 .font(.caption).foregroundStyle(.secondary)
+            let locations = SpatialObjectLocationBuilder.candidates(document: controller.document)
+            if !locations.isEmpty {
+                Text("可见面候选 \(locations.count) 个 · 进深未知 · 未合并同一物品")
+                    .font(.caption)
+            }
             if controller.isArchivingObjects {
                 ProgressView("正在整理已采集照片中的物品")
             }
@@ -51,6 +56,7 @@ struct SpatialObjectObservationView: View {
                             if !supports(for: row).isEmpty {
                                 Text("蓝点是核对过的区域表面，可能是背景；不是物品中心。").font(.caption).foregroundStyle(.secondary)
                             }
+                            locationRecords(for: row)
                             supportRecords(for: row)
                             Text(row.detections.map { SpatialObjectLabels.title($0.label) }.joined(separator: "、")).font(.caption)
                             Text("物品位置未知；拍摄位置不是物品位置。类别与分数未经核实。")
@@ -90,6 +96,24 @@ struct SpatialObjectObservationView: View {
             pending.insert(contentsOf: row.previousAttempts ?? [], at: 0)
         }
         return rows
+    }
+
+    @ViewBuilder private func locationRecords(for row: SpatialObjectObservation) -> some View {
+        let rows = SpatialObjectLocationBuilder.candidates(document: controller.document)
+            .filter { $0.sourceFrameID == row.frameID && $0.sourceAttemptID == row.attemptID }
+        if !rows.isEmpty {
+            DisclosureGroup("可见面候选（\(rows.count)）") {
+                ForEach(rows) { candidate in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(SpatialObjectLabels.title(candidate.label)) · 宽 \(candidate.widthMeters, specifier: "%.2f") m · 高 \(candidate.heightMeters, specifier: "%.2f") m · 进深未知")
+                            .font(.caption)
+                        Text("\(candidate.supportCount)个表面点 · 散布 \(candidate.spreadMeters, specifier: "%.2f") m\(candidate.isClipped ? " · 框被照片裁切" : "")")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Text(candidate.reason).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder private func supportRecords(for row: SpatialObjectObservation) -> some View {

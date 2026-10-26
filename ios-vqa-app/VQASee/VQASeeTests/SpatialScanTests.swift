@@ -77,37 +77,115 @@ final class SpatialScanTests: XCTestCase {
         SpatialPose(time: time, position: SpatialPoint(x: x, y: 0, z: 0), forward: forward, epoch: epoch)
     }
 
-    func testCaptureGuidanceSeparatesTurningForwardAndSidewaysWithoutChangingPoses() {
+    func testCaptureGuidanceHoldsTallWallAndDoesNotRewritePose() {
         var advice = SpatialCaptureGuidance()
         let origin = pose(0, 0)
-        XCTAssertEqual(advice.update(origin), .start)
-        XCTAssertEqual(advice.update(pose(1, 0, forward: SpatialPoint(x: 0.4, y: 0, z: -0.9165))), .turnInPlace)
-        advice.reset()
-        _ = advice.update(origin)
-        let forward = SpatialPose(time: 1, position: SpatialPoint(x: 0, y: 0, z: -0.25), forward: origin.forward, epoch: 0)
-        XCTAssertEqual(advice.update(forward), .moveSideways)
-        advice.reset()
-        _ = advice.update(origin)
-        XCTAssertEqual(advice.update(pose(1, 0.25)), .lateralObserved)
+        XCTAssertEqual(advice.update(observation(time: 0, pose: origin)), .start)
+        XCTAssertEqual(advice.update(observation(time: 0.2, pose: origin, planes: [wall(extent: 1.0)])), .holdWall)
+        XCTAssertEqual(advice.update(observation(time: 0.6, pose: origin, planes: [wall(extent: 1.0)])), .holdWall)
+        XCTAssertEqual(advice.update(observation(time: 2.7, pose: origin, planes: [wall(extent: 1.0)])), .turnLeft)
         XCTAssertEqual(origin.position.x, 0, "Advice must not modify capture evidence")
+        XCTAssertEqual(SpatialCaptureGuidance.State.holdWall.message, "停一下")
+        XCTAssertFalse(SpatialCaptureGuidance.State.holdWall.message.contains("侧移"))
     }
 
-    func testCaptureGuidanceResetsAcrossTrackingSegmentsGapsAndFastJumps() {
+    func testCaptureGuidanceLocksLeftSweepAndIgnoresOppositeGap() {
         var advice = SpatialCaptureGuidance()
-        _ = advice.update(pose(0, 0))
-        XCTAssertEqual(advice.update(pose(0.1, 1)), .slowDown)
-        XCTAssertEqual(advice.update(pose(0.2, 1, epoch: 1)), .start)
-        XCTAssertEqual(advice.update(pose(3, 1, epoch: 1)), .start)
-        XCTAssertEqual(advice.update(pose(3.1, 1, epoch: 1, forward: SpatialPoint(x: 0, y: 1, z: 0))), .orientationUnavailable)
-        XCTAssertEqual(advice.update(pose(3.2, .nan)), .trackingUnavailable)
+        let origin = looking(.pi, time: 0)
+        _ = advice.update(observation(time: 0, pose: origin))
+        _ = advice.update(observation(time: 0.2, pose: origin, planes: [wall(extent: 1.0)]))
+        _ = advice.update(observation(time: 0.6, pose: origin, planes: [wall(extent: 1.0)]))
+        XCTAssertEqual(advice.update(observation(time: 2.7, pose: origin, planes: [wall(extent: 1.0)])), .turnLeft)
+        let towardRight = looking(.pi + 0.4, time: 3.2)
+        XCTAssertEqual(advice.update(observation(time: 3.2, pose: towardRight, planes: [wall(extent: 1.0)])), .turnLeft,
+                       "Nearest-gap chatter must not reverse a locked left sweep")
+        XCTAssertEqual(advice.update(observation(time: 3.6, pose: towardRight, tracking: .excessiveMotion)), .trackingLimited(.excessiveMotion))
+        XCTAssertEqual(advice.update(observation(time: 4.0, pose: towardRight, planes: [wall(extent: 1.0)])), .turnLeft)
+        XCTAssertEqual(advice.update(observation(time: 4.4, pose: towardRight, planes: [wall(id: "sofa", height: 0.6)])), .avoidFurniture)
+        XCTAssertEqual(advice.update(observation(time: 4.8, pose: towardRight)), .turnLeft)
+        XCTAssertTrue(advice.completionMessage().contains("继续沿墙转完一圈"))
+        XCTAssertFalse(advice.completionMessage().contains("房间已经闭合"))
     }
 
-    func testCaptureGuidanceExpiresOldLateralProgress() {
+    func testCaptureGuidanceCompletesCircuitWithoutReversing() {
         var advice = SpatialCaptureGuidance()
-        _ = advice.update(pose(0, 0))
-        XCTAssertEqual(advice.update(pose(1, 0.25)), .lateralObserved)
-        for time in 2...4 { _ = advice.update(pose(Double(time), 0.25)) }
-        XCTAssertEqual(advice.update(pose(5, 0.25)), .moveSideways)
+        var time = 0.0
+        func feed(_ yaw: Float, planes: [SpatialCaptureGuidance.Plane] = []) -> SpatialCaptureGuidance.State {
+            time += 0.4
+            return advice.update(observation(time: time, pose: looking(yaw, time: time), planes: planes))
+        }
+        func settle(_ yaw: Float, id: String) {
+            let plane = wall(id: id, extent: 1.0)
+            XCTAssertEqual(feed(yaw, planes: [plane]), .holdWall)
+            XCTAssertEqual(feed(yaw, planes: [plane]), .holdWall)
+            time += 2.2
+            let next = advice.update(observation(time: time, pose: looking(yaw, time: time), planes: [plane]))
+            XCTAssertTrue(next == .turnLeft || next == .circuitComplete, "\(next)")
+        }
+        _ = advice.update(observation(time: 0, pose: looking(.pi, time: 0)))
+        settle(.pi, id: "a")
+        var yaw = Float.pi
+        while yaw > Float.pi / 2 + 0.05 {
+            yaw -= 0.3
+            XCTAssertEqual(feed(yaw), .turnLeft)
+        }
+        settle(.pi / 2, id: "b")
+        yaw = Float.pi / 2
+        var sawComplete = false
+        while yaw > -.pi - 0.05 {
+            yaw -= 0.3
+            let next = feed(yaw)
+            XCTAssertNotEqual(next, .turnRight, "Circuit sweep must stay one way")
+            if next == .circuitComplete { sawComplete = true }
+        }
+        XCTAssertTrue(sawComplete, "Returning to the first heading after ~300° must stop the left-turn nag")
+        XCTAssertTrue(advice.completionMessage().contains("转过一圈"))
+        XCTAssertTrue(advice.completionMessage().contains("还没看全"))
+        XCTAssertFalse(advice.completionMessage().contains("可以结束"))
+        XCTAssertEqual(SpatialCaptureGuidance.State.circuitComplete.message.contains("还没看全"), true)
+        XCTAssertFalse(SpatialCaptureGuidance.State.circuitComplete.message.contains("可以结束"))
+    }
+
+    func testCaptureGuidanceSpeedsTrackingAndFurnitureBeforeSweep() {
+        var advice = SpatialCaptureGuidance()
+        let origin = pose(0, 0)
+        XCTAssertEqual(advice.update(observation(time: 0, pose: origin)), .start)
+        XCTAssertEqual(advice.update(observation(time: 0.1, pose: pose(0.1, 1))), .slowDown)
+        advice.reset()
+        _ = advice.update(observation(time: 0, pose: origin))
+        XCTAssertEqual(advice.update(observation(time: 0.1, pose: pose(0.1, 0, forward: SpatialPoint(x: 1, y: 0, z: 0)))), .slowDown)
+        advice.reset()
+        _ = advice.update(observation(time: 0, pose: origin))
+        XCTAssertEqual(advice.update(observation(time: 0.2, pose: pose(0.2, 0, epoch: 1))), .start)
+        XCTAssertEqual(advice.update(observation(time: 0.3, pose: pose(0.3, .nan))), .trackingUnavailable)
+        advice.reset()
+        _ = advice.update(observation(time: 0, pose: origin))
+        XCTAssertEqual(advice.update(observation(time: 0.2, pose: origin, planes: [wall(id: "sofa", height: 0.6, extent: 1.2)])), .start,
+                       "Furniture before any settled wall should not start a chase")
+    }
+
+    @MainActor
+    func testCaptureGuidanceMuteKeyDefaultsOff() {
+        XCTAssertEqual(SpatialScanCoachSpeech.mutedKey, "spatial.scanCoach.muted")
+        XCTAssertEqual(SpatialCaptureGuidance.State.avoidFurniture.eventName, "guidance:avoidFurniture")
+        XCTAssertEqual(SpatialCaptureGuidance.State.trackingLimited(.insufficientFeatures).eventName,
+                       "guidance:trackingLimited:insufficientFeatures")
+    }
+
+    private func observation(time: Double, pose: SpatialPose? = nil, tracking: SpatialCaptureGuidance.Tracking = .normal,
+                             planes: [SpatialCaptureGuidance.Plane] = []) -> SpatialCaptureGuidance.Observation {
+        SpatialCaptureGuidance.Observation(time: time, pose: pose ?? self.pose(time, 0), tracking: tracking, planes: planes)
+    }
+
+    private func wall(id: String = "wall", height: Float = 2.2, extent: Float = 1.0,
+                      kind: String = "vertical", x: Float = 0, z: Float = -2,
+                      inView: Bool = true) -> SpatialCaptureGuidance.Plane {
+        SpatialCaptureGuidance.Plane(id: id, kind: kind, height: height, centroidX: x, centroidZ: z, extent: extent, inView: inView)
+    }
+
+    private func looking(_ yaw: Float, time: Double) -> SpatialPose {
+        SpatialPose(time: time, position: SpatialPoint(x: 0, y: 0, z: 0),
+                    forward: SpatialPoint(x: sin(yaw), y: 0, z: cos(yaw)), epoch: 0)
     }
 
     func testDistanceUsesAllThreeAxes() {
@@ -153,7 +231,8 @@ final class SpatialScanTests: XCTestCase {
             surfaces: [SpatialSurface(id: "open", kind: "wall", vertices: [SpatialPoint(x: 0, y: 0, z: 0), SpatialPoint(x: 1, y: 0, z: 0)])], events: ["tracking_reset"])
         try await store.save(document)
         let loaded = try await store.loadAll()
-        XCTAssertEqual(loaded, [document])
+        let expected = try await document.withPersistedStructure()
+        XCTAssertEqual(loaded, [expected])
         XCTAssertEqual(try directory.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup, true)
         let archive = directory.appendingPathComponent(document.id.uuidString).appendingPathComponent("document.json")
 #if !targetEnvironment(simulator)
@@ -164,7 +243,7 @@ final class SpatialScanTests: XCTestCase {
         do { try await store.save(invalid); XCTFail("Invalid replacement must fail") }
         catch SpatialScanStore.StoreError.unsupportedVersion(2) { }
         let preserved = try await store.loadAll()
-        XCTAssertEqual(preserved, [document])
+        XCTAssertEqual(preserved, [expected])
         do { try await store.saveKeyframe(data: Data([1]), scanID: document.id, filename: "../escape.jpg"); XCTFail("Must reject traversal") }
         catch SpatialScanStore.StoreError.invalidFilename { }
         try Data("broken".utf8).write(to: archive)
@@ -470,13 +549,15 @@ final class SpatialUnsavedHistoryTests: XCTestCase {
         controller.load(original)
         XCTAssertEqual(controller.document, appended)
         controller.load(SpatialScanDocument())
-        controller.clear()
         controller.start()
+        XCTAssertEqual(controller.document, appended)
+        XCTAssertEqual(controller.error, "本次新增内容尚未保存，请先结束并保存")
         controller.remove(original)
         XCTAssertEqual(controller.document, appended)
         try await Task.sleep(for: .milliseconds(100))
         let beforeSave = try await store.loadAll()
-        XCTAssertEqual(beforeSave.first, original)
+        let expectedOriginal = try await original.withPersistedStructure()
+        XCTAssertEqual(beforeSave.first, expectedOriginal)
         controller.save()
         let deadline = Date().addingTimeInterval(10)
         while controller.isSaving && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
@@ -484,6 +565,46 @@ final class SpatialUnsavedHistoryTests: XCTestCase {
         XCTAssertEqual(committed.first?.poses.map(\.epoch), [2, 3])
         XCTAssertEqual(committed.first?.relocalizationEvents?.last?.newEpoch, 3)
         XCTAssertFalse(controller.hasUnsavedChanges)
+    }
+
+    @MainActor
+    func testConfirmedClearDiscardsUnsavedCurrentAndKeepsSavedHistory() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = SpatialScanStore(directory: directory)
+        var original = SpatialScanDocument()
+        original.poses = [SpatialPose(time: 1, position: SpatialPoint(x: 0, y: 0, z: 0), forward: SpatialPoint(x: 0, y: 0, z: -1), epoch: 2)]
+        try await store.save(original)
+        let controller = SpatialScanController(store: store)
+        controller.load(original)
+        controller.document.poses.append(SpatialPose(time: 2, position: SpatialPoint(x: 0.1, y: 0, z: 0), forward: SpatialPoint(x: 0, y: 0, z: -1), epoch: 3))
+        XCTAssertTrue(controller.hasUnsavedChanges)
+        let unsavedID = controller.document.id
+        controller.clear()
+        XCTAssertNotEqual(controller.document.id, unsavedID)
+        XCTAssertTrue(controller.document.poses.isEmpty)
+        XCTAssertTrue(controller.document.surfaces.isEmpty)
+        XCTAssertFalse(controller.hasUnsavedChanges)
+        XCTAssertNil(controller.error)
+        XCTAssertEqual(controller.status, "点击开始，建立新的空间")
+        try await Task.sleep(for: .milliseconds(100))
+        let kept = try await store.loadAll()
+        XCTAssertEqual(kept.first?.id, original.id)
+        XCTAssertEqual(kept.first?.poses.map(\.epoch), [2])
+    }
+
+    @MainActor
+    func testConfirmedStartReplacesUnsavedSessionInsteadOfNoOp() {
+        let controller = SpatialScanController(store: SpatialScanStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)))
+        controller.document.poses = [SpatialPose(time: 1, position: SpatialPoint(x: 0, y: 0, z: 0), forward: SpatialPoint(x: 0, y: 0, z: -1), epoch: 0)]
+        XCTAssertTrue(controller.hasUnsavedChanges)
+        controller.start()
+        XCTAssertEqual(controller.document.poses.count, 1)
+        XCTAssertEqual(controller.error, "本次新增内容尚未保存，请先结束并保存")
+        controller.error = nil
+        controller.start(discardUnsaved: true)
+        XCTAssertNotEqual(controller.error, "本次新增内容尚未保存，请先结束并保存")
+        XCTAssertTrue(["准备相机", "相机空间定位不可用"].contains(controller.status), controller.status)
     }
 
     @MainActor
@@ -560,7 +681,8 @@ final class SpatialRestorationExportTests: XCTestCase {
         try Data(repeating: 32, count: 64*1_024+1).write(to: path)
         do { _ = try await store.export(document); XCTFail("Oversized diagnostic must not be omitted") } catch { }
         let persisted = try await store.loadAll()
-        XCTAssertEqual(persisted.first, document)
+        let expected = try await document.withPersistedStructure()
+        XCTAssertEqual(persisted.first, expected)
     }
 }
 
@@ -743,162 +865,6 @@ final class SpatialPlaneGroupingTests: XCTestCase {
         XCTAssertTrue(SpatialPlaneGrouping.wallLines(surfaces: [
             SpatialSurface(id: "floor", kind: "horizontal", vertices: wall.vertices, epoch: 1)
         ]).isEmpty)
-    }
-
-    func testFloorHitRoundTripsAPointOnTheFloor() throws {
-        let camera = try XCTUnwrap(lookingCamera(at: SIMD3(1, 1.5, 2.5)))
-        let world = SIMD3<Float>(1.2, 0, 0)
-        let seen = try XCTUnwrap(camera.project(world))
-        let hit = try XCTUnwrap(camera.floorHit(pixelX: seen.x * 800, pixelY: seen.y * 600, floorY: 0))
-        XCTAssertEqual(hit.x, world.x, accuracy: 0.02)
-        XCTAssertEqual(hit.z, world.z, accuracy: 0.02)
-    }
-
-    func testWallFootMissingPhotoIsNotReportedAsNoExtension() throws {
-        let frame = SpatialKeyframe(id: "missing", time: 0,
-            pose: SpatialPose(time: 0, position: SpatialPoint(x: 0, y: 1.5, z: 2), forward: SpatialPoint(x: 0, y: 0, z: -1), epoch: 1),
-            intrinsics: [500, 0, 0, 0, 500, 0, 320, 240, 1], width: 640, height: 480,
-            imageFile: "missing.jpg", cameraToWorld: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1.5, 2, 1])
-        let result = SpatialWallFootModel.readFeet(frames: [frame],
-            directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), surfaces: footScene())
-        XCTAssertEqual(result.checkedPhotos, 0)
-        XCTAssertEqual(result.unreadablePhotos, 1)
-        XCTAssertTrue(result.lines.isEmpty)
-        XCTAssertTrue(result.caption.contains("未能核对"))
-        XCTAssertFalse(result.caption.contains("未确认墙根延伸"))
-    }
-
-    func testWallFootPartialFailureKeepsUnknownVisible() {
-        let result = SpatialWallFootResult(checkedPhotos: 2, unreadablePhotos: 1, invalidCameras: 1)
-        XCTAssertTrue(result.caption.contains("未确认墙根延伸"))
-        XCTAssertTrue(result.caption.contains("2 张未能核对"))
-        XCTAssertTrue(result.caption.contains("重试"))
-        XCTAssertTrue(SpatialWallFootResult(invalidCameras: 2).caption.contains("重新扫描"))
-        let noReference = SpatialWallFootModel.readFeet(frames: [], directory: FileManager.default.temporaryDirectory, surfaces: [])
-        XCTAssertFalse(noReference.hasReferenceSurfaces)
-        XCTAssertTrue(noReference.caption.contains("还缺少"))
-    }
-
-    func testTwoPhotosExtendTheWallFootAndDoNotCoverTheMeasuredSpan() throws {
-        let surfaces = footScene()
-        let contacts = stride(from: Float(1.55), through: 2.1, by: 0.1).flatMap { x in
-            [
-                SpatialPlaneGrouping.FloorContact(point: SpatialPoint(x: x, y: 0, z: 0), camera: SpatialPoint(x: 0.2, y: 1.5, z: 2)),
-                SpatialPlaneGrouping.FloorContact(point: SpatialPoint(x: x, y: 0, z: 0), camera: SpatialPoint(x: 1.4, y: 1.5, z: 2.2))
-            ]
-        }
-        let inferred = SpatialPlaneGrouping.inferredWallFeet(surfaces: surfaces, contacts: contacts)
-        XCTAssertEqual(inferred.count, 1)
-        let xs = inferred.flatMap { [$0.start.x, $0.end.x] }.sorted()
-        XCTAssertEqual(xs.count, 2)
-        XCTAssertGreaterThan(xs[0], 1.45)
-        XCTAssertEqual(xs[1], 2.1, accuracy: 0.08)
-        XCTAssertEqual(inferred[0].role, "inferred")
-        let walls = SpatialPlaneGrouping.wallLines(surfaces: surfaces)
-        let seen = floorEdge(at: SIMD3(1.2, 1.5, 2), target: SIMD3(1.7, 0, 0), from: SIMD3(1.55, 0, 0), to: SIMD3(1.75, 0, 0), walls: walls)
-        XCTAssertEqual(seen.count, 2)
-    }
-
-    func testOnePhotoDoesNotExtendTheWall() {
-        let surfaces = footScene()
-        let contacts = stride(from: Float(1.55), through: 2.1, by: 0.1).map { x in
-            SpatialPlaneGrouping.FloorContact(point: SpatialPoint(x: x, y: 0, z: 0), camera: SpatialPoint(x: 0.2, y: 1.5, z: 2))
-        }
-        XCTAssertTrue(SpatialPlaneGrouping.inferredWallFeet(surfaces: surfaces, contacts: contacts).isEmpty)
-    }
-
-    func testAFootFarFromTheMeasuredWallIsNotAttached() {
-        let surfaces = footScene()
-        let first = SpatialPlaneGrouping.FloorContact(point: SpatialPoint(x: 5, y: 0, z: 0), camera: SpatialPoint(x: 4, y: 1.5, z: 2))
-        let second = SpatialPlaneGrouping.FloorContact(point: SpatialPoint(x: 5.2, y: 0, z: 0), camera: SpatialPoint(x: 6, y: 1.5, z: 2))
-        XCTAssertTrue(SpatialPlaneGrouping.inferredWallFeet(surfaces: surfaces, contacts: [first, second, first, second]).isEmpty)
-    }
-
-    func testAnEdgeOffTheWallAndAVerticalEdgeDoNotCount() throws {
-        let surfaces = footScene()
-        let walls = SpatialPlaneGrouping.wallLines(surfaces: surfaces)
-        let pose = SIMD3<Float>(1.2, 1.5, 2)
-        let target = SIMD3<Float>(1.8, 0, 0)
-        XCTAssertTrue(floorEdge(at: pose, target: target, from: SIMD3(1.6, 0, 0.5), to: SIMD3(2.2, 0, 0.5), walls: walls).isEmpty)
-        XCTAssertTrue(floorEdge(at: pose, target: target, from: SIMD3(1.8, 0.2, 0), to: SIMD3(1.8, 1.3, 0), walls: walls).isEmpty)
-    }
-
-    func testAContinuousFloorEdgeOnTheProjectedLineIsKept() throws {
-        let surfaces = footScene()
-        let walls = SpatialPlaneGrouping.wallLines(surfaces: surfaces)
-        let nearPose = SIMD3<Float>(0.6, 1.5, 2)
-        let farPose = SIMD3<Float>(1.8, 1.5, 2.2)
-        let near = try XCTUnwrap(lookingCamera(at: nearPose, target: SIMD3(1.9, 0, 0)))
-        let far = try XCTUnwrap(lookingCamera(at: farPose, target: SIMD3(1.9, 0, 0)))
-        let contacts = paintedFoot(camera: near, pose: nearPose, walls: walls) + paintedFoot(camera: far, pose: farPose, walls: walls)
-        let inferred = SpatialPlaneGrouping.inferredWallFeet(surfaces: surfaces, contacts: contacts)
-        XCTAssertEqual(inferred.count, 1)
-        let xs = inferred.flatMap { [$0.start.x, $0.end.x] }
-        XCTAssertGreaterThan(xs.min() ?? 0, 1.4)
-        XCTAssertGreaterThan(xs.max() ?? 0, 1.9)
-    }
-
-    private func footScene() -> [SpatialSurface] {
-        [
-            quad("wall", x0: 0, x1: 1.5, y0: 0, y1: 2, z: 0),
-            SpatialSurface(id: "floor", kind: "horizontal", vertices: [
-                SpatialPoint(x: -1, y: 0, z: -1), SpatialPoint(x: 3, y: 0, z: -1),
-                SpatialPoint(x: 3, y: 0, z: 2), SpatialPoint(x: -1, y: 0, z: 2)
-            ], epoch: 1)
-        ]
-    }
-
-    private func cameraMatrix(at position: SIMD3<Float>, target: SIMD3<Float>) -> [Float] {
-        let look = simd_normalize(target - position)
-        let zAxis = -look
-        let xAxis = simd_normalize(simd_cross(look, SIMD3(0, 1, 0)))
-        let yAxis = simd_cross(zAxis, xAxis)
-        return [
-            xAxis.x, xAxis.y, xAxis.z, 0,
-            yAxis.x, yAxis.y, yAxis.z, 0,
-            zAxis.x, zAxis.y, zAxis.z, 0,
-            position.x, position.y, position.z, 1
-        ]
-    }
-
-    private func lookingCamera(at position: SIMD3<Float>, target: SIMD3<Float> = SIMD3(1, 0, 0)) -> SpatialProjectiveTexturing.Camera? {
-        let intrinsics: [Float] = [700, 0, 0, 0, 700, 0, 400, 300, 1]
-        return SpatialProjectiveTexturing.Camera(SpatialKeyframe(
-            id: "cam", time: 0,
-            pose: SpatialPose(time: 0, position: SpatialPoint(x: position.x, y: position.y, z: position.z), forward: SpatialPoint(x: 0, y: 0, z: -1), epoch: 0),
-            intrinsics: intrinsics, width: 800, height: 600, imageFile: "",
-            cameraToWorld: cameraMatrix(at: position, target: target)))
-    }
-
-    private func floorEdge(at position: SIMD3<Float>, target: SIMD3<Float>, from: SIMD3<Float>, to: SIMD3<Float>, walls: [SpatialPlaneGrouping.WallLine]) -> [SpatialPlaneGrouping.FloorContact] {
-        let cameraToWorld = cameraMatrix(at: position, target: target)
-        guard let camera = lookingCamera(at: position, target: target),
-              let a = camera.project(from), let b = camera.project(to) else { return [] }
-        let intrinsics: [Float] = [700, 0, 0, 0, 700, 0, 400, 300, 1]
-        return SpatialPlaneGrouping.floorContacts(segment: SpatialPlaneGrouping.GroundSegment(
-            cameraToWorld: cameraToWorld, intrinsics: intrinsics, width: 800, height: 600,
-            x1: a.x * 800, y1: a.y * 600, x2: b.x * 800, y2: b.y * 600), floorY: 0, walls: walls)
-    }
-
-    private func paintedFoot(camera: SpatialProjectiveTexturing.Camera, pose: SIMD3<Float>, walls: [SpatialPlaneGrouping.WallLine]) -> [SpatialPlaneGrouping.FloorContact] {
-        guard let a = camera.project(SIMD3(1.5, 0, 0)), let b = camera.project(SIMD3(2.3, 0, 0)) else { return [] }
-        let start = SIMD2(a.x * 800, a.y * 600)
-        let end = SIMD2(b.x * 800, b.y * 600)
-        let delta = end - start
-        let length = simd_length(delta)
-        guard length > 1 else { return [] }
-        let direction = delta / length
-        let across = SIMD2(-direction.y, direction.x)
-        var gray = [UInt8](repeating: 128, count: 800 * 600)
-        for y in 0..<600 {
-            for x in 0..<800 {
-                let pixel = SIMD2(Float(x), Float(y))
-                let along = simd_dot(pixel - start, direction)
-                let side = simd_dot(pixel - start, across)
-                gray[y * 800 + x] = (along >= -8 && along <= length + 8) ? (side >= 0 ? 255 : 0) : 128
-            }
-        }
-        return SpatialWallFootFinder.contacts(gray: gray, width: 800, height: 600, camera: camera, floorY: 0, walls: walls)
     }
 
     private func upright(_ id: String, z0: Float, z1: Float, x: Float) -> SpatialSurface {

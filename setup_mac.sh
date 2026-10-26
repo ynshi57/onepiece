@@ -28,7 +28,7 @@
 #   --with-spatial-grounding  install official Grounding DINO model + memory runtime (optional CPU research)
 #   --with-spatial-memory  install isolated offline semantic-observation research packages (optional)
 #   --with-spatial-geometry  install pinned CPU geometric diagnosis tools (optional, Python 3.10-3.12)
-#   --with-depth  also install the optional DepthAnythingV2 Core ML model
+#   --with-depth  install/compile the optional pinned DepthAnythingV2 model (also with --skip-models)
 #   --hf-mirror   route Hugging Face downloads through https://hf-mirror.com
 #                 (or honor a pre-set HF_ENDPOINT)
 
@@ -325,17 +325,6 @@ profile_models() {
     fi
   fi
 
-  if [ "${WITH_DEPTH}" = "1" ]; then
-    log "安装可选深度模型 DepthAnythingV2"
-    if bash deploy/ios/install_depth_anything_v2_small.sh; then
-      add_summary "OK|models|深度模型已安装"
-    else
-      add_summary "FAIL|models|深度模型安装失败（网络/HF）"
-    fi
-  else
-    add_summary "SKIP|models|深度模型（加 --with-depth 才装）"
-  fi
-
   add_summary "INFO|models|服务器 ONNX 预测器可选：pip install -r server-vqa/requirements-predictor.txt + 放模型到 server-vqa/models/"
   # 角色可通行分割（N=5 多类，行人=人行道 / 机动车=马路+车道）：候选模型，
   # 尚未 bundle 进 App（等 H 打包）。训练是数小时级 CPU 任务，不作默认安装；
@@ -470,6 +459,17 @@ if [ "${DO_CORE}" = 1 ];   then profile_core   || warn "core profile 有失败�
 if [ "${DO_MODELS}" = 1 ]; then profile_models || warn "models profile 有失败项（见摘要）"; fi
 if [ "${DO_QWEN}" = 1 ];   then profile_qwen   || warn "qwen profile 有失败项（见摘要）"; fi
 if [ "${DO_IOS}" = 1 ];    then profile_ios    || warn "ios profile 有失败项（见摘要）"; fi
+
+# Explicit opt-in remains independent of the general models conversion profile.
+if [ "${WITH_DEPTH}" = 1 ]; then
+  if bash deploy/ios/install_depth_anything_v2_small.sh; then
+    add_summary "OK|depth|固定官方Small F16身份、Apache许可与Core ML编译已核验；OptionalModelResources自动打包，输出仅相对深度"
+  else
+    add_summary "FAIL|depth|需完整Xcode/curl/官方网络；运行 bash deploy/ios/install_depth_anything_v2_small.sh 修复，--check可离线检查"
+  fi
+else
+  add_summary "SKIP|depth|可选端侧学习深度，使用 --with-depth 安装；缺模型时App明确不可用"
+fi
 
 if [ "${WITH_SPATIAL_GEOMETRY}" = 1 ]; then
   if ensure_venv && python -c 'import sys; assert (3,10) <= sys.version_info[:2] <= (3,12), "spatial-geometry requires Python 3.10-3.12"' && python -m pip install -r server-vqa/requirements-spatial-geometry.txt && python -c 'import numpy, scipy, pycolmap; from scipy.optimize import least_squares; r=least_squares(lambda x: x-2., [0.], bounds=([-3.],[3.])); assert r.success and abs(r.x[0]-2.) < 1e-6; print("Geometry runtime", numpy.__version__, scipy.__version__, pycolmap.__version__)'; then

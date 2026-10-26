@@ -1,0 +1,17 @@
+Depth Anything V2 Small — Apple Core ML F16 distribution
+
+Original model: Depth Anything V2, Lihe Yang et al.
+Original project: https://github.com/DepthAnything/Depth-Anything-V2
+Small model license: Apache License, Version 2.0 (complete text accompanies this file).
+Apple Core ML model: https://huggingface.co/apple/coreml-depth-anything-v2-small
+Pinned revision: cfef6f6f2a70783dedc0bfae40cecbc2052285d3
+Selected variant: DepthAnythingV2SmallF16.mlpackage
+
+VQASee installs the published Core ML package and compiles it with Apple's
+coremlcompiler; it does not retrain or modify the published learned weights.
+The compiled model remains subject to the upstream Apache-2.0 terms.
+The upstream model metadata attribution and license are retained in the compiled model.
+
+This model estimates relative depth; its output is not calibrated metric distance.
+Glass and mirror surface distances are not established by background predictions.
+This notice does not claim measured accuracy, safety, or real-time performance.

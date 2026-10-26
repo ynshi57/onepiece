@@ -3,6 +3,22 @@ import simd
 @testable import VQASee
 
 final class SpatialObservationGeometryTests: XCTestCase {
+    func testPreparedCameraExactlyMatchesFrameGeometryAndRejectsBadCalibration() throws {
+        let source=frame(x:0.3,rotation:0.21)
+        let prepared=try XCTUnwrap(SpatialObservationGeometry.prepareCamera(frame:source))
+        for pixel:[Float] in [[0,0],[0.23,0.71],[0.5,0.5],[1,1]] {
+            let direct=try XCTUnwrap(SpatialObservationGeometry.bearing(pixel:pixel,frame:source))
+            let cached=try XCTUnwrap(SpatialObservationGeometry.bearing(pixel:pixel,camera:prepared))
+            XCTAssertEqual(direct.origin,cached.origin);XCTAssertEqual(direct.direction,cached.direction)
+        }
+        for p in [SpatialPoint(x:0,y:0,z:-2),SpatialPoint(x:1,y:-0.3,z:-4)] {
+            let direct=try XCTUnwrap(SpatialObservationGeometry.project(position:p,frame:source))
+            let cached=try XCTUnwrap(SpatialObservationGeometry.project(position:p,camera:prepared))
+            XCTAssertEqual(direct.pixel,cached.pixel);XCTAssertEqual(direct.depth,cached.depth)
+        }
+        var invalid=source;invalid.intrinsics[0]=0
+        XCTAssertNil(SpatialObservationGeometry.prepareCamera(frame:invalid))
+    }
     private func frame(x: Float = 0, rotation: Float = 0, epoch: Int = 0) -> SpatialKeyframe {
         let r = simd_float4x4(simd_quatf(angle:rotation,axis:SIMD3(0,1,0)))
         var t = r; t.columns.3 = SIMD4(x,0,0,1)
@@ -27,6 +43,28 @@ final class SpatialObservationGeometryTests: XCTestCase {
         XCTAssertEqual(restored, result)
         XCTAssertEqual(restored.cycleErrorPixels,0.2)
     }
+    func testRotationHomographyMatchesNativeProjectionAndResizeCentres() throws {
+        let source = frame(), target = frame(rotation:0.18)
+        let h = try XCTUnwrap(SpatialObservationGeometry.rotationHomography(source:source,target:target))
+        let p = SIMD3<Float>(0.2,0.3,-3)
+        let a = pixel(p,in:source), b = pixel(p,in:target)
+        let native = SIMD2(a[0]*1000,a[1]*800)
+        let projected = try XCTUnwrap(SpatialObservationGeometry.mapPixel(native,homography:h))
+        XCTAssertEqual(projected.x,b[0]*1000,accuracy:0.001)
+        XCTAssertEqual(projected.y,b[1]*800,accuracy:0.001)
+        let resize = try XCTUnwrap(SpatialObservationGeometry.resizePixelTransform(nativeWidth:1000,nativeHeight:800,width:384,height:307))
+        let work = try XCTUnwrap(SpatialObservationGeometry.mapPixel(native,homography:resize))
+        let compensated = try XCTUnwrap(SpatialObservationGeometry.mapPixel(work,homography:resize*h*resize.inverse))
+        let restored = try XCTUnwrap(SpatialObservationGeometry.mapPixel(compensated,homography:resize.inverse))
+        XCTAssertEqual(restored.x,projected.x,accuracy:0.001)
+        XCTAssertEqual(restored.y,projected.y,accuracy:0.001)
+        let half = try XCTUnwrap(SpatialObservationGeometry.resizePixelTransform(nativeWidth:1000,nativeHeight:800,width:500,height:400))
+        let centre = try XCTUnwrap(SpatialObservationGeometry.mapPixel(SIMD2<Float>(20.5,30.5),homography:half))
+        XCTAssertEqual(centre.x,10,accuracy:0.00001)
+        XCTAssertEqual(centre.y,15,accuracy:0.00001)
+        XCTAssertNil(SpatialObservationGeometry.rotationHomography(source:source,target:frame(epoch:1)))
+    }
+
     func testBearingUsesNativeTopLeftAxes() throws {
         let ray = try XCTUnwrap(SpatialObservationGeometry.bearing(pixel:[0.43,0.3875],frame:frame()))
         XCTAssertEqual(ray.direction.z,-1,accuracy:0.00001)
@@ -47,6 +85,16 @@ final class SpatialObservationGeometryTests: XCTestCase {
         XCTAssertNil(SpatialObservationGeometry.bearing(pixel:[0.5,0.5],frame:bad))
         XCTAssertNil(SpatialObservationGeometry.bearing(pixel:[Float.nan,0.5],frame:a))
     }
+    func testTriangulationDiagnosticNamesOriginalGates() {
+        let a = frame(), b = frame(x:0.5)
+        let m = SpatialImageMatch(sourcePixel:[0.43,0.3875],targetPixel:[0.3,0.3875],cycleErrorPixels:0)
+        XCTAssertEqual(SpatialObservationGeometry.diagnoseTriangulation(m,source:a,target:frame(epoch:1)).failure,.sourceEpoch)
+        var cycle = m; cycle.cycleErrorPixels = 2
+        XCTAssertEqual(SpatialObservationGeometry.diagnoseTriangulation(cycle,source:a,target:b).failure,.invalidCycle)
+        let parallel = SpatialImageMatch(sourcePixel:m.sourcePixel,targetPixel:m.sourcePixel,cycleErrorPixels:0)
+        XCTAssertEqual(SpatialObservationGeometry.diagnoseTriangulation(parallel,source:a,target:b).failure,.lowParallax)
+    }
+
     func testRejectsBehindAndDistantIntersection() {
         let a = frame(), b = frame(x:0.5)
         for p in [SIMD3<Float>(0,0,3),SIMD3<Float>(0,0,-30)] {

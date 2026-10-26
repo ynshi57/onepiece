@@ -4,6 +4,7 @@ import Combine
 import CoreImage
 import Foundation
 import UIKit
+import ImageIO
 
 /// High-frequency live values are isolated from the large persisted document.
 /// A live pose is always an actual ARKit observation, never an interpolation.
@@ -67,10 +68,16 @@ nonisolated struct SpatialRestorationUpdateEvidence {
 final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate {
     let livePose = SpatialLivePoseState()
     @Published var document = SpatialScanDocument()
+    #if DEBUG
+    @Published private(set) var structureP0Preview: (mapURL:URL?, message:String)?
+    #endif
     @Published var status = "点击开始，移动手机观察墙面和地面"
     @Published var isScanning = false
     @Published private(set) var captureGuidance = SpatialCaptureGuidance.State.start
+    @Published private(set) var captureSummary: String?
+    @Published private(set) var coachMuted = UserDefaults.standard.bool(forKey: SpatialScanCoachSpeech.mutedKey)
     private var guidance = SpatialCaptureGuidance()
+    private let coach = SpatialScanCoachSpeech()
     @Published var error: String?
     @Published var saved: [SpatialScanDocument] = []
     @Published var exportURL: URL?
@@ -199,7 +206,9 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
     @Published private(set) var isCapturingMap = false
     private var committedDocument: SpatialScanDocument?
 
-    var keyframeDirectory: URL { store.scanDirectoryURL(document.id) }
+    var keyframeDirectory: URL {
+        return store.scanDirectoryURL(document.id)
+    }
 
     var hasUnsavedChanges: Bool {
         // Failed startup status/events alone have no captured data to save.
@@ -208,11 +217,11 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
         return true
     }
 
-    private func permitReplacement() -> Bool {
+    private func permitReplacement(discardUnsaved: Bool = false) -> Bool {
         guard !encoding, !isArchivingObjects, !isAnalyzingIndoorSemantics, !isSaving, !isFinishingAndSaving, !starting, !isCapturingMap, !isAnalyzingObjects, !isLocatingObjects else {
             error = "正在处理扫描，请稍候再操作"; return false
         }
-        guard !hasUnsavedChanges else {
+        guard discardUnsaved || !hasUnsavedChanges else {
             error = "本次新增内容尚未保存，请先结束并保存"; return false
         }
         return true
@@ -425,7 +434,8 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
                     let url = URL.cachesDirectory.appendingPathComponent("SpatialMetadataPreview.json")
                     let data = try Data(contentsOf: url)
                     document = try JSONDecoder().decode(SpatialScanDocument.self, from: data)
-                    status = "结构回放（未载入照片）"
+                    status = document.events.contains("synthetic_scene_publication_fixture")
+                        ? "合成发布示例（非实测）" : "结构回放（未载入照片）"
                 } catch {
                     self.error = "结构回放读取失败：\(error.localizedDescription)"
                 }
@@ -436,6 +446,18 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
             catch { self.error = "未保存扫描清理失败：\(error.localizedDescription)" }
             await refreshSaved()
             #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-spatial-structure-vector-verify") {
+                await runStructureVectorVerification(); return
+            }
+            if ProcessInfo.processInfo.arguments.contains("-spatial-saved-preview-verify") {
+                if let latest = saved.filter({ !$0.keyframes.isEmpty }).max(by:{ $0.createdAt < $1.createdAt }) {
+                    load(latest)
+                    status = "已打开保存的空间预览"
+                } else {
+                    error = "没有可预览的已保存扫描"
+                }
+                return
+            }
             if ProcessInfo.processInfo.arguments.contains("-spatial-indoor-render-verify") {
                 guard let scan = saved.first(where: { !$0.keyframes.isEmpty }) else {
                     error = "没有可核对的扫描"
@@ -465,6 +487,9 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
                               "forwardMedianPixels": result.forwardMedianPixels, "reverseMedianPixels": result.reverseMedianPixels,
                               "forwardMatchCount": result.forwardMatchCount, "reverseMatchCount": result.reverseMatchCount,
                               "triangulatedSupportCount": result.triangulatedSupportCount, "medianDepthErrorMeters": result.medianDepthErrorMeters,
+                              "depthGridCandidateCount":result.depthGridCandidateCount,"depthGridValidCount":result.depthGridValidCount,
+                              "depthGridReasonCounts":result.depthGridReasonCounts,"depthGridTriangulatedCount":result.depthGridTriangulatedCount,
+                              "depthGridMedianDepthErrorMeters":result.depthGridMedianDepthErrorMeters,
                               "scope": "synthetic translation only; no private photo or metric accuracy claim"]
                 } catch {
                     report = ["status": "failed", "failure": String(describing: error),
@@ -493,8 +518,12 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
     }
 
     func start() {
+        start(discardUnsaved: false)
+    }
+
+    func start(discardUnsaved: Bool) {
         guard !isAnalyzingIndoorSemantics, !isAnalyzingObjects, !isLocatingObjects else { error = "请等待照片识别完成"; return }
-        guard permitReplacement() else { return }
+        guard permitReplacement(discardUnsaved: discardUnsaved) else { return }
         guard !encoding, !isArchivingObjects, !isAnalyzingIndoorSemantics, !isAnalyzingObjects, !isLocatingObjects, !isScanning, !starting, !isCapturingMap, !isSaving, !isFinishingAndSaving else { return }
         guard ARWorldTrackingConfiguration.isSupported else {
             error = "当前设备无法进行空间扫描；可查看已保存的空间"
@@ -531,8 +560,10 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
             generation = UUID()
             restoreEvidence.reset(generation: generation)
             lastPoseTime = -.infinity
+            coach.stop()
             guidance.reset()
             captureGuidance = .start
+            captureSummary = nil
             lastKeyframeTime = -.infinity
             error = nil
             exportURL = nil
@@ -552,6 +583,12 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
             document.events.append("started_rgb_imu_no_depth")
             recordTrackingEvent(.started)
         }
+    }
+
+    func setCoachMuted(_ muted: Bool) {
+        coach.isMuted = muted
+        if muted { coach.stop() }
+        if coachMuted != muted { coachMuted = muted }
     }
 
     func stop() {
@@ -609,8 +646,12 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
             if wasScanning, document.worldMap == nil { error = "地图尚未建立充分；可保存照片和轨迹，但不能恢复定位" }
         }
         if isScanning {
+            let summary = guidance.completionMessage()
+            captureSummary = summary
             document.events.append("stopped")
+            document.events.append("guidance:complete")
             recordTrackingEvent(.stopped)
+            coach.announceCompletion(summary)
         }
         isScanning = false
         pumpArchiveObjects()
@@ -619,12 +660,13 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
     }
 
     func clear() {
-        guard permitReplacement() else { return }
+        guard permitReplacement(discardUnsaved: true) else { return }
         stop()
         generation = UUID(); restoreEvidence.reset(generation: generation); isCapturingMap = false; pendingMapData = nil
         session.pause()
         let oldID = document.id
-        if !saved.contains(where: { $0.id == oldID }) {
+        let keepSavedCopy = committedDocument?.id == oldID || saved.contains(where: { $0.id == oldID })
+        if !keepSavedCopy {
             Task {
                 do { try await store.delete(id: oldID) }
                 catch { self.error = "未保存照片清理失败：\(error.localizedDescription)" }
@@ -634,9 +676,19 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
         archiveGeneration = UUID()
         archiveFrameIDs.removeAll(); requiresSemanticReconciliation = false; indoorSemanticCompleted = 0; indoorAnalysisBegan = nil
         pendingKeyframeFailure = nil
+        coach.stop()
+        guidance.reset()
+        captureGuidance = .start
+        captureSummary = nil
+        committedDocument = nil
+        livePose.clear()
+        resetLiveObjects(scanning: false)
         document = SpatialScanDocument()
         exportURL = nil
         error = nil
+        interrupted = false
+        lastPoseTime = -.infinity
+        lastKeyframeTime = -.infinity
         status = "点击开始，建立新的空间"
     }
 
@@ -685,6 +737,60 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
     }
 
     #if DEBUG
+    /// Measures preparation and verifies persistence of the same structure revision; no image-model inference.
+    private func runStructureVectorVerification() async {
+        let began=ProcessInfo.processInfo.systemUptime,runID=UUID()
+        let reportURL=store.baseURL.appendingPathComponent("structure-vector-check.json")
+        let imageURL=store.baseURL.appendingPathComponent("structure-vector-top.png")
+        structureP0Preview=(nil,"正在核对结构矢量；尚非完整房间地图")
+        do {
+            if FileManager.default.fileExists(atPath:imageURL.path) {try FileManager.default.removeItem(at:imageURL)}
+            let args=ProcessInfo.processInfo.arguments
+            let metadataOnly=args.contains("-spatial-vector-metadata-only")
+            let scan:SpatialScanDocument
+            if metadataOnly {
+                scan=try JSONDecoder().decode(SpatialScanDocument.self,from:Data(contentsOf:URL.cachesDirectory.appendingPathComponent("SpatialMetadataPreview.json")))
+            } else {
+                guard let index=args.firstIndex(of:"-spatial-verification-scan-id"),args.indices.contains(index+1),
+                      let id=UUID(uuidString:args[index+1]),let selected=saved.first(where:{$0.id == id}) else {throw CocoaError(.fileReadNoSuchFile)}
+                scan=selected
+            }
+            let snapshotStart=ProcessInfo.processInfo.systemUptime
+            let snapshot=try await SpatialStructureSnapshotCache.shared.snapshot(for:scan)
+            let snapshotSeconds=ProcessInfo.processInfo.systemUptime-snapshotStart
+            var updated=scan;updated.structureSnapshot=snapshot
+            let saveStart=ProcessInfo.processInfo.systemUptime
+            let restored:SpatialScanDocument
+            if metadataOnly {
+                restored=try JSONDecoder().decode(SpatialScanDocument.self,from:JSONEncoder().encode(updated))
+            } else {
+                try await store.save(updated)
+                restored=try await store.load(id:scan.id)
+            }
+            guard restored.structureSnapshot == snapshot else {throw NSError(domain:"StructureRevision",code:1,userInfo:[NSLocalizedDescriptionKey:"保存回读的结构版本不一致"])}
+            let persistenceSeconds=ProcessInfo.processInfo.systemUptime-saveStart
+            document=restored
+            if let i=saved.firstIndex(where:{$0.id == restored.id}) {saved[i]=restored}
+            let map=snapshot.map
+            let renderStart=ProcessInfo.processInfo.systemUptime
+            try SpatialStructureP0Renderer.top(map:map,document:restored,output:imageURL)
+            let renderSeconds=ProcessInfo.processInfo.systemUptime-renderStart
+            let receipt=SpatialStructureP0Receipt(scanID:map.scanID,epoch:map.epoch,structureRevision:map.revision,keyframeIDs:map.frameIDs,corners:map.corners,floorRegions:map.floorRegions,wallSegments:map.wallSegments,tapeSegments:map.wallSegments.map {.init(wallSegmentID:$0.id,measuredMeters:nil,note:"独立测量未提供；候选跨度不是实测墙长")},builderMessage:map.quality.message,quality:map.quality,sourceSurfaceIDs:map.sourceSurfaceIDs,gaps:map.gaps,rejectedCornerCandidates:map.rejectedCornerCandidates)
+            let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
+            var report=SpatialStructureVectorVerificationReport(runID:runID,map:map,receipt:receipt,inputSignature:snapshot.inputSignature,sourceFrameCount:scan.keyframes.count,snapshotSeconds:snapshotSeconds,persistenceRoundTripSeconds:persistenceSeconds,renderSeconds:renderSeconds,previewPreparationSeconds:ProcessInfo.processInfo.systemUptime-began,persistedRoundTripEqual:!metadataOnly)
+            if metadataOnly {report.metadataCodingRoundTripSeconds=persistenceSeconds;report.persistenceRoundTripSeconds=0;report.meaning="Real metadata replay only; Codable round trip checked. Archive persistence and photo availability NOT verified. Timings exclude camera, inference and first UI presentation."}
+            report.floorRegionSummaries=map.floorRegions.map {.init(id:$0.id,outerVertexCount:$0.outerRing.count,holeCount:$0.holes.count,areaMeters2:$0.areaMeters2,closedByExistingEdges:true)}
+            try encoder.encode(report).write(to:reportURL,options:[.atomic,.completeFileProtection])
+            structureP0Preview=(imageURL,"结构未完成 · 墙段\(map.wallSegments.count) · 地面闭环\(map.floorRegions.count) · revision \(map.revision) · \(metadataOnly ? "仅metadata回放，未验证存档" : "已保存回读")")
+            status="结构矢量核对结束，完整房间尚未重建"
+        } catch {
+            self.error="结构矢量核对失败：\(error.localizedDescription)"
+            structureP0Preview=(nil,self.error ?? "结构矢量核对失败")
+            let failure:[String:Any]=["runID":runID.uuidString,"state":"incomplete","status":"failed","failure":String(describing:error),"elapsedSeconds":ProcessInfo.processInfo.systemUptime-began]
+            if let data=try? JSONSerialization.data(withJSONObject:failure,options:.sortedKeys) {try? data.write(to:reportURL,options:.atomic)}
+        }
+    }
+
     private func renderIndoorVerification() async {
         let rows = document.indoorSemanticObservations ?? []
         let chosen = await Task.detached(priority: .utility) {
@@ -999,7 +1105,7 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
                 lastRestoreDiagnosticTime = -.infinity; lastRestoreDiagnosticState = ""
                 epoch = max(epoch, document.poses.map(\.epoch).max() ?? 0) + 1
                 generation = UUID(); restoreEvidence.reset(generation: generation); interrupted = false; lastPoseTime = -.infinity; lastKeyframeTime = -.infinity
-                guidance.reset(); error = nil
+                coach.stop(); guidance.reset(); captureGuidance = .start; captureSummary = nil; error = nil
                 document.relocalizationEvents = document.relocalizationEvents ?? []
                 document.relocalizationEvents?.append(SpatialRelocalizationEvent(time: ProcessInfo.processInfo.systemUptime, state: "requested", sourceEpoch: reference.referenceEpoch, newEpoch: epoch))
                 let config = ARWorldTrackingConfiguration()
@@ -1010,7 +1116,7 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
                 isRestoring = true; isScanning = true; beginPerformanceMeasurement(); restoreStarted = ProcessInfo.processInfo.systemUptime
                 session.run(config, options: [.resetTracking, .removeExistingAnchors])
                 schedulePhotometricLock()
-                status = "对准原来的墙角，缓慢侧移；正在核对空间"
+                status = "对准原来的墙角，缓慢移动；正在核对空间"
                 persistRestorationDiagnostic(nil)
             } catch { self.error = "无法恢复定位地图：\(error.localizedDescription)；原记录保留" }
         }
@@ -1197,7 +1303,7 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
             recordFrameState(frame)
             let message: String
             switch reason {
-            case .initializing: message = "正在建立定位，请缓慢横向移动"
+            case .initializing: message = "正在建立定位，请缓慢移动"
             case .excessiveMotion: message = "移动过快，请放慢"
             case .insufficientFeatures: message = "画面纹理不足，请对准墙角或有纹理的位置"
             case .relocalizing: message = "正在恢复定位，轨迹暂不连接"
@@ -1214,8 +1320,8 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
         submitLiveObjects(frame)
         guard frame.timestamp - lastPoseTime >= 0.1 else { return }
         lastPoseTime = frame.timestamp
-        let nextGuidance = guidance.update(pose)
-        if captureGuidance != nextGuidance { captureGuidance = nextGuidance }
+        applyGuidance(SpatialCaptureGuidance.Observation(time: frame.timestamp, pose: pose, tracking: .normal,
+            planes: guidancePlanes(in: frame)))
         if SpatialScanGeometry.shouldSample(previous: document.poses.last, candidate: pose,
             minimumDistance: 0.02, minimumAngle: .pi / 90, maximumInterval: 0.2) { document.poses.append(pose) }
         if document.poses.count >= 12_000 {
@@ -1236,8 +1342,7 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
         }
         livePose.clear()
         if status != message { status = message }
-        guidance.reset()
-        captureGuidance = .trackingUnavailable
+        applyTrackingGuidance(frame)
         if !interrupted {
             cancelLiveSemantics()
             document.events.append("tracking_gap:\(message)")
@@ -1295,11 +1400,78 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
         if geometryChanged { requestLiveSemantics() }
     }
 
+    private func applyGuidance(_ observation: SpatialCaptureGuidance.Observation) {
+        let next = guidance.update(observation)
+        guard captureGuidance != next else { return }
+        captureGuidance = next
+        document.events.append(next.eventName)
+        if isScanning { coach.announce(next) }
+    }
+
+    private func applyTrackingGuidance(_ frame: ARFrame?) {
+        let tracking: SpatialCaptureGuidance.Tracking
+        if let frame {
+            switch frame.camera.trackingState {
+            case .normal: tracking = .normal
+            case .notAvailable: tracking = .unavailable
+            case .limited(let reason):
+                switch reason {
+                case .excessiveMotion: tracking = .excessiveMotion
+                case .insufficientFeatures: tracking = .insufficientFeatures
+                case .initializing: tracking = .initializing
+                case .relocalizing: tracking = .relocalizing
+                @unknown default: tracking = .unavailable
+                }
+            @unknown default: tracking = .unavailable
+            }
+        } else {
+            tracking = .unavailable
+        }
+        let pose: SpatialPose
+        if let frame {
+            let t = frame.camera.transform
+            pose = SpatialPose(time: frame.timestamp,
+                position: SpatialPoint(x: t.columns.3.x, y: t.columns.3.y, z: t.columns.3.z),
+                forward: SpatialPoint(x: -t.columns.2.x, y: -t.columns.2.y, z: -t.columns.2.z), epoch: epoch)
+        } else {
+            pose = document.poses.last ?? SpatialPose(time: ProcessInfo.processInfo.systemUptime,
+                position: SpatialPoint(x: 0, y: 0, z: 0), forward: SpatialPoint(x: 0, y: 0, z: -1), epoch: epoch)
+        }
+        applyGuidance(SpatialCaptureGuidance.Observation(time: pose.time, pose: pose, tracking: tracking, planes: []))
+    }
+
+    private func guidancePlanes(in frame: ARFrame) -> [SpatialCaptureGuidance.Plane] {
+        document.surfaces.map { surface in
+            let ys = surface.vertices.map(\.y)
+            let height = (ys.max() ?? 0) - (ys.min() ?? 0)
+            let count = Float(max(surface.vertices.count, 1))
+            let cx = surface.vertices.map(\.x).reduce(0, +) / count
+            let cz = surface.vertices.map(\.z).reduce(0, +) / count
+            return SpatialCaptureGuidance.Plane(
+                id: surface.id,
+                kind: surface.kind,
+                height: height,
+                centroidX: cx,
+                centroidZ: cz,
+                extent: SpatialScanGeometry.observedBoundarySpan(surface) ?? height,
+                inView: worldPointsIntersectCamera(surface.vertices, frame: frame))
+        }
+    }
+
     private func planeIntersectsCamera(_ plane: ARPlaneAnchor, frame: ARFrame) -> Bool {
+        let vertices = (0..<plane.geometry.boundaryVertices.count).map { index -> SpatialPoint in
+            let v = plane.geometry.boundaryVertices[index]
+            let world = plane.transform * SIMD4<Float>(v.x, v.y, v.z, 1)
+            return SpatialPoint(x: world.x, y: world.y, z: world.z)
+        }
+        return worldPointsIntersectCamera(vertices, frame: frame)
+    }
+
+    private func worldPointsIntersectCamera(_ vertices: [SpatialPoint], frame: ARFrame) -> Bool {
         let worldToCamera = simd_inverse(frame.camera.transform)
         let k = frame.camera.intrinsics
-        let pixels = plane.geometry.boundaryVertices.compactMap { v -> SIMD2<Float>? in
-            let p = worldToCamera * plane.transform * SIMD4<Float>(v.x, v.y, v.z, 1)
+        let pixels = vertices.compactMap { v -> SIMD2<Float>? in
+            let p = worldToCamera * SIMD4<Float>(v.x, v.y, v.z, 1)
             guard p.z < -0.05 else { return nil }
             let image = k * SIMD3<Float>(p.x, -p.y, -p.z)
             let pixel = SIMD2<Float>(image.x / image.z, image.y / image.z)
@@ -1498,72 +1670,5 @@ final class SpatialScanController: NSObject, ObservableObject, ARSessionDelegate
         if isScanning { recordTrackingEvent(.failed, reason: .failed, detail: value.localizedDescription) }
         stop()
         error = "空间定位失败：\(value.localizedDescription)"
-    }
-}
-
-
-/// Acquisition advice only. AR pose motion does not prove matched features, parallax or depth.
-/// This never gates trajectory recording, image capture, persistence or reconstruction evidence.
-struct SpatialCaptureGuidance {
-    enum State: Equatable {
-        case start, turnInPlace, moveSideways, lateralObserved, slowDown, trackingUnavailable, orientationUnavailable
-        var message: String {
-            switch self {
-            case .start: return "对准同一墙角，缓慢向旁边移动"
-            case .turnInPlace: return "只转动手机难恢复深度，请缓慢向旁边移动"
-            case .moveSideways: return "保持墙角在画面中，缓慢向旁边移动"
-            case .lateralObserved: return "已记录侧移，继续缓慢观察相邻区域"
-            case .slowDown: return "请放慢，并保持同一墙角在画面中"
-            case .trackingUnavailable: return "等待定位恢复，再缓慢向旁边移动"
-            case .orientationUnavailable: return "让前方墙角进入画面，再缓慢向旁边移动"
-            }
-        }
-    }
-    private var reference: SpatialPose?
-    private var previous: SpatialPose?
-    private var state: State = .start
-    mutating func reset() { reference = nil; previous = nil; state = .start }
-    mutating func update(_ pose: SpatialPose) -> State {
-        let values = [pose.position.x, pose.position.y, pose.position.z,
-                      pose.forward.x, pose.forward.y, pose.forward.z]
-        let horizontal = hypot(pose.forward.x, pose.forward.z)
-        guard pose.time.isFinite, values.allSatisfy(\.isFinite) else {
-            reset(); state = .trackingUnavailable; return state
-        }
-        guard horizontal > 0.1 else {
-            reset(); state = .orientationUnavailable; return state
-        }
-        guard let origin = reference, let last = previous, origin.epoch == pose.epoch,
-              pose.time > last.time, pose.time - last.time <= 1 else {
-            reference = pose; previous = pose; state = .start; return state
-        }
-        previous = pose
-        let dt = pose.time - last.time
-        let step = SpatialScanGeometry.distance(last.position, pose.position)
-        // Large instantaneous pose jumps are not counted as useful baseline.
-        if Double(step) / dt > 0.6 {
-            reference = pose; state = .slowDown; return state
-        }
-        let elapsed = pose.time - origin.time
-        let norm = hypot(origin.forward.x, origin.forward.z)
-        let dx = pose.position.x - origin.position.x, dz = pose.position.z - origin.position.z
-        let lateral = abs((-origin.forward.z * dx + origin.forward.x * dz) / norm)
-        let translation = SpatialScanGeometry.distance(origin.position, pose.position)
-        let dot = max(-1, min(1, (origin.forward.x * pose.forward.x + origin.forward.z * pose.forward.z) / (norm * horizontal)))
-        let angle = acos(dot)
-        // A bounded five-second window avoids calling old sideways motion current progress.
-        if elapsed >= 5 {
-            reference = pose; state = .moveSideways; return state
-        }
-        if angle > .pi / 4 {
-            state = translation < 0.08 ? .turnInPlace : .slowDown
-        } else if lateral >= 0.2 {
-            state = .lateralObserved
-        } else if elapsed >= 1, translation < 0.08, angle > .pi / 12 {
-            state = .turnInPlace
-        } else if elapsed >= 1 {
-            state = .moveSideways
-        }
-        return state
     }
 }

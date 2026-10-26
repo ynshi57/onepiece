@@ -20,6 +20,7 @@ actor SpatialScanStore {
     nonisolated static let maximumArchiveBytes = 256 * 1_024 * 1_024
     nonisolated static let maximumKeyframeBytes = 110 * 1_024 * 1_024
     private let maximumBytes = 64 * 1_024 * 1_024
+    private var saveGenerations: [UUID:UUID] = [:]
 
     /// Stored ZIP: local header 30 + central header 46 + two UTF8 names,
     /// plus 22 bytes for the end-of-central-directory record.
@@ -49,7 +50,13 @@ actor SpatialScanStore {
         baseURL = directory ?? URL.applicationSupportDirectory.appendingPathComponent("SpatialScans", isDirectory: true)
     }
 
-    func save(_ document: SpatialScanDocument) throws {
+    func save(_ document: SpatialScanDocument) async throws {
+        var document = document
+        try validate(document)
+        let request = UUID();saveGenerations[document.id] = request
+        document.structureSnapshot = try await SpatialStructureSnapshotCache.shared.snapshot(for:document)
+        guard saveGenerations[document.id] == request else {throw CancellationError()}
+        document.structureRevision = document.structureSnapshot?.map.revision
         try validate(document)
         try validateImages(document)
         let encoder = JSONEncoder()
@@ -105,7 +112,7 @@ actor SpatialScanStore {
         return data
     }
 
-    func loadAll() throws -> [SpatialScanDocument] {
+    func loadAll() async throws -> [SpatialScanDocument] {
         let entries: [URL]
         do {
             entries = try FileManager.default.contentsOfDirectory(at: baseURL, includingPropertiesForKeys: [.isDirectoryKey])
@@ -122,19 +129,41 @@ actor SpatialScanStore {
             let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
             if let size = attrs[.size] as? NSNumber, size.intValue > maximumBytes { throw StoreError.oversizedArchive }
             let data = try Data(contentsOf: url)
-            let document: SpatialScanDocument
+            var document: SpatialScanDocument
             do { document = try JSONDecoder().decode(SpatialScanDocument.self, from: data) }
             catch { throw StoreError.corruptArchive }
             guard document.id == id else { throw StoreError.corruptArchive }
             try validate(document)
             try validateImages(document)
+            // Listing is lazy: never reconstruct every archived scan to open the chooser.
+            if let snapshot = document.structureSnapshot {
+                document.structureRevision = max(document.structureRevision ?? 0,snapshot.map.revision)
+                if !snapshot.matches(document:document) {document.structureSnapshot = nil}
+            }
             documents.append(document)
         }
         return documents.sorted { $0.createdAt > $1.createdAt }
     }
 
+    /// Resolve only the scan the user selected. Reading never rewrites its on-disk archive.
+    func load(id:UUID) async throws -> SpatialScanDocument {
+        let url = scanDirectory(id).appendingPathComponent("document.json")
+        let attrs = try FileManager.default.attributesOfItem(atPath:url.path)
+        guard let size=attrs[.size] as? NSNumber,size.intValue <= maximumBytes else {throw StoreError.oversizedArchive}
+        var document:SpatialScanDocument
+        do {document=try JSONDecoder().decode(SpatialScanDocument.self,from:Data(contentsOf:url))}
+        catch {throw StoreError.corruptArchive}
+        guard document.id == id else {throw StoreError.corruptArchive}
+        try validate(document);try validateImages(document)
+        document.structureSnapshot = try await SpatialStructureSnapshotCache.shared.snapshot(for:document)
+        document.structureRevision = document.structureSnapshot?.map.revision
+        try validate(document)
+        return document
+    }
+
     func remove(_ document: SpatialScanDocument) throws { try delete(id: document.id) }
     func delete(id: UUID) throws {
+        saveGenerations[id] = UUID()
         do { try FileManager.default.removeItem(at: scanDirectory(id)) }
         catch let error as NSError where error.domain == NSCocoaErrorDomain && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) { return }
     }
@@ -150,7 +179,11 @@ actor SpatialScanStore {
         }
     }
 
-    func export(_ document: SpatialScanDocument) throws -> URL {
+    func export(_ document: SpatialScanDocument) async throws -> URL {
+        var document = document
+        try validate(document)
+        document.structureSnapshot = try await SpatialStructureSnapshotCache.shared.snapshot(for:document)
+        document.structureRevision = document.structureSnapshot?.map.revision
         try validate(document)
         try validateImages(document)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SpatialScanExports", isDirectory: true)
@@ -292,6 +325,14 @@ actor SpatialScanStore {
             && !name.contains("/") && !name.contains("\\") && name.lowercased().hasSuffix(".jpg")
     }
     private func validate(_ document: SpatialScanDocument) throws {
+        if let revision = document.structureRevision {
+            guard revision >= 0,revision < Int.max else {throw StoreError.invalidDocument}
+        }
+        if let snapshot = document.structureSnapshot {
+            guard snapshot.map.scanID == document.id,snapshot.isWellFormed else {throw StoreError.invalidDocument}
+            // Old inputs invalidate derived output; only current snapshots must bind every source.
+            if snapshot.matches(document:document), !snapshot.sourcesMatch(document:document) {throw StoreError.invalidDocument}
+        }
         guard document.schemaVersion == 1 else { throw StoreError.unsupportedVersion(document.schemaVersion) }
         if let reference = document.worldMap {
             guard reference.filename == "world-map.archive", reference.sha256.count == 64,
@@ -414,6 +455,83 @@ actor SpatialScanStore {
             for previous in row.previousAttempts ?? [] { try validateSemantic(previous, parent: row, depth: depth+1) }
         }
         for row in semanticRows { try validateSemantic(row) }
+        let relativeRows = document.relativeDepthObservations ?? []
+        guard Set(relativeRows.map(\.frameID)).count == relativeRows.count else { throw StoreError.invalidDocument }
+        var relativeAttempts = Set<UUID>()
+        func validateRelative(_ row: SpatialRelativeDepthObservation, parent: SpatialRelativeDepthObservation? = nil, depth: Int = 0) throws {
+            guard depth < 64, relativeAttempts.insert(row.attemptID).inserted,
+                  let frame = frames[row.frameID], row.frameTime.isFinite, row.frameTime == frame.time,
+                  row.epoch == frame.pose.epoch, row.modelID == SpatialRelativeDepthObservation.modelID,
+                  row.width == 64, row.height == 48, row.totalSeconds.isFinite, row.totalSeconds >= 0 else { throw StoreError.invalidDocument }
+            if let parent {
+                guard row.frameID == parent.frameID, row.frameTime == parent.frameTime, row.epoch == parent.epoch else { throw StoreError.invalidDocument }
+            }
+            let stages: Set<String> = ["load","prepare","prediction","sampling"]
+            let tolerance = max(0.0001,row.totalSeconds*0.000001)
+            let totalStages = row.stageSeconds.values.reduce(0,+)
+            guard row.stageSeconds.keys.allSatisfy({ stages.contains($0) }), row.stageSeconds["load"] != nil,
+                  row.stageSeconds.values.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= row.totalSeconds+tolerance }),
+                  totalStages.isFinite, totalStages <= row.totalSeconds+tolerance else { throw StoreError.invalidDocument }
+            switch row.status {
+            case .processed:
+                guard row.failure == nil, row.stageSeconds.count == 4,
+                      ["landscapeLeft","portrait","landscapeRight","portraitUpsideDown"].contains(frame.displayOrientation ?? ""),
+                      row.relativeInverseDepth.count == 3072,
+                      row.relativeInverseDepth.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
+                      row.relativeInverseDepth.contains(where:{ $0 > 0 }) else { throw StoreError.invalidDocument }
+            case .failed:
+                guard let failure = row.failure, !failure.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
+                      row.relativeInverseDepth.isEmpty else { throw StoreError.invalidDocument }
+            }
+            for previous in row.previousAttempts ?? [] { try validateRelative(previous,parent:row,depth:depth+1) }
+        }
+        for row in relativeRows { try validateRelative(row) }
+        let depthRows = document.depthObservations ?? []
+        guard Set(depthRows.map(\.sourceFrameID)).count == depthRows.count else { throw StoreError.invalidDocument }
+        var depthAttemptIDs = Set<UUID>()
+        let supportedDepthMethods = Set([SpatialDepthObservation(sourceFrameID: "", sourceTime: 0, epoch: 0).method, "VisionFlow-r2-bidirectional-NCC-two-target-64x48-v1"])
+        func validateDepth(_ row: SpatialDepthObservation, parent: SpatialDepthObservation? = nil, depth: Int = 0) throws {
+            guard depth < 64, depthAttemptIDs.insert(row.attemptID).inserted,
+                  let source = frames[row.sourceFrameID], row.sourceTime.isFinite, row.sourceTime == source.time,
+                  row.epoch == source.pose.epoch, supportedDepthMethods.contains(row.method),
+                  row.elapsedSeconds.isFinite, row.elapsedSeconds >= 0,
+                  row.width == 64, row.height == 48,
+                  row.depthMeters.count == 3072, row.pixelStates.count == 3072,
+                  row.targetFrameIDs.count <= 2,
+                  Set(row.targetFrameIDs).count == row.targetFrameIDs.count,
+                  row.targetFrameIDs.allSatisfy({ id in id != row.sourceFrameID && frames[id]?.pose.epoch == row.epoch }) else { throw StoreError.invalidDocument }
+            if let parent {
+                guard row.sourceFrameID == parent.sourceFrameID, row.sourceTime == parent.sourceTime,
+                      row.epoch == parent.epoch else { throw StoreError.invalidDocument }
+            }
+            let tolerance = max(0.0001, row.elapsedSeconds * 0.000001)
+            let stageTotal = row.stageSeconds.values.reduce(0,+)
+            guard row.stageSeconds.allSatisfy({ !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && $0.value.isFinite && $0.value >= 0 && $0.value <= row.elapsedSeconds + tolerance }),
+                  stageTotal.isFinite, stageTotal <= row.elapsedSeconds + tolerance else { throw StoreError.invalidDocument }
+            for (value,state) in zip(row.depthMeters,row.pixelStates) {
+                guard value.isFinite, value <= SpatialObservationGeometry.maximumDepthMeters,
+                      state == .valid ? value > 0 : value == 0 else { throw StoreError.invalidDocument }
+            }
+            if row.materialPolicy == .notAssessed {
+                guard row.backgroundDepthMeters == nil else { throw StoreError.invalidDocument }
+            }
+            if let background = row.backgroundDepthMeters {
+                guard background.count == 3072,
+                      zip(background,row.pixelStates).allSatisfy({ $0.0.isFinite && $0.0 >= 0 && $0.0 <= SpatialObservationGeometry.maximumDepthMeters
+                          && ($0.0 == 0 || $0.1 == .reflectiveSurfaceUnknown) }) else { throw StoreError.invalidDocument }
+            }
+            switch row.status {
+            case .processed:
+                guard row.failure == nil, row.targetFrameIDs.count == 2 else { throw StoreError.invalidDocument }
+            case .failed:
+                guard let failure = row.failure, !failure.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      row.pixelStates.allSatisfy({ $0 == .unavailable }), row.depthMeters.allSatisfy({ $0 == 0 }),
+                      row.backgroundDepthMeters == nil else { throw StoreError.invalidDocument }
+            }
+            for previous in row.previousAttempts ?? [] { try validateDepth(previous,parent:row,depth:depth+1) }
+        }
+        for row in depthRows { try validateDepth(row) }
         var provenance: [UUID: SpatialObjectObservation] = [:]
         func collect(_ row: SpatialObjectObservation) throws {
             if let id = row.attemptID {

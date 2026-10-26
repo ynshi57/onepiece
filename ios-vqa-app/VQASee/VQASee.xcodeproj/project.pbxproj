@@ -66,6 +66,17 @@
 			path = VQASeeUITests;
 			sourceTree = "<group>";
 		};
+		B00100000000000000000030 /* OptionalModelResources */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+				DepthAnythingV2SmallF16.mlmodelc = folder;
+			};
+			explicitFolders = (
+				DepthAnythingV2SmallF16.mlmodelc,
+			);
+			path = OptionalModelResources;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -98,6 +109,7 @@
 			children = (
 				4210DF692FCFFEC900080AA6 /* VQASee */,
 				B00100000000000000000010 /* ModelResources */,
+				B00100000000000000000030 /* OptionalModelResources */,
 				4210DF772FCFFECB00080AA6 /* VQASeeTests */,
 				4210DF812FCFFECB00080AA6 /* VQASeeUITests */,
 				4210DF682FCFFEC900080AA6 /* Products */,
@@ -147,6 +159,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				4210DF692FCFFEC900080AA6 /* VQASee */,
+				B00100000000000000000030 /* OptionalModelResources */,
 			);
 			name = VQASee;
 			packageProductDependencies = (
